@@ -47,6 +47,67 @@ lh chat
 
 # 指定 SOUL
 lh chat --soul ./SOUL.md
+
+# 查看可用模型
+lh models
+
+# 交互模式切换模型
+/model gpt-4o
+/models
+```
+
+## v0.3.0 新特性
+
+### Provider 自动降级链
+
+在 `config.yaml` 中配置降级链，当主 Provider 失败时自动切换：
+
+```yaml
+provider: openai
+api_key: sk-xxx
+model: gpt-4o
+fallbacks:
+  - provider: anthropic
+    api_key: sk-ant-xxx
+    model: claude-sonnet-4-20250514
+  - provider: ollama
+    model: llama3
+```
+
+降级链行为：
+- 连续 3 次失败后自动降级到下一个 Provider
+- 冷却期 5 分钟后自动恢复
+- 成功调用后自动切回更高优先级的 Provider
+- 支持自定义切换回调
+
+### 新 Provider 支持
+
+| Provider | 说明 | 认证方式 |
+|----------|------|----------|
+| OpenAI | GPT-4o / GPT-4o Mini / GPT-3.5 | API Key |
+| Anthropic | Claude Sonnet 4 / Claude 3.5 Sonnet / Claude 3 Haiku | API Key (x-api-key header) |
+| Ollama | Llama 3 / Mistral / Qwen 2 (本地) | 无需认证 |
+| OpenRouter | 聚合多模型 (OpenAI 格式) | API Key |
+
+### Model Catalog
+
+内置 17 个模型信息，支持按 Provider / 能力筛选：
+
+```go
+catalog := provider.NewModelCatalog()
+catalog.ListByProvider("anthropic")
+catalog.FindByCapability("vision")
+catalog.ResolveProvider("gpt-4o") // → "openai"
+```
+
+### OAuth Token 生命周期
+
+Token 自动管理：存储、过期检测、刷新、脱敏列表。
+
+```go
+ts, _ := provider.NewTokenStore("~/.luckyharness/tokens")
+ts.Set(&provider.TokenEntry{Provider: "openai", AccessToken: "sk-xxx", ExpiresAt: ...})
+ts.RefreshIfNeeded("openai", refreshTokenFn)
 ```
 
 ## 架构

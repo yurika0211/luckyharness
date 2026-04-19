@@ -15,12 +15,15 @@ import (
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg      *config.Manager
-	soul     *soul.Soul
-	provider provider.Provider
-	memory   *memory.Store
-	sessions *session.Manager
-	tools    *tool.Registry
+	cfg          *config.Manager
+	soul         *soul.Soul
+	provider     provider.Provider       // 当前活跃 provider (可能是 FallbackChain)
+	registry     *provider.Registry     // provider 注册表
+	catalog      *provider.ModelCatalog  // 模型目录
+	tokenStore   *provider.TokenStore    // token 存储
+	memory       *memory.Store
+	sessions     *session.Manager
+	tools        *tool.Registry
 }
 
 // New 创建 Agent
@@ -41,19 +44,58 @@ func New(cfg *config.Manager) (*Agent, error) {
 		s = soul.Default()
 	}
 
-	// 创建 Provider
+	// 创建 Provider 注册表
 	registry := provider.NewRegistry()
-	pCfg := provider.Config{
-		Name:        c.Provider,
-		APIKey:      c.APIKey,
-		APIBase:     c.APIBase,
-		Model:       c.Model,
-		MaxTokens:   c.MaxTokens,
-		Temperature: c.Temperature,
-	}
-	p, err := registry.Resolve(pCfg)
+
+	// 创建模型目录
+	catalog := provider.NewModelCatalog()
+
+	// 创建 Token 存储
+	tokenStore, err := provider.NewTokenStore(cfg.HomeDir() + "/tokens")
 	if err != nil {
-		return nil, fmt.Errorf("resolve provider: %w", err)
+		tokenStore = nil // 非关键错误
+	}
+
+	// 解析 Provider（支持降级链）
+	var p provider.Provider
+	if len(c.Fallbacks) > 0 {
+		// 使用降级链模式
+		fallbackConfigs := make([]provider.FallbackConfig, 0, len(c.Fallbacks)+1)
+		// 第一个是主 provider
+		fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
+			Name:    c.Provider,
+			APIKey:  c.APIKey,
+			APIBase: c.APIBase,
+			Model:   c.Model,
+		})
+		// 后续是降级 provider
+		for _, fb := range c.Fallbacks {
+			fallbackConfigs = append(fallbackConfigs, provider.FallbackConfig{
+				Name:    fb.Provider,
+				APIKey:  fb.APIKey,
+				APIBase: fb.APIBase,
+				Model:   fb.Model,
+			})
+		}
+		chain, err := provider.NewFallbackChain(fallbackConfigs, registry)
+		if err != nil {
+			return nil, fmt.Errorf("create fallback chain: %w", err)
+		}
+		p = chain
+	} else {
+		// 单 provider 模式
+		pCfg := provider.Config{
+			Name:        c.Provider,
+			APIKey:      c.APIKey,
+			APIBase:     c.APIBase,
+			Model:       c.Model,
+			MaxTokens:   c.MaxTokens,
+			Temperature: c.Temperature,
+		}
+		p, err = registry.Resolve(pCfg)
+		if err != nil {
+			return nil, fmt.Errorf("resolve provider: %w", err)
+		}
 	}
 
 	// 创建记忆存储
@@ -69,12 +111,15 @@ func New(cfg *config.Manager) (*Agent, error) {
 	}
 
 	return &Agent{
-		cfg:      cfg,
-		soul:     s,
-		provider: p,
-		memory:   mem,
-		sessions: sessions,
-		tools:    tool.NewRegistry(),
+		cfg:        cfg,
+		soul:       s,
+		provider:   p,
+		registry:   registry,
+		catalog:    catalog,
+		tokenStore: tokenStore,
+		memory:     mem,
+		sessions:   sessions,
+		tools:      tool.NewRegistry(),
 	}, nil
 }
 
@@ -167,4 +212,43 @@ func (a *Agent) Soul() *soul.Soul {
 // Tools 返回工具注册表
 func (a *Agent) Tools() *tool.Registry {
 	return a.tools
+}
+
+// Catalog 返回模型目录
+func (a *Agent) Catalog() *provider.ModelCatalog {
+	return a.catalog
+}
+
+// Provider 返回当前 provider
+func (a *Agent) Provider() provider.Provider {
+	return a.provider
+}
+
+// Registry 返回 provider 注册表
+func (a *Agent) Registry() *provider.Registry {
+	return a.registry
+}
+
+// SwitchModel 切换模型（通过 catalog 推断 provider）
+func (a *Agent) SwitchModel(modelID string) error {
+	providerName, err := a.catalog.ResolveProvider(modelID)
+	if err != nil {
+		return fmt.Errorf("resolve provider for model %s: %w", modelID, err)
+	}
+
+	cfg := a.cfg.Get()
+	pCfg := provider.Config{
+		Name:    providerName,
+		APIKey:  cfg.APIKey,
+		APIBase: cfg.APIBase,
+		Model:   modelID,
+	}
+
+	p, err := a.registry.Resolve(pCfg)
+	if err != nil {
+		return fmt.Errorf("create provider %s: %w", providerName, err)
+	}
+
+	a.provider = p
+	return nil
 }
