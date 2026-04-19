@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/memory"
 )
 
@@ -19,8 +21,12 @@ func startREPL(mgr *config.Manager) error {
 		return fmt.Errorf("create agent: %w", err)
 	}
 
+	// 创建 Cron 引擎和 Watcher
+	cronEngine := cron.NewEngine()
+	watcher := cron.NewWatcher(cronEngine)
+
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.5.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.7.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -41,7 +47,7 @@ func startREPL(mgr *config.Manager) error {
 
 		// 处理命令
 		if strings.HasPrefix(input, "/") {
-			handled, exit := handleCommand(input, a, &loopCfg)
+			handled, exit := handleCommand(input, a, &loopCfg, cronEngine, watcher)
 			if exit {
 				break
 			}
@@ -81,7 +87,7 @@ func startREPL(mgr *config.Manager) error {
 }
 
 // handleCommand 处理 REPL 命令
-func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (handled bool, exit bool) {
+func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, watcher *cron.Watcher) (handled bool, exit bool) {
 	parts := strings.SplitN(input, " ", 2)
 	cmd := parts[0]
 	arg := ""
@@ -113,6 +119,18 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (han
 		fmt.Println("  /memstats          记忆统计")
 		fmt.Println("  /memdecay          执行记忆衰减")
 		fmt.Println("  /promote [id]      提升记忆层级")
+		fmt.Println("  /cron add <id> <schedule> <cmd>  添加定时任务")
+		fmt.Println("  /cron list         列出定时任务")
+		fmt.Println("  /cron remove <id>  移除定时任务")
+		fmt.Println("  /cron pause <id>  暂停定时任务")
+		fmt.Println("  /cron resume <id> 恢复定时任务")
+		fmt.Println("  /cron start       启动调度引擎")
+		fmt.Println("  /cron stop         停止调度引擎")
+		fmt.Println("  /watch add <id> <pattern> <interval>  添加监控模式")
+		fmt.Println("  /watch list        列出监控模式")
+		fmt.Println("  /watch remove <id> 移除监控模式")
+		fmt.Println("  /watch start       启动监控")
+		fmt.Println("  /watch stop        停止监控")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -298,6 +316,12 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (han
 		}
 		return true, false
 
+	case "/cron":
+		return handleCronCommand(arg, cronEngine), false
+
+	case "/watch":
+		return handleWatchCommand(arg, watcher), false
+
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
 		return true, false
@@ -322,4 +346,194 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// handleCronCommand 处理 /cron 命令
+func handleCronCommand(arg string, engine *cron.Engine) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
+		return true
+	}
+
+	subCmd := parts[0]
+	switch subCmd {
+	case "add":
+		if len(parts) < 4 {
+			fmt.Println("用法: /cron add <id> <schedule> <command>")
+			fmt.Println("  schedule: 每天9点 | 每小时 | 每30分钟 | 每周一9点 | 工作日9点 | 0 9 * * *")
+			return true
+		}
+		id := parts[1]
+		scheduleStr := parts[2]
+		command := strings.Join(parts[3:], " ")
+
+		// 尝试自然语言解析，失败则尝试 cron 表达式
+		var schedule cron.Schedule
+		var err error
+		schedule, err = cron.ParseNaturalLanguage(scheduleStr)
+		if err != nil {
+			schedule, err = cron.ParseCronExpr(scheduleStr)
+			if err != nil {
+				fmt.Printf("❌ 无法解析调度表达式: %v\n", err)
+				return true
+			}
+		}
+
+		// 创建简单任务（打印命令）
+		task := func() error {
+			fmt.Printf("\n⏰ [cron:%s] %s\n", id, command)
+			return nil
+		}
+
+		if err := engine.AddJob(id, "Cron: "+id, command, schedule, task); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("✅ 定时任务已添加: %s (%s)\n", id, schedule)
+		}
+
+	case "list":
+		jobs := engine.ListJobs()
+		if len(jobs) == 0 {
+			fmt.Println("📋 暂无定时任务")
+		} else {
+			fmt.Println("📋 定时任务:")
+			for _, j := range jobs {
+				statusEmoji := "⏸️"
+				if j.Status == cron.StatusRunning {
+					statusEmoji = "▶️"
+				} else if j.Status == cron.StatusFailed {
+					statusEmoji = "❌"
+				} else if j.Status == cron.StatusPaused {
+					statusEmoji = "⏸️"
+				} else {
+					statusEmoji = "⏳"
+				}
+				nextRun := "N/A"
+				if !j.NextRun.IsZero() {
+					nextRun = j.NextRun.Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("  %s %s | %s | 下次: %s | 执行: %d | %s\n",
+					statusEmoji, j.ID, j.Schedule, nextRun, j.RunCount, j.Description)
+			}
+		}
+
+	case "remove":
+		if len(parts) < 2 {
+			fmt.Println("用法: /cron remove <id>")
+			return true
+		}
+		if err := engine.RemoveJob(parts[1]); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("✅ 定时任务已移除: %s\n", parts[1])
+		}
+
+	case "pause":
+		if len(parts) < 2 {
+			fmt.Println("用法: /cron pause <id>")
+			return true
+		}
+		if err := engine.PauseJob(parts[1]); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("⏸️ 定时任务已暂停: %s\n", parts[1])
+		}
+
+	case "resume":
+		if len(parts) < 2 {
+			fmt.Println("用法: /cron resume <id>")
+			return true
+		}
+		if err := engine.ResumeJob(parts[1]); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("▶️ 定时任务已恢复: %s\n", parts[1])
+		}
+
+	case "start":
+		engine.Start()
+		fmt.Println("▶️ 调度引擎已启动")
+
+	case "stop":
+		engine.Stop()
+		fmt.Println("⏹️ 调度引擎已停止")
+
+	default:
+		fmt.Printf("未知 cron 子命令: %s\n", subCmd)
+		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
+	}
+	return true
+}
+
+// handleWatchCommand 处理 /watch 命令
+func handleWatchCommand(arg string, watcher *cron.Watcher) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /watch <add|list|remove|start|stop> [args]")
+		return true
+	}
+
+	subCmd := parts[0]
+	switch subCmd {
+	case "add":
+		if len(parts) < 4 {
+			fmt.Println("用法: /watch add <id> <pattern> <interval>")
+			fmt.Println("  interval: 30s | 1m | 5m | 1h")
+			return true
+		}
+		id := parts[1]
+		pattern := parts[2]
+		interval, err := time.ParseDuration(parts[3])
+		if err != nil {
+			fmt.Printf("❌ 无法解析间隔: %v\n", err)
+			return true
+		}
+
+		if err := watcher.AddPattern(id, "Watch: "+id, pattern, pattern, interval, nil); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("✅ 监控模式已添加: %s (%s, 每%s检查)\n", id, pattern, interval)
+		}
+
+	case "list":
+		patterns := watcher.ListPatterns()
+		if len(patterns) == 0 {
+			fmt.Println("📋 暂无监控模式")
+		} else {
+			fmt.Println("📋 监控模式:")
+			for _, p := range patterns {
+				lastCheck := "N/A"
+				if !p.LastCheck.IsZero() {
+					lastCheck = p.LastCheck.Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("  🔍 %s | %s | 间隔: %s | 上次检查: %s | %s\n",
+					p.ID, p.Pattern, p.Interval, lastCheck, p.LastResult)
+			}
+		}
+
+	case "remove":
+		if len(parts) < 2 {
+			fmt.Println("用法: /watch remove <id>")
+			return true
+		}
+		if err := watcher.RemovePattern(parts[1]); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("✅ 监控模式已移除: %s\n", parts[1])
+		}
+
+	case "start":
+		watcher.Start()
+		fmt.Println("▶️ 监控已启动")
+
+	case "stop":
+		watcher.Stop()
+		fmt.Println("⏹️ 监控已停止")
+
+	default:
+		fmt.Printf("未知 watch 子命令: %s\n", subCmd)
+		fmt.Println("用法: /watch <add|list|remove|start|stop> [args]")
+	}
+	return true
 }
