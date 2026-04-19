@@ -9,8 +9,13 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/backup"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/dashboard"
+	dbg "github.com/yurika0211/luckyharness/internal/debug"
+	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"path/filepath"
 )
 
 var (
@@ -86,7 +91,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.7.0")
+			fmt.Println("🍀 LuckyHarness v0.9.0")
 		},
 	}
 
@@ -97,7 +102,115 @@ func main() {
 		RunE:  runModels,
 	}
 
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd)
+	// ===== v0.9.0: Profile 命令 =====
+	profileCmd := &cobra.Command{
+		Use:   "profile",
+		Short: "管理多实例 Profile",
+	}
+	profileListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出所有 Profile",
+		RunE:  runProfileList,
+	}
+	profileShowCmd := &cobra.Command{
+		Use:   "show [name]",
+		Short: "显示 Profile 详情",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runProfileShow,
+	}
+	profileCreateCmd := &cobra.Command{
+		Use:   "create [name]",
+		Short: "创建新 Profile",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runProfileCreate,
+	}
+	profileCreateCmd.Flags().StringP("desc", "d", "", "Profile 描述")
+	profileDeleteCmd := &cobra.Command{
+		Use:   "delete [name]",
+		Short: "删除 Profile",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runProfileDelete,
+	}
+	profileSwitchCmd := &cobra.Command{
+		Use:   "switch [name]",
+		Short: "切换活跃 Profile",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runProfileSwitch,
+	}
+	profileEnvCmd := &cobra.Command{
+		Use:   "env [name]",
+		Short: "管理 Profile 环境变量",
+	}
+	profileEnvSetCmd := &cobra.Command{
+		Use:   "set [profile] [key] [value]",
+		Short: "设置环境变量",
+		Args:  cobra.ExactArgs(3),
+		RunE:  runProfileEnvSet,
+	}
+	profileEnvUnsetCmd := &cobra.Command{
+		Use:   "unset [profile] [key]",
+		Short: "删除环境变量",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runProfileEnvUnset,
+	}
+	profileEnvCmd.AddCommand(profileEnvSetCmd, profileEnvUnsetCmd)
+	profileCmd.AddCommand(profileListCmd, profileShowCmd, profileCreateCmd, profileDeleteCmd, profileSwitchCmd, profileEnvCmd)
+
+	// ===== v0.9.0: Backup 命令 =====
+	backupCmd := &cobra.Command{
+		Use:   "backup",
+		Short: "备份与恢复",
+	}
+	backupCreateCmd := &cobra.Command{
+		Use:   "create",
+		Short: "创建备份",
+		RunE:  runBackupCreate,
+	}
+	backupCreateCmd.Flags().StringP("output", "o", "", "输出路径")
+	backupRestoreCmd := &cobra.Command{
+		Use:   "restore [path]",
+		Short: "从备份恢复",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runBackupRestore,
+	}
+	backupListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出备份",
+		RunE:  runBackupList,
+	}
+	backupCmd.AddCommand(backupCreateCmd, backupRestoreCmd, backupListCmd)
+
+	// ===== v0.9.0: Dashboard 命令 =====
+	dashboardCmd := &cobra.Command{
+		Use:   "dashboard",
+		Short: "Web Dashboard",
+	}
+	dashboardStartCmd := &cobra.Command{
+		Use:   "start",
+		Short: "启动 Dashboard",
+		RunE:  runDashboardStart,
+	}
+	dashboardStartCmd.Flags().StringP("addr", "a", ":8765", "监听地址")
+	dashboardCmd.AddCommand(dashboardStartCmd)
+
+	// ===== v0.9.0: Debug 命令 =====
+	debugCmd := &cobra.Command{
+		Use:   "debug",
+		Short: "调试工具",
+	}
+	debugShareCmd := &cobra.Command{
+		Use:   "share",
+		Short: "导出调试信息",
+		RunE:  runDebugShare,
+	}
+	debugShareCmd.Flags().Bool("no-env", false, "不收集环境变量")
+	debugShareCmd.Flags().Bool("no-config", false, "不收集配置")
+	debugShareCmd.Flags().Bool("no-logs", false, "不收集日志")
+	debugShareCmd.Flags().StringP("output", "o", "", "输出路径")
+	debugCmd.AddCommand(debugShareCmd)
+
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
+		profileCmd, backupCmd, dashboardCmd, debugCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -120,9 +233,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Printf("   主目录: %s\n", mgr.HomeDir())
 	fmt.Println()
 	fmt.Println("下一步:")
-	fmt.Println("  lh config set api_key sk-xxx    # 设置 API Key")
-	fmt.Println("  lh config set provider openai   # 设置提供商")
-	fmt.Println("  lh chat                         # 进入交互模式")
+	fmt.Println("  lh profile list              # 查看 Profile")
+	fmt.Println("  lh config set api_key sk-xxx # 设置 API Key")
+	fmt.Println("  lh config set provider openai # 设置提供商")
+	fmt.Println("  lh chat                      # 进入交互模式")
 	return nil
 }
 
@@ -307,5 +421,259 @@ func runModels(cmd *cobra.Command, args []string) error {
 
 	fmt.Println()
 	fmt.Println("使用: lh chat -m <model-id>  或  /model <model-id>")
+	return nil
+}
+
+// ===== v0.9.0: Profile 命令实现 =====
+
+func getProfileMgr() (*profile.Manager, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("get home dir: %w", err)
+	}
+	return profile.NewManager(filepath.Join(home, ".luckyharness"))
+}
+
+func runProfileList(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	infos := mgr.ListWithInfo()
+	if len(infos) == 0 {
+		fmt.Println("📋 暂无 Profile")
+		return nil
+	}
+
+	fmt.Println("📋 LuckyHarness Profiles:")
+	for _, info := range infos {
+		active := ""
+		if info.Active {
+			active = " ← active"
+		}
+		fmt.Printf("  %-15s %-10s %-20s %s%s\n",
+			info.Name, info.Provider, info.Model, info.Description, active)
+	}
+	fmt.Printf("\n  共 %d 个 Profile\n", len(infos))
+	return nil
+}
+
+func runProfileShow(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	name := "default"
+	if len(args) > 0 {
+		name = args[0]
+	}
+
+	p, err := mgr.Get(name)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("📋 Profile: %s\n", p.Name)
+	fmt.Printf("  描述:      %s\n", p.Description)
+	fmt.Printf("  Provider:  %s\n", p.Provider)
+	fmt.Printf("  Model:     %s\n", p.Model)
+	fmt.Printf("  API Base:  %s\n", p.APIBase)
+	fmt.Printf("  MaxTokens: %d\n", p.MaxTokens)
+	fmt.Printf("  Temp:      %.1f\n", p.Temperature)
+	fmt.Printf("  SoulPath:  %s\n", p.SoulPath)
+
+	if len(p.Env) > 0 {
+		fmt.Println("  环境变量:")
+		for k, v := range p.Env {
+			fmt.Printf("    %s = %s\n", k, maskKey(v))
+		}
+	}
+
+	if len(p.Fallbacks) > 0 {
+		fmt.Println("  降级链:")
+		for i, fb := range p.Fallbacks {
+			fmt.Printf("    %d. %s (%s)\n", i+1, fb.Provider, fb.Model)
+		}
+	}
+
+	return nil
+}
+
+func runProfileCreate(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	desc, _ := cmd.Flags().GetString("desc")
+	p, err := mgr.Create(args[0], desc)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ Profile 已创建: %s\n", p.Name)
+	fmt.Printf("   描述: %s\n", p.Description)
+	fmt.Println()
+	fmt.Println("切换: lh profile switch " + p.Name)
+	return nil
+}
+
+func runProfileDelete(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.Delete(args[0]); err != nil {
+		return err
+	}
+
+	fmt.Printf("🗑️ Profile 已删除: %s\n", args[0])
+	return nil
+}
+
+func runProfileSwitch(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.Switch(args[0]); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 已切换到 Profile: %s\n", args[0])
+	return nil
+}
+
+func runProfileEnvSet(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.SetEnv(args[0], args[1], args[2]); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ Profile %s: %s = %s\n", args[0], args[1], args[2])
+	return nil
+}
+
+func runProfileEnvUnset(cmd *cobra.Command, args []string) error {
+	mgr, err := getProfileMgr()
+	if err != nil {
+		return err
+	}
+
+	if err := mgr.UnsetEnv(args[0], args[1]); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ Profile %s: %s 已删除\n", args[0], args[1])
+	return nil
+}
+
+// ===== v0.9.0: Backup 命令实现 =====
+
+func runBackupCreate(cmd *cobra.Command, args []string) error {
+	home, _ := os.UserHomeDir()
+	b := backup.New(filepath.Join(home, ".luckyharness"))
+
+	output, _ := cmd.Flags().GetString("output")
+	if err := b.Create(output); err != nil {
+		return err
+	}
+
+	backups, _ := b.List()
+	if len(backups) > 0 {
+		fmt.Printf("✅ 备份已创建: %s\n", backups[len(backups)-1])
+	}
+	return nil
+}
+
+func runBackupRestore(cmd *cobra.Command, args []string) error {
+	home, _ := os.UserHomeDir()
+	b := backup.New(filepath.Join(home, ".luckyharness"))
+
+	fmt.Println("⚠️  恢复将覆盖当前数据，是否继续？(y/N)")
+	var confirm string
+	fmt.Scanln(&confirm)
+	if strings.ToLower(confirm) != "y" {
+		fmt.Println("已取消")
+		return nil
+	}
+
+	if err := b.Restore(args[0]); err != nil {
+		return err
+	}
+
+	fmt.Println("✅ 备份已恢复")
+	return nil
+}
+
+func runBackupList(cmd *cobra.Command, args []string) error {
+	home, _ := os.UserHomeDir()
+	b := backup.New(filepath.Join(home, ".luckyharness"))
+
+	backups, err := b.List()
+	if err != nil {
+		return err
+	}
+
+	if len(backups) == 0 {
+		fmt.Println("📋 暂无备份")
+		return nil
+	}
+
+	fmt.Println("📋 备份列表:")
+	for _, path := range backups {
+		info, _ := b.Info(path)
+		fmt.Printf("  %s (%v bytes, %v)\n",
+			filepath.Base(path), info["size"], info["modTime"])
+	}
+	return nil
+}
+
+// ===== v0.9.0: Dashboard 命令实现 =====
+
+func runDashboardStart(cmd *cobra.Command, args []string) error {
+	addr, _ := cmd.Flags().GetString("addr")
+	cfg := dashboard.Config{Addr: addr}
+	d := dashboard.New(cfg)
+
+	if err := d.Start(); err != nil {
+		return err
+	}
+
+	fmt.Println("按 Ctrl+C 停止 Dashboard...")
+
+	// 阻塞等待信号
+	select {}
+}
+
+// ===== v0.9.0: Debug 命令实现 =====
+
+func runDebugShare(cmd *cobra.Command, args []string) error {
+	home, _ := os.UserHomeDir()
+	collector := dbg.New(filepath.Join(home, ".luckyharness"))
+
+	opts := dbg.DefaultCollectOptions()
+	noEnv, _ := cmd.Flags().GetBool("no-env")
+	noConfig, _ := cmd.Flags().GetBool("no-config")
+	noLogs, _ := cmd.Flags().GetBool("no-logs")
+	opts.Env = !noEnv
+	opts.Config = !noConfig
+	opts.Logs = !noLogs
+
+	output, _ := cmd.Flags().GetString("output")
+	path, err := collector.Export(opts, output)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 调试信息已导出: %s\n", path)
 	return nil
 }

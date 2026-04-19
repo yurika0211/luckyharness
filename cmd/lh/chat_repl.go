@@ -5,13 +5,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/dashboard"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/profile"
 )
 
 // startREPL 启动交互式 REPL
@@ -26,7 +29,7 @@ func startREPL(mgr *config.Manager) error {
 	watcher := cron.NewWatcher(cronEngine)
 
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.7.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.9.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -131,6 +134,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /watch remove <id> 移除监控模式")
 		fmt.Println("  /watch start       启动监控")
 		fmt.Println("  /watch stop        停止监控")
+		fmt.Println("  /profile list      列出 Profile")
+		fmt.Println("  /profile switch X  切换 Profile")
+		fmt.Println("  /dashboard start   启动 Web Dashboard")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -321,6 +327,12 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/watch":
 		return handleWatchCommand(arg, watcher), false
+
+	case "/profile":
+		return handleProfileCommand(arg), false
+
+	case "/dashboard":
+		return handleDashboardCommand(arg), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -534,6 +546,83 @@ func handleWatchCommand(arg string, watcher *cron.Watcher) bool {
 	default:
 		fmt.Printf("未知 watch 子命令: %s\n", subCmd)
 		fmt.Println("用法: /watch <add|list|remove|start|stop> [args]")
+	}
+	return true
+}
+
+// handleProfileCommand 处理 /profile 命令
+func handleProfileCommand(arg string) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /profile <list|switch> [args]")
+		return true
+	}
+
+	home, _ := os.UserHomeDir()
+	mgr, err := profile.NewManager(filepath.Join(home, ".luckyharness"))
+	if err != nil {
+		fmt.Printf("❌ %v\n", err)
+		return true
+	}
+
+	switch parts[0] {
+	case "list":
+		infos := mgr.ListWithInfo()
+		if len(infos) == 0 {
+			fmt.Println("📋 暂无 Profile")
+		} else {
+			fmt.Println("📋 Profiles:")
+			for _, info := range infos {
+				active := ""
+				if info.Active {
+					active = " ← active"
+				}
+				fmt.Printf("  %-15s %-10s %-20s%s\n", info.Name, info.Provider, info.Model, active)
+			}
+		}
+
+	case "switch":
+		if len(parts) < 2 {
+			fmt.Println("用法: /profile switch <name>")
+			return true
+		}
+		if err := mgr.Switch(parts[1]); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("✅ 已切换到 Profile: %s (下次启动生效)\n", parts[1])
+		}
+
+	default:
+		fmt.Printf("未知 profile 子命令: %s\n", parts[0])
+		fmt.Println("用法: /profile <list|switch> [args]")
+	}
+	return true
+}
+
+// handleDashboardCommand 处理 /dashboard 命令
+func handleDashboardCommand(arg string) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /dashboard start [addr]")
+		return true
+	}
+
+	switch parts[0] {
+	case "start":
+		addr := ":8765"
+		if len(parts) > 1 {
+			addr = parts[1]
+		}
+		cfg := dashboard.Config{Addr: addr}
+		d := dashboard.New(cfg)
+		if err := d.Start(); err != nil {
+			fmt.Printf("❌ %v\n", err)
+		} else {
+			fmt.Printf("🌐 Dashboard 已启动: http://localhost%s\n", addr)
+		}
+
+	default:
+		fmt.Printf("未知 dashboard 子命令: %s\n", parts[0])
 	}
 	return true
 }
