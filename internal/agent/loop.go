@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
 // LoopState 代表 Agent Loop 的状态
@@ -216,16 +217,26 @@ func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, e
 	}
 
 	// 检查工具是否存在
-	t, ok := a.Tools().Get(name)
+	_, ok := a.Tools().Get(name)
 	if !ok {
 		return "", fmt.Errorf("tool not found: %s", name)
 	}
 
 	// 权限检查
-	if !autoApprove {
-		// v0.2.0: 简单的权限提示
-		// v0.8.0 将实现完整的审批机制
-		_ = t // placeholder
+	perm, err := a.Tools().CheckPermission(name)
+	if err != nil {
+		return "", err
+	}
+
+	if perm == tool.PermDeny {
+		return "", fmt.Errorf("tool %s is denied", name)
+	}
+
+	if perm == tool.PermApprove && !autoApprove {
+		// v0.5.0: 需要审批的工具
+		// 在 REPL 模式下，审批由 REPL 处理
+		// 在 API 模式下，autoApprove=false 时拒绝
+		return fmt.Sprintf("[Approval Required] Tool '%s' requires user approval. Use --yolo flag or approve in REPL.", name), nil
 	}
 
 	result, err := a.Tools().Call(name, args)
@@ -253,13 +264,17 @@ func (a *Agent) buildMessages(userInput string) []provider.Message {
 		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
 	}
 
-	// 加入工具描述
-	tools := a.Tools().List()
+	// 加入工具描述（使用 OpenAI function calling 格式）
+	tools := a.Tools().ListEnabled()
 	if len(tools) > 0 {
 		var toolCtx strings.Builder
 		toolCtx.WriteString("[Available Tools]\n")
 		for _, t := range tools {
-			toolCtx.WriteString(fmt.Sprintf("- %s: %s\n", t.Name, t.Description))
+			permLabel := "🟢"
+			if t.Permission == tool.PermApprove {
+				permLabel = "🟡"
+			}
+			toolCtx.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
 		}
 		messages = append(messages, provider.Message{Role: "system", Content: toolCtx.String()})
 	}

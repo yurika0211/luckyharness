@@ -25,6 +25,8 @@ type Agent struct {
 	memory       *memory.Store
 	sessions     *session.Manager
 	tools        *tool.Registry
+	mcpClient    *tool.MCPClient         // MCP 客户端
+	delegate     *tool.DelegateManager   // 子代理委派管理器
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -112,6 +114,19 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return nil, fmt.Errorf("init sessions: %w", err)
 	}
 
+	// 创建工具注册表并注册内置工具
+	tools := tool.NewRegistry()
+	tool.RegisterBuiltinTools(tools)
+
+	// 创建子代理委派管理器
+	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
+	tools.Register(tool.DelegateTaskTool(delegateMgr))
+	tools.Register(tool.TaskStatusTool(delegateMgr))
+	tools.Register(tool.ListTasksTool(delegateMgr))
+
+	// 创建 MCP 客户端
+	mcpClient := tool.NewMCPClient()
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -121,7 +136,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 		tokenStore: tokenStore,
 		memory:     mem,
 		sessions:   sessions,
-		tools:      tool.NewRegistry(),
+		tools:      tools,
+		mcpClient:  mcpClient,
+		delegate:   delegateMgr,
 	}, nil
 }
 
@@ -348,6 +365,40 @@ func (a *Agent) SwitchModel(modelID string) error {
 
 	a.provider = p
 	return nil
+}
+
+// MCPClient 返回 MCP 客户端
+func (a *Agent) MCPClient() *tool.MCPClient {
+	return a.mcpClient
+}
+
+// Delegate 返回子代理委派管理器
+func (a *Agent) Delegate() *tool.DelegateManager {
+	return a.delegate
+}
+
+// LoadSkills 从目录加载 Skill 插件
+func (a *Agent) LoadSkills(skillsDir string) (int, error) {
+	loader := tool.NewSkillLoader(skillsDir)
+	skills, err := loader.LoadAll()
+	if err != nil {
+		return 0, fmt.Errorf("load skills: %w", err)
+	}
+
+	tool.RegisterSkillTools(a.tools, skills, nil)
+	return len(skills), nil
+}
+
+// ConnectMCPServer 连接 MCP Server
+func (a *Agent) ConnectMCPServer(name, url, apiKey string) {
+	a.mcpClient.AddServer(tool.MCPServerConfig{
+		Name:   name,
+		URL:    url,
+		APIKey: apiKey,
+	})
+
+	// 注册 MCP 工具
+	tool.RegisterMCPTools(a.tools, a.mcpClient)
 }
 
 // truncate 截断字符串

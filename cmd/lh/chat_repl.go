@@ -20,7 +20,7 @@ func startREPL(mgr *config.Manager) error {
 	}
 
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.4.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.5.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -102,7 +102,11 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (han
 		fmt.Println("  /model [name]      切换模型 (无参数显示当前)")
 		fmt.Println("  /models            列出可用模型")
 		fmt.Println("  /soul              显示当前 SOUL")
-		fmt.Println("  /tools             列出可用工具")
+		fmt.Println("  /tools             列出可用工具 (含权限)")
+		fmt.Println("  /skills [dir]      加载 Skill 插件")
+		fmt.Println("  /mcp <name> <url>  连接 MCP Server")
+		fmt.Println("  /approve <tool>    设置工具自动批准")
+		fmt.Println("  /deny <tool>       禁止工具使用")
 		fmt.Println("  /remember [x]      保存中期记忆")
 		fmt.Println("  /remember-long [x] 保存长期记忆")
 		fmt.Println("  /recall [x]       搜索记忆")
@@ -161,14 +165,12 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (han
 		return true, false
 
 	case "/tools":
-		tools := a.Tools().List()
-		if len(tools) == 0 {
+		list := a.Tools().FormatToolList()
+		if list == "" {
 			fmt.Println("🔧 暂无注册工具")
 		} else {
 			fmt.Println("🔧 可用工具:")
-			for _, t := range tools {
-				fmt.Printf("  - %s: %s\n", t.Name, t.Description)
-			}
+			fmt.Println(list)
 		}
 		return true, false
 
@@ -243,6 +245,57 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig) (han
 
 	case "/clear":
 		fmt.Print("\033[2J\033[H")
+		return true, false
+
+	case "/skills":
+		if arg == "" {
+			fmt.Println("用法: /skills <directory>")
+		} else {
+			count, err := a.LoadSkills(arg)
+			if err != nil {
+				fmt.Printf("❌ %v\n", err)
+			} else {
+				fmt.Printf("✅ 已加载 %d 个 Skill 插件\n", count)
+			}
+		}
+		return true, false
+
+	case "/mcp":
+		parts := strings.Fields(arg)
+		if len(parts) < 2 {
+			fmt.Println("用法: /mcp <name> <url> [api_key]")
+		} else {
+			apiKey := ""
+			if len(parts) > 2 {
+				apiKey = parts[2]
+			}
+			a.ConnectMCPServer(parts[0], parts[1], apiKey)
+			fmt.Printf("✅ 已连接 MCP Server: %s (%s)\n", parts[0], parts[1])
+		}
+		return true, false
+
+	case "/approve":
+		if arg == "" {
+			fmt.Println("用法: /approve <tool_name>")
+		} else {
+			if err := a.Tools().SetPermissionOverride(arg, 0); err != nil { // PermAuto = 0
+				fmt.Printf("❌ %v\n", err)
+			} else {
+				fmt.Printf("✅ 工具 %s 已设为自动批准\n", arg)
+			}
+		}
+		return true, false
+
+	case "/deny":
+		if arg == "" {
+			fmt.Println("用法: /deny <tool_name>")
+		} else {
+			if err := a.Tools().SetPermissionOverride(arg, 2); err != nil { // PermDeny = 2
+				fmt.Printf("❌ %v\n", err)
+			} else {
+				fmt.Printf("🔴 工具 %s 已禁止使用\n", arg)
+			}
+		}
 		return true, false
 
 	default:

@@ -1,0 +1,147 @@
+package tool
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestSkillLoaderLoad(t *testing.T) {
+	// 创建临时 skill 目录
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "test-skill")
+	os.MkdirAll(skillDir, 0755)
+
+	skillContent := "# Test Skill\n\nThis is a test skill for unit testing.\n\n## Tools\n\n- `search`: Search for information\n- `analyze`: Analyze data\n- **format**: Format output\n"
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	os.WriteFile(skillFile, []byte(skillContent), 0644)
+
+	loader := NewSkillLoader(tmpDir)
+	info, err := loader.Load(skillFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if info.Name != "Test Skill" {
+		t.Errorf("expected name 'Test Skill', got %s", info.Name)
+	}
+	if !info.Available {
+		t.Error("skill should be available")
+	}
+	if len(info.Tools) < 2 {
+		t.Errorf("expected at least 2 tools, got %d", len(info.Tools))
+	}
+}
+
+func TestSkillLoaderLoadAll(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// 创建两个 skill
+	for _, name := range []string{"skill-a", "skill-b"} {
+		skillDir := filepath.Join(tmpDir, name)
+		os.MkdirAll(skillDir, 0755)
+		os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# "+name+"\n\nDesc.\n"), 0644)
+	}
+
+	loader := NewSkillLoader(tmpDir)
+	skills, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Errorf("expected 2 skills, got %d", len(skills))
+	}
+}
+
+func TestSkillLoaderNoSkillsDir(t *testing.T) {
+	loader := NewSkillLoader("/nonexistent/path")
+	_, err := loader.LoadAll()
+	if err == nil {
+		t.Error("expected error for nonexistent dir")
+	}
+}
+
+func TestRegisterSkillTools(t *testing.T) {
+	r := NewRegistry()
+
+	skills := []*SkillInfo{
+		{
+			Name: "web-search",
+			Tools: []SkillToolDef{
+				{Name: "search", Description: "Search the web"},
+				{Name: "news", Description: "Get news"},
+			},
+			Available: true,
+		},
+	}
+
+	RegisterSkillTools(r, skills, nil)
+
+	if r.Count() != 2 {
+		t.Errorf("expected 2 skill tools, got %d", r.Count())
+	}
+
+	tool, ok := r.Get("skill_web-search_search")
+	if !ok {
+		t.Error("skill tool not found")
+	}
+	if tool.Category != CatSkill {
+		t.Errorf("expected CatSkill, got %s", tool.Category)
+	}
+	if tool.Source != "web-search" {
+		t.Errorf("expected source=web-search, got %s", tool.Source)
+	}
+}
+
+func TestRegisterSkillToolsWithHandler(t *testing.T) {
+	r := NewRegistry()
+
+	skills := []*SkillInfo{
+		{
+			Name: "test",
+			Tools: []SkillToolDef{
+				{Name: "echo", Description: "Echo"},
+			},
+			Available: true,
+		},
+	}
+
+	handler := func(toolName string, skillDir string) func(args map[string]any) (string, error) {
+		return func(args map[string]any) (string, error) {
+			return "handled: " + toolName, nil
+		}
+	}
+
+	RegisterSkillTools(r, skills, handler)
+
+	result, err := r.Call("skill_test_echo", nil)
+	if err != nil {
+		t.Fatalf("call skill tool: %v", err)
+	}
+	if result != "handled: echo" {
+		t.Errorf("expected 'handled: echo', got %s", result)
+	}
+}
+
+func TestParseToolEntry(t *testing.T) {
+	tests := []struct {
+		line        string
+		expectName  string
+		expectEmpty bool
+	}{
+		{"`search`: Search the web", "search", false},
+		{"**format**: Format output", "format", false},
+		{"analyze - Analyze data", "analyze", false},
+		{"no tool here", "", true},
+	}
+
+	for _, tt := range tests {
+		name, _ := parseToolEntry(tt.line)
+		if tt.expectEmpty && name != "" {
+			t.Errorf("expected empty name for %q, got %q", tt.line, name)
+		}
+		if !tt.expectEmpty && name != tt.expectName {
+			t.Errorf("expected name %q for %q, got %q", tt.expectName, tt.line, name)
+		}
+	}
+}
