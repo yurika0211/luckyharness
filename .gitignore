@@ -1,0 +1,4 @@
+# LuckyHarness
+.luckyharness/
+*.db
+lh
