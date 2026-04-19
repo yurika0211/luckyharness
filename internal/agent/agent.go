@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/memory"
@@ -24,6 +25,7 @@ type Agent struct {
 	memory       *memory.Store
 	sessions     *session.Manager
 	tools        *tool.Registry
+	chatCount    int // 对话计数，用于触发自动摘要
 }
 
 // New 创建 Agent
@@ -132,16 +134,8 @@ func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 		{Role: "system", Content: a.soul.SystemPrompt()},
 	}
 
-	// 加入记忆上下文
-	recent := a.memory.Recent(5)
-	if len(recent) > 0 {
-		var memCtx strings.Builder
-		memCtx.WriteString("[Recent Memory]\n")
-		for _, e := range recent {
-			memCtx.WriteString("- " + e.Content + "\n")
-		}
-		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
-	}
+	// 加入分层记忆上下文
+	messages = a.buildMemoryContext(messages)
 
 	// 加入用户消息
 	sess.AddMessage("user", userInput)
@@ -167,6 +161,21 @@ func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	// 保存会话
 	_ = sess.Save()
 
+	// 自动记忆：将对话存为短期记忆
+	a.chatCount++
+	a.memory.SaveShortTerm("User: "+userInput, "conversation")
+	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+
+	// 每 10 轮对话触发衰减
+	if a.chatCount%10 == 0 {
+		a.memory.Decay(0.05)
+	}
+
+	// 每 20 轮对话触发自动摘要
+	if a.chatCount%20 == 0 {
+		a.autoSummarize()
+	}
+
 	return response, nil
 }
 
@@ -178,15 +187,7 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 		{Role: "system", Content: a.soul.SystemPrompt()},
 	}
 
-	recent := a.memory.Recent(5)
-	if len(recent) > 0 {
-		var memCtx strings.Builder
-		memCtx.WriteString("[Recent Memory]\n")
-		for _, e := range recent {
-			memCtx.WriteString("- " + e.Content + "\n")
-		}
-		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
-	}
+	messages = a.buildMemoryContext(messages)
 
 	sess.AddMessage("user", userInput)
 	messages = append(messages, provider.Message{Role: "user", Content: userInput})
@@ -194,14 +195,110 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 	return a.provider.ChatStream(ctx, messages)
 }
 
-// Remember 保存一条记忆
+// buildMemoryContext 构建分层记忆上下文
+func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Message {
+	var memCtx strings.Builder
+
+	// 长期记忆：全部注入（核心身份/偏好）
+	longs := a.memory.ByTier(memory.TierLong)
+	if len(longs) > 0 {
+		memCtx.WriteString("[Core Memory — Long-term]\n")
+		for _, e := range longs {
+			memCtx.WriteString("- " + e.Content + "\n")
+		}
+		memCtx.WriteString("\n")
+	}
+
+	// 中期记忆：按权重取 top 10
+	mediums := a.memory.ByTier(memory.TierMedium)
+	if len(mediums) > 0 {
+		memCtx.WriteString("[Working Memory — Medium-term]\n")
+		limit := 10
+		if len(mediums) < limit {
+			limit = len(mediums)
+		}
+		for i := 0; i < limit; i++ {
+			memCtx.WriteString("- " + mediums[i].Content + "\n")
+		}
+		memCtx.WriteString("\n")
+	}
+
+	// 短期记忆：最近 5 条
+	shorts := a.memory.ByTier(memory.TierShort)
+	if len(shorts) > 0 {
+		memCtx.WriteString("[Recent Context — Short-term]\n")
+		limit := 5
+		if len(shorts) < limit {
+			limit = len(shorts)
+		}
+		for i := 0; i < limit; i++ {
+			memCtx.WriteString("- " + shorts[i].Content + "\n")
+		}
+	}
+
+	if memCtx.Len() > 0 {
+		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
+	}
+
+	return messages
+}
+
+// autoSummarize 自动摘要：将过多的短期记忆压缩为中期
+func (a *Agent) autoSummarize() {
+	shorts := a.memory.ByTier(memory.TierShort)
+	if len(shorts) <= 5 {
+		return // 短期记忆不多，不需要摘要
+	}
+
+	// 收集最早的短期记忆（保留最近 5 条）
+	var toSummarize []string
+	var ids []string
+	for i := 0; i < len(shorts)-5; i++ {
+		ids = append(ids, shorts[i].ID)
+		toSummarize = append(toSummarize, shorts[i].Content)
+	}
+
+	if len(ids) == 0 {
+		return
+	}
+
+	// 简单拼接摘要（v0.4.0: 后续可接入 LLM 生成更智能摘要）
+	summary := strings.Join(toSummarize, " | ")
+	if len(summary) > 500 {
+		summary = summary[:500] + "..."
+	}
+
+	a.memory.Summarize(ids, summary, "conversation")
+}
+
+// Remember 保存一条中期记忆
 func (a *Agent) Remember(content, category string) error {
 	return a.memory.Save(content, category)
+}
+
+// RememberLongTerm 保存一条长期记忆
+func (a *Agent) RememberLongTerm(content, category string) error {
+	return a.memory.SaveLongTerm(content, category)
 }
 
 // Recall 搜索记忆
 func (a *Agent) Recall(query string) []memory.Entry {
 	return a.memory.Search(query)
+}
+
+// MemoryStats 返回记忆统计
+func (a *Agent) MemoryStats() map[memory.Tier]int {
+	return a.memory.Stats()
+}
+
+// DecayMemory 执行记忆衰减
+func (a *Agent) DecayMemory(threshold float64) int {
+	return a.memory.Decay(threshold)
+}
+
+// PromoteMemory 提升记忆层级
+func (a *Agent) PromoteMemory(id string) error {
+	return a.memory.Promote(id)
 }
 
 // Soul 返回当前 SOUL
@@ -252,3 +349,14 @@ func (a *Agent) SwitchModel(modelID string) error {
 	a.provider = p
 	return nil
 }
+
+// truncate 截断字符串
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// unused suppress
+var _ = time.Second

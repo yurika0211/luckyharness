@@ -1,26 +1,99 @@
 package memory
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
-// Entry 代表一条记忆
-type Entry struct {
-	ID        string    `json:"id"`
-	Content   string    `json:"content"`
-	Category  string    `json:"category"`
-	CreatedAt time.Time `json:"created_at"`
+// --- 三层记忆架构 ---
+//
+// Layer 1: 短期 (Short-term) — 当前会话的对话历史，会话结束即消失
+// Layer 2: 中期 (Medium-term) — 日常记忆，自动摘要压缩，按时间衰减
+// Layer 3: 长期 (Long-term) — 持久核心记忆，类似 MEMORY.md，手动或自动提升
+
+// Tier 记忆层级
+type Tier int
+
+const (
+	TierShort  Tier = iota // 短期：会话内
+	TierMedium             // 中期：日常
+	TierLong               // 长期：持久
+)
+
+func (t Tier) String() string {
+	switch t {
+	case TierShort:
+		return "short"
+	case TierMedium:
+		return "medium"
+	case TierLong:
+		return "long"
+	default:
+		return "unknown"
+	}
 }
 
-// Store 管理持久记忆
+// Entry 代表一条记忆
+type Entry struct {
+	ID         string    `json:"id"`
+	Content    string    `json:"content"`
+	Category   string    `json:"category"`
+	Tier       Tier      `json:"tier"`
+	Importance float64   `json:"importance"` // 0.0 ~ 1.0，越高越重要
+	AccessCount int      `json:"access_count"` // 被检索次数
+	CreatedAt  time.Time `json:"created_at"`
+	AccessedAt time.Time `json:"accessed_at"` // 最后被检索时间
+	Tags       []string  `json:"tags,omitempty"`
+	SummaryOf  []string  `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
+}
+
+// Weight 计算记忆权重（用于排序和衰减）
+// 考虑：重要性 × 时间衰减 × 访问频率加成
+func (e *Entry) Weight(now time.Time) float64 {
+	// 时间衰减：指数衰减，半衰期取决于层级
+	halflife := e.halflife()
+	age := now.Sub(e.CreatedAt).Hours()
+	decay := 0.5 * (age / halflife) // log2 衰减
+	if decay < 0 {
+		decay = 0
+	}
+	timeFactor := 1.0 / (1.0 + decay)
+
+	// 访问频率加成：每被检索一次，权重 +5%
+	accessBonus := 1.0 + float64(e.AccessCount)*0.05
+	if accessBonus > 2.0 {
+		accessBonus = 2.0 // 上限 2x
+	}
+
+	return e.Importance * timeFactor * accessBonus
+}
+
+// halflife 返回该层级记忆的半衰期（小时）
+func (e *Entry) halflife() float64 {
+	switch e.Tier {
+	case TierShort:
+		return 1.0 // 1 小时
+	case TierMedium:
+		return 24.0 * 7 // 1 周
+	case TierLong:
+		return 24.0 * 365 // 1 年
+	default:
+		return 24.0
+	}
+}
+
+// Store 管理三层持久记忆
 type Store struct {
 	mu      sync.RWMutex
-	entries []Entry
+	entries map[string]*Entry // key: entry ID
 	dir     string
+	nextID  int64
 }
 
 // NewStore 创建记忆存储
@@ -29,7 +102,8 @@ func NewStore(dir string) (*Store, error) {
 		return nil, fmt.Errorf("create memory dir: %w", err)
 	}
 	s := &Store{
-		dir: dir,
+		entries: make(map[string]*Entry),
+		dir:     dir,
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -37,92 +111,396 @@ func NewStore(dir string) (*Store, error) {
 	return s, nil
 }
 
-// Save 保存一条记忆
+// Save 保存一条记忆（默认中期层级）
 func (s *Store) Save(content, category string) error {
+	return s.SaveWithTier(content, category, TierMedium, 0.5)
+}
+
+// SaveWithTier 保存一条指定层级的记忆
+func (s *Store) SaveWithTier(content, category string, tier Tier, importance float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entry := Entry{
-		ID:        fmt.Sprintf("%d", time.Now().UnixNano()),
-		Content:   content,
-		Category:  category,
-		CreatedAt: time.Now(),
+	now := time.Now()
+	entry := &Entry{
+		ID:         s.generateID(),
+		Content:    content,
+		Category:   category,
+		Tier:       tier,
+		Importance: importance,
+		CreatedAt:  now,
+		AccessedAt:  now,
 	}
-	s.entries = append(s.entries, entry)
+	s.entries[entry.ID] = entry
 	return s.persist()
 }
 
-// Search 搜索记忆
+// SaveLongTerm 保存长期记忆（高重要性）
+func (s *Store) SaveLongTerm(content, category string) error {
+	return s.SaveWithTier(content, category, TierLong, 0.9)
+}
+
+// SaveShortTerm 保存短期记忆（低重要性）
+func (s *Store) SaveShortTerm(content, category string) error {
+	return s.SaveWithTier(content, category, TierShort, 0.3)
+}
+
+// Get 按 ID 获取记忆
+func (s *Store) Get(id string) (*Entry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	e, ok := s.entries[id]
+	if !ok {
+		return nil, fmt.Errorf("memory not found: %s", id)
+	}
+	return e, nil
+}
+
+// Search 搜索记忆（关键词匹配 + 权重排序）
 func (s *Store) Search(query string) []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	queryLower := strings.ToLower(query)
+
+	var scored []entryScore
+	for _, e := range s.entries {
+		contentLower := strings.ToLower(e.Content)
+		categoryLower := strings.ToLower(e.Category)
+
+		// 关键词匹配
+		matchScore := 0.0
+		if strings.Contains(contentLower, queryLower) {
+			matchScore = 1.0
+			// 精确匹配加分
+			if contentLower == queryLower {
+				matchScore = 2.0
+			}
+		}
+		if strings.Contains(categoryLower, queryLower) {
+			matchScore += 0.5
+		}
+		// 标签匹配
+		for _, tag := range e.Tags {
+			if strings.Contains(strings.ToLower(tag), queryLower) {
+				matchScore += 0.3
+				break
+			}
+		}
+
+		if matchScore > 0 {
+			// 综合分 = 匹配分 × 权重
+			totalScore := matchScore * e.Weight(now)
+			scored = append(scored, entryScore{entry: *e, score: totalScore})
+
+			// 更新访问计数
+			e.AccessCount++
+			e.AccessedAt = now
+		}
+	}
+
+	// 按综合分降序排序
+	sort.Slice(scored, func(i, j int) bool {
+		return scored[i].score > scored[j].score
+	})
+
+	results := make([]Entry, len(scored))
+	for i, s := range scored {
+		results[i] = s.entry
+	}
+
+	// 持久化访问计数更新
+	_ = s.persist()
+
+	return results
+}
+
+// Recent 返回最近的 N 条记忆（按权重排序）
+func (s *Store) Recent(n int) []Entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	now := time.Now()
+	all := make([]entryScore, 0, len(s.entries))
+	for _, e := range s.entries {
+		all = append(all, entryScore{entry: *e, score: e.Weight(now)})
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].score > all[j].score
+	})
+
+	if n > len(all) {
+		n = len(all)
+	}
+
+	results := make([]Entry, n)
+	for i := 0; i < n; i++ {
+		results[i] = all[i].entry
+	}
+	return results
+}
+
+// ByTier 返回指定层级的记忆
+func (s *Store) ByTier(tier Tier) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	var results []Entry
 	for _, e := range s.entries {
-		if contains(e.Content, query) || contains(e.Category, query) {
-			results = append(results, e)
+		if e.Tier == tier {
+			results = append(results, *e)
 		}
 	}
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreatedAt.After(results[j].CreatedAt)
+	})
 	return results
 }
 
-// Recent 返回最近的 N 条记忆
-func (s *Store) Recent(n int) []Entry {
+// ByCategory 返回指定分类的记忆
+func (s *Store) ByCategory(category string) []Entry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if n > len(s.entries) {
-		n = len(s.entries)
+	var results []Entry
+	for _, e := range s.entries {
+		if strings.EqualFold(e.Category, category) {
+			results = append(results, *e)
+		}
 	}
-	results := make([]Entry, n)
-	copy(results, s.entries[len(s.entries)-n:])
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].CreatedAt.After(results[j].CreatedAt)
+	})
 	return results
 }
 
+// Delete 删除一条记忆
+func (s *Store) Delete(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.entries[id]; !ok {
+		return fmt.Errorf("memory not found: %s", id)
+	}
+	delete(s.entries, id)
+	return s.persist()
+}
+
+// Promote 将记忆提升到更高层级
+func (s *Store) Promote(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.entries[id]
+	if !ok {
+		return fmt.Errorf("memory not found: %s", id)
+	}
+
+	switch e.Tier {
+	case TierShort:
+		e.Tier = TierMedium
+		e.Importance = max(e.Importance, 0.5)
+	case TierMedium:
+		e.Tier = TierLong
+		e.Importance = max(e.Importance, 0.8)
+	case TierLong:
+		// 已经是最高层级
+		return nil
+	}
+
+	return s.persist()
+}
+
+// Decay 执行记忆衰减：删除权重过低的记忆
+func (s *Store) Decay(threshold float64) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var toDelete []string
+
+	for id, e := range s.entries {
+		// 长期记忆不衰减
+		if e.Tier == TierLong {
+			continue
+		}
+		if e.Weight(now) < threshold {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	for _, id := range toDelete {
+		delete(s.entries, id)
+	}
+
+	if len(toDelete) > 0 {
+		s.persist()
+	}
+	return len(toDelete)
+}
+
+// Summarize 将多条记忆压缩为一条摘要
+func (s *Store) Summarize(ids []string, summary string, category string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 验证原始条目存在
+	var sourceIDs []string
+	for _, id := range ids {
+		if _, ok := s.entries[id]; ok {
+			sourceIDs = append(sourceIDs, id)
+		}
+	}
+
+	if len(sourceIDs) == 0 {
+		return fmt.Errorf("no valid source entries to summarize")
+	}
+
+	// 创建摘要条目
+	now := time.Now()
+	entry := &Entry{
+		ID:        s.generateID(),
+		Content:   summary,
+		Category:  category,
+		Tier:      TierMedium,
+		Importance: 0.6,
+		CreatedAt: now,
+		AccessedAt: now,
+		SummaryOf: sourceIDs,
+	}
+	s.entries[entry.ID] = entry
+
+	// 删除原始条目
+	for _, id := range sourceIDs {
+		delete(s.entries, id)
+	}
+
+	return s.persist()
+}
+
+// Stats 返回记忆统计
+func (s *Store) Stats() map[Tier]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	stats := map[Tier]int{
+		TierShort: 0,
+		TierMedium: 0,
+		TierLong:  0,
+	}
+	for _, e := range s.entries {
+		stats[e.Tier]++
+	}
+	return stats
+}
+
+// Count 返回总记忆数
+func (s *Store) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.entries)
+}
+
+// --- 内部方法 ---
+
+type entryScore struct {
+	entry Entry
+	score float64
+}
+
+func (s *Store) generateID() string {
+	s.nextID++
+	return fmt.Sprintf("mem_%d_%d", time.Now().Unix(), s.nextID)
+}
+
 func (s *Store) load() error {
-	// v0.1.0: 简单的行式存储
-	path := filepath.Join(s.dir, "memory.txt")
+	path := filepath.Join(s.dir, "memory.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			// 尝试迁移旧格式
+			return s.migrateOldFormat()
 		}
 		return fmt.Errorf("load memory: %w", err)
 	}
 
+	var entries []*Entry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return fmt.Errorf("parse memory: %w", err)
+	}
+
+	maxID := int64(0)
+	for _, e := range entries {
+		s.entries[e.ID] = e
+		// 追踪最大 ID
+		var idNum int64
+		fmt.Sscanf(e.ID, "mem_%d_%d", new(int64), &idNum)
+		if idNum > maxID {
+			maxID = idNum
+		}
+	}
+	s.nextID = maxID
+
+	return nil
+}
+
+// migrateOldFormat 从 v0.1.0 的纯文本格式迁移
+func (s *Store) migrateOldFormat() error {
+	oldPath := filepath.Join(s.dir, "memory.txt")
+	data, err := os.ReadFile(oldPath)
+	if err != nil {
+		return nil // 没有旧文件也正常
+	}
+
 	lines := splitLines(string(data))
-	for _, line := range lines {
+	now := time.Now()
+	for i, line := range lines {
 		if line == "" {
 			continue
 		}
-		s.entries = append(s.entries, Entry{
-			Content: line,
-		})
+		entry := &Entry{
+			ID:         fmt.Sprintf("mem_migrated_%d", i),
+			Content:    line,
+			Category:   "migrated",
+			Tier:       TierMedium,
+			Importance: 0.5,
+			CreatedAt:  now,
+			AccessedAt: now,
+		}
+		s.entries[entry.ID] = entry
+	}
+
+	if len(s.entries) > 0 {
+		s.nextID = int64(len(s.entries))
+		return s.persist()
 	}
 	return nil
 }
 
 func (s *Store) persist() error {
-	path := filepath.Join(s.dir, "memory.txt")
-	var data string
+	path := filepath.Join(s.dir, "memory.json")
+
+	entries := make([]*Entry, 0, len(s.entries))
 	for _, e := range s.entries {
-		data += e.Content + "\n"
+		entries = append(entries, e)
 	}
-	return os.WriteFile(path, []byte(data), 0600)
+
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal memory: %w", err)
+	}
+
+	return os.WriteFile(path, data, 0600)
 }
 
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func max(a, b float64) float64 {
+	if a > b {
+		return a
 	}
-	return false
+	return b
 }
 
 func splitLines(s string) []string {
