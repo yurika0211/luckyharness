@@ -93,7 +93,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.10.0")
+			fmt.Println("🍀 LuckyHarness v0.11.0")
 		},
 	}
 
