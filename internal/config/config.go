@@ -19,6 +19,17 @@ type Config struct {
 	MaxTokens   int               `yaml:"max_tokens"`
 	Temperature float64           `yaml:"temperature"`
 	Extra       map[string]string `yaml:"extra,omitempty"`
+
+	// v0.3.0: 降级链配置
+	Fallbacks   []FallbackEntry   `yaml:"fallbacks,omitempty"`
+}
+
+// FallbackEntry 是降级链中的一个节点配置
+type FallbackEntry struct {
+	Provider string `yaml:"provider"`
+	APIKey   string `yaml:"api_key,omitempty"`
+	APIBase  string `yaml:"api_base,omitempty"`
+	Model    string `yaml:"model,omitempty"`
 }
 
 // DefaultConfig 返回默认配置

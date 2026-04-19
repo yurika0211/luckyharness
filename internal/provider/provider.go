@@ -73,6 +73,9 @@ func NewRegistry() *Registry {
 	}
 	r.RegisterFactory("openai", NewOpenAIProvider)
 	r.RegisterFactory("openai-compatible", NewOpenAICompatibleProvider)
+	r.RegisterFactory("anthropic", NewAnthropicProvider)
+	r.RegisterFactory("ollama", NewOllamaProvider)
+	r.RegisterFactory("openrouter", NewOpenRouterProvider)
 	return r
 }
 
