@@ -206,7 +206,7 @@ const (
 	EventError                     // 错误
 )
 
-// executeTool 执行工具调用
+// executeTool 执行工具调用（通过 Gateway）
 func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, error) {
 	// 解析参数
 	var args map[string]any
@@ -216,35 +216,13 @@ func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, e
 		}
 	}
 
-	// 检查工具是否存在
-	_, ok := a.Tools().Get(name)
-	if !ok {
-		return "", fmt.Errorf("tool not found: %s", name)
-	}
-
-	// 权限检查
-	perm, err := a.Tools().CheckPermission(name)
+	// 通过 Gateway 执行（统一入口：路由 → 权限 → 配额 → 计量 → 执行）
+	result, err := a.gateway.Execute(name, args, "")
 	if err != nil {
 		return "", err
 	}
 
-	if perm == tool.PermDeny {
-		return "", fmt.Errorf("tool %s is denied", name)
-	}
-
-	if perm == tool.PermApprove && !autoApprove {
-		// v0.5.0: 需要审批的工具
-		// 在 REPL 模式下，审批由 REPL 处理
-		// 在 API 模式下，autoApprove=false 时拒绝
-		return fmt.Sprintf("[Approval Required] Tool '%s' requires user approval. Use --yolo flag or approve in REPL.", name), nil
-	}
-
-	result, err := a.Tools().Call(name, args)
-	if err != nil {
-		return "", err
-	}
-
-	return result, nil
+	return result.Output, nil
 }
 
 // buildMessages 构建消息列表

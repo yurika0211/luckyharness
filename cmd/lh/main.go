@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +16,7 @@ import (
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/tool"
 	"path/filepath"
 )
 
@@ -91,7 +93,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.9.0")
+			fmt.Println("🍀 LuckyHarness v0.10.0")
 		},
 	}
 
@@ -209,8 +211,131 @@ func main() {
 	debugShareCmd.Flags().StringP("output", "o", "", "输出路径")
 	debugCmd.AddCommand(debugShareCmd)
 
+	// ===== v0.10.0: Gateway 命令 =====
+	gatewayCmd := &cobra.Command{
+		Use:   "gateway",
+		Short: "工具网关管理",
+	}
+	gatewayInfoCmd := &cobra.Command{
+		Use:   "info",
+		Short: "显示网关状态",
+		RunE:  runGatewayInfo,
+	}
+	gatewayRouteCmd := &cobra.Command{
+		Use:   "route",
+		Short: "管理路由规则",
+	}
+	gatewayRouteListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出路由规则",
+		RunE:  runGatewayRouteList,
+	}
+	gatewayRouteAddCmd := &cobra.Command{
+		Use:   "add [name] [pattern] [target] [priority]",
+		Short: "添加路由规则",
+		Args:  cobra.ExactArgs(4),
+		RunE:  runGatewayRouteAdd,
+	}
+	gatewayRouteRemoveCmd := &cobra.Command{
+		Use:   "remove [name]",
+		Short: "移除路由规则",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runGatewayRouteRemove,
+	}
+	gatewayAliasCmd := &cobra.Command{
+		Use:   "alias",
+		Short: "管理工具别名",
+	}
+	gatewayAliasListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出别名",
+		RunE:  runGatewayAliasList,
+	}
+	gatewayAliasAddCmd := &cobra.Command{
+		Use:   "add [alias] [target]",
+		Short: "添加别名",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runGatewayAliasAdd,
+	}
+	gatewayAliasRemoveCmd := &cobra.Command{
+		Use:   "remove [alias]",
+		Short: "移除别名",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runGatewayAliasRemove,
+	}
+	gatewayAliasCmd.AddCommand(gatewayAliasListCmd, gatewayAliasAddCmd, gatewayAliasRemoveCmd)
+	gatewayRouteCmd.AddCommand(gatewayRouteListCmd, gatewayRouteAddCmd, gatewayRouteRemoveCmd)
+	gatewayCmd.AddCommand(gatewayInfoCmd, gatewayRouteCmd, gatewayAliasCmd)
+
+	// ===== v0.10.0: Subscription 命令 =====
+	subCmd := &cobra.Command{
+		Use:   "sub",
+		Short: "订阅管理",
+	}
+	subListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出所有订阅",
+		RunE:  runSubList,
+	}
+	subInfoCmd := &cobra.Command{
+		Use:   "info [user_id]",
+		Short: "查看用户订阅详情",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSubInfo,
+	}
+	subSubscribeCmd := &cobra.Command{
+		Use:   "subscribe [user_id] [tier] [duration]",
+		Short: "订阅 (tier: free/basic/pro/enterprise, duration: e.g. 30d)",
+		Args:  cobra.ExactArgs(3),
+		RunE:  runSubSubscribe,
+	}
+	subUnsubscribeCmd := &cobra.Command{
+		Use:   "unsubscribe [user_id]",
+		Short: "取消订阅",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSubUnsubscribe,
+	}
+	subCmd.AddCommand(subListCmd, subInfoCmd, subSubscribeCmd, subUnsubscribeCmd)
+
+	// ===== v0.10.0: Usage 命令 =====
+	usageCmd := &cobra.Command{
+		Use:   "usage",
+		Short: "工具使用统计",
+	}
+	usageStatsCmd := &cobra.Command{
+		Use:   "stats [user_id]",
+		Short: "查看用户使用统计",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runUsageStats,
+	}
+	usageQuotaCmd := &cobra.Command{
+		Use:   "quota",
+		Short: "管理配额",
+	}
+	usageQuotaSetCmd := &cobra.Command{
+		Use:   "set [user_id] [tool_name] [window] [limit]",
+		Short: "设置配额 (window: hourly/daily/monthly)",
+		Args:  cobra.ExactArgs(4),
+		RunE:  runUsageQuotaSet,
+	}
+	usageQuotaListCmd := &cobra.Command{
+		Use:   "list [user_id]",
+		Short: "列出用户配额",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runUsageQuotaList,
+	}
+	usageQuotaRemoveCmd := &cobra.Command{
+		Use:   "remove [user_id] [tool_name]",
+		Short: "移除配额",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runUsageQuotaRemove,
+	}
+	usageQuotaCmd.AddCommand(usageQuotaSetCmd, usageQuotaListCmd, usageQuotaRemoveCmd)
+	usageCmd.AddCommand(usageStatsCmd, usageQuotaCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
-		profileCmd, backupCmd, dashboardCmd, debugCmd)
+		profileCmd, backupCmd, dashboardCmd, debugCmd,
+		gatewayCmd, subCmd, usageCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -675,5 +800,342 @@ func runDebugShare(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("✅ 调试信息已导出: %s\n", path)
+	return nil
+}
+
+// ===== v0.10.0: Gateway 命令实现 =====
+
+func getAgent() (*agent.Agent, error) {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return nil, err
+	}
+	if err := mgr.Load(); err != nil {
+		return nil, err
+	}
+	return agent.New(mgr)
+}
+
+func runGatewayInfo(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	gw := a.Gateway()
+	tools := a.Tools()
+
+	fmt.Println("🔀 LuckyHarness 工具网关")
+	fmt.Printf("  注册工具: %d\n", tools.Count())
+	fmt.Println()
+
+	// 按分类列出
+	for _, cat := range []tool.Category{tool.CatBuiltin, tool.CatSkill, tool.CatMCP, tool.CatDelegate} {
+		tools := tools.ListByCategory(cat)
+		if len(tools) == 0 {
+			continue
+		}
+		fmt.Printf("  [%s]\n", cat)
+		for _, t := range tools {
+			status := "✅"
+			if !t.Enabled {
+				status = "❌"
+			}
+			fmt.Printf("    %s %s: %s\n", status, t.Name, t.Description)
+		}
+	}
+
+	fmt.Println()
+	fmt.Println(gw.Router().FormatRoutes())
+	return nil
+}
+
+func runGatewayRouteList(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	routes := a.Gateway().Router().ListRoutes()
+	if len(routes) == 0 {
+		fmt.Println("📋 暂无路由规则")
+		return nil
+	}
+
+	fmt.Println("📋 路由规则:")
+	for _, r := range routes {
+		status := "✅"
+		if !r.Enabled {
+			status = "❌"
+		}
+		fmt.Printf("  %s [%d] %s: %s → %s\n", status, r.Priority, r.Name, r.ToolPattern, r.Target)
+	}
+	return nil
+}
+
+func runGatewayRouteAdd(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	var priority int
+	fmt.Sscanf(args[3], "%d", &priority)
+
+	a.Gateway().Router().AddRoute(tool.RouteRule{
+		Name:        args[0],
+		Priority:    priority,
+		ToolPattern: args[1],
+		Target:      args[2],
+		Enabled:     true,
+	})
+
+	fmt.Printf("✅ 路由规则已添加: %s (%s → %s)\n", args[0], args[1], args[2])
+	return nil
+}
+
+func runGatewayRouteRemove(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	a.Gateway().Router().RemoveRoute(args[0])
+	fmt.Printf("🗑️ 路由规则已移除: %s\n", args[0])
+	return nil
+}
+
+func runGatewayAliasList(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	aliases := a.Gateway().Router().ListAliases()
+	if len(aliases) == 0 {
+		fmt.Println("📋 暂无别名")
+		return nil
+	}
+
+	fmt.Println("📋 工具别名:")
+	for alias, target := range aliases {
+		fmt.Printf("  %s → %s\n", alias, target)
+	}
+	return nil
+}
+
+func runGatewayAliasAdd(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	if err := a.Gateway().Router().AddAlias(args[0], args[1]); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 别名已添加: %s → %s\n", args[0], args[1])
+	return nil
+}
+
+func runGatewayAliasRemove(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	a.Gateway().Router().RemoveAlias(args[0])
+	fmt.Printf("🗑️ 别名已移除: %s\n", args[0])
+	return nil
+}
+
+// ===== v0.10.0: Subscription 命令实现 =====
+
+func parseDuration(s string) (time.Duration, error) {
+	// 支持 30d, 7d, 1h, 24h 等格式
+	if len(s) == 0 {
+		return 0, fmt.Errorf("empty duration")
+	}
+
+	unit := s[len(s)-1]
+	value := s[:len(s)-1]
+
+	var num int
+	if _, err := fmt.Sscanf(value, "%d", &num); err != nil {
+		return 0, fmt.Errorf("invalid duration: %s", s)
+	}
+
+	switch unit {
+	case 'd':
+		return time.Duration(num) * 24 * time.Hour, nil
+	case 'h':
+		return time.Duration(num) * time.Hour, nil
+	case 'm':
+		return time.Duration(num) * time.Minute, nil
+	default:
+		return 0, fmt.Errorf("unknown duration unit: %c (use d/h/m)", unit)
+	}
+}
+
+func runSubList(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	subs := a.Gateway().Subscriptions().ListSubscriptions()
+	if len(subs) == 0 {
+		fmt.Println("📋 暂无订阅")
+		return nil
+	}
+
+	fmt.Println("📋 订阅列表:")
+	for _, s := range subs {
+		active := "✅"
+		if !s.IsActive() {
+			active = "❌"
+		}
+		fmt.Printf("  %s %s: %s (到期: %s)\n", active, s.UserID, s.Tier, s.ExpiresAt.Format("2006-01-02"))
+	}
+	return nil
+}
+
+func runSubInfo(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	sub := a.Gateway().Subscriptions().GetSubscription(args[0])
+	if sub == nil {
+		fmt.Printf("📋 用户 %s 无订阅 (Free 级)\n", args[0])
+		return nil
+	}
+
+	fmt.Printf("📋 订阅详情: %s\n", args[0])
+	fmt.Printf("  等级:     %s\n", sub.Tier)
+	fmt.Printf("  开始时间: %s\n", sub.StartedAt.Format("2006-01-02 15:04"))
+	fmt.Printf("  到期时间: %s\n", sub.ExpiresAt.Format("2006-01-02 15:04"))
+	fmt.Printf("  状态:     %s\n", map[bool]string{true: "✅ 有效", false: "❌ 已过期"}[sub.IsActive()])
+	fmt.Printf("  自动续费: %v\n", sub.AutoRenew)
+
+	// 显示等级配置
+	config := a.Gateway().Subscriptions().GetTierConfig(sub.Tier)
+	fmt.Printf("  每日限额: ", )
+	if config.MaxCallsPerDay == 0 {
+		fmt.Println("无限")
+	} else {
+		fmt.Printf("%d\n", config.MaxCallsPerDay)
+	}
+	fmt.Printf("  每小时限额: ")
+	if config.MaxCallsPerHour == 0 {
+		fmt.Println("无限")
+	} else {
+		fmt.Printf("%d\n", config.MaxCallsPerHour)
+	}
+	return nil
+}
+
+func runSubSubscribe(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	tier, err := tool.ParseSubTier(args[1])
+	if err != nil {
+		return err
+	}
+
+	duration, err := parseDuration(args[2])
+	if err != nil {
+		return err
+	}
+
+	if err := a.Gateway().Subscriptions().Subscribe(args[0], tier, duration); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 用户 %s 已订阅 %s (%s)\n", args[0], tier, args[2])
+	return nil
+}
+
+func runSubUnsubscribe(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	a.Gateway().Subscriptions().Unsubscribe(args[0])
+	fmt.Printf("🗑️ 用户 %s 已取消订阅\n", args[0])
+	return nil
+}
+
+// ===== v0.10.0: Usage 命令实现 =====
+
+func runUsageStats(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	stats := a.Gateway().Tracker().GetAllUsage(args[0])
+	if len(stats) == 0 {
+		fmt.Printf("📋 用户 %s 暂无使用记录\n", args[0])
+		return nil
+	}
+
+	fmt.Printf("📊 用户 %s 使用统计:\n", args[0])
+	for _, s := range stats {
+		fmt.Println(s.Format())
+	}
+	return nil
+}
+
+func runUsageQuotaSet(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	var limit int
+	fmt.Sscanf(args[3], "%d", &limit)
+
+	if err := a.Gateway().Tracker().SetQuota(args[0], args[1], args[2], limit); err != nil {
+		return err
+	}
+
+	fmt.Printf("✅ 配额已设置: %s/%s = %d/%s\n", args[0], args[1], limit, args[2])
+	return nil
+}
+
+func runUsageQuotaList(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	quotas := a.Gateway().Tracker().ListQuotas(args[0])
+	if len(quotas) == 0 {
+		fmt.Printf("📋 用户 %s 暂无配额限制\n", args[0])
+		return nil
+	}
+
+	fmt.Printf("📋 用户 %s 配额:\n", args[0])
+	for _, q := range quotas {
+		fmt.Printf("  %s: %d/%d (%s, 重置: %s)\n",
+			q.ToolName, q.Used, q.Limit, q.Window, q.ResetAt.Format("2006-01-02 15:04"))
+	}
+	return nil
+}
+
+func runUsageQuotaRemove(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	a.Gateway().Tracker().RemoveQuota(args[0], args[1])
+	fmt.Printf("🗑️ 配额已移除: %s/%s\n", args[0], args[1])
 	return nil
 }

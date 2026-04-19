@@ -25,6 +25,7 @@ type Agent struct {
 	memory       *memory.Store
 	sessions     *session.Manager
 	tools        *tool.Registry
+	gateway      *tool.Gateway          // 统一工具网关
 	mcpClient    *tool.MCPClient         // MCP 客户端
 	delegate     *tool.DelegateManager   // 子代理委派管理器
 	chatCount    int // 对话计数，用于触发自动摘要
@@ -127,6 +128,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// 创建 MCP 客户端
 	mcpClient := tool.NewMCPClient()
 
+	// 创建统一工具网关
+	gateway := tool.NewGateway(tools)
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -137,6 +141,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		memory:     mem,
 		sessions:   sessions,
 		tools:      tools,
+		gateway:    gateway,
 		mcpClient:  mcpClient,
 		delegate:   delegateMgr,
 	}, nil
@@ -375,6 +380,11 @@ func (a *Agent) MCPClient() *tool.MCPClient {
 // Delegate 返回子代理委派管理器
 func (a *Agent) Delegate() *tool.DelegateManager {
 	return a.delegate
+}
+
+// Gateway 返回统一工具网关
+func (a *Agent) Gateway() *tool.Gateway {
+	return a.gateway
 }
 
 // LoadSkills 从目录加载 Skill 插件
