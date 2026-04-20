@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -10,6 +11,8 @@ import (
 
 // Metrics 指标收集器
 type Metrics struct {
+	mu sync.RWMutex // 保护 ProviderCalls/ProviderErrors/ProviderLatency map
+
 	// 请求计数
 	TotalRequests   atomic.Int64
 	ChatRequests    atomic.Int64
@@ -105,6 +108,8 @@ func NewMetrics() *Metrics {
 
 // RegisterProvider 注册一个 Provider 的指标
 func (m *Metrics) RegisterProvider(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if _, ok := m.ProviderCalls[name]; !ok {
 		m.ProviderCalls[name] = &atomic.Int64{}
 		m.ProviderErrors[name] = &atomic.Int64{}
@@ -115,10 +120,17 @@ func (m *Metrics) RegisterProvider(name string) {
 // RecordProviderCall 记录一次 Provider 调用
 func (m *Metrics) RecordProviderCall(provider string, latency time.Duration, err bool) {
 	m.RegisterProvider(provider)
-	m.ProviderCalls[provider].Add(1)
-	m.ProviderLatency[provider].Observe(latency)
+	m.mu.RLock()
+	calls := m.ProviderCalls[provider]
+	lat := m.ProviderLatency[provider]
+	m.mu.RUnlock()
+	calls.Add(1)
+	lat.Observe(latency)
 	if err {
-		m.ProviderErrors[provider].Add(1)
+		m.mu.RLock()
+		errors := m.ProviderErrors[provider]
+		m.mu.RUnlock()
+		errors.Add(1)
 		m.ErrorRequests.Add(1)
 	}
 }
@@ -205,6 +217,7 @@ func (m *Metrics) Snapshot() *MetricsSnapshot {
 		Providers:       make(map[string]ProviderStats),
 	}
 
+	m.mu.RLock()
 	for name, calls := range m.ProviderCalls {
 		errors := int64(0)
 		if e, ok := m.ProviderErrors[name]; ok {
@@ -223,6 +236,7 @@ func (m *Metrics) Snapshot() *MetricsSnapshot {
 			LatencyMs: latencyAvg,
 		}
 	}
+	m.mu.RUnlock()
 
 	return snap
 }
