@@ -37,30 +37,35 @@ func NewConfigWatcher(mgr *Manager, interval time.Duration) *ConfigWatcher {
 
 // OnChange 设置配置变化回调
 func (w *ConfigWatcher) OnChange(fn func(oldCfg, newCfg *Config)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.onChange = fn
 }
 
 // OnError 设置错误回调
 func (w *ConfigWatcher) OnError(fn func(err error)) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.onError = fn
 }
 
 // Start 启动配置监控
 func (w *ConfigWatcher) Start() error {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.running {
-		w.mu.Unlock()
 		return fmt.Errorf("watcher already running")
 	}
 	w.running = true
-	w.mu.Unlock()
 
 	// 记录初始修改时间
 	if info, err := os.Stat(w.cfgPath); err == nil {
 		w.lastMod = info.ModTime()
 	}
 
-	go w.watchLoop()
+	// 在锁内捕获 stopCh 引用，避免 race
+	stopCh := w.stopCh
+	go w.watchLoop(stopCh)
 	return nil
 }
 
@@ -90,14 +95,14 @@ func (w *ConfigWatcher) GetConfig() *Config {
 	return &cp
 }
 
-// watchLoop 监控循环
-func (w *ConfigWatcher) watchLoop() {
+// watchLoop 监控循环（接收 stopCh 引用，避免与 Stop 的 data race）
+func (w *ConfigWatcher) watchLoop(stopCh chan struct{}) {
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-w.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			w.checkAndReload()
@@ -115,8 +120,12 @@ func (w *ConfigWatcher) checkAndReload() {
 		return
 	}
 
-	// 检查修改时间
-	if !info.ModTime().After(w.lastMod) {
+	// 检查修改时间（加锁读 lastMod）
+	w.mu.RLock()
+	lastMod := w.lastMod
+	w.mu.RUnlock()
+
+	if !info.ModTime().After(lastMod) {
 		return // 没有变化
 	}
 
@@ -136,6 +145,7 @@ func (w *ConfigWatcher) checkAndReload() {
 	// 获取旧配置
 	w.mu.RLock()
 	oldCfg := *w.config
+	onChange := w.onChange
 	w.mu.RUnlock()
 
 	// 更新配置
@@ -145,15 +155,18 @@ func (w *ConfigWatcher) checkAndReload() {
 	w.mu.Unlock()
 
 	// 触发回调
-	if w.onChange != nil {
-		w.onChange(&oldCfg, &newCfg)
+	if onChange != nil {
+		onChange(&oldCfg, &newCfg)
 	}
 }
 
 // emitError 触发错误回调
 func (w *ConfigWatcher) emitError(err error) {
-	if w.onError != nil {
-		w.onError(err)
+	w.mu.RLock()
+	fn := w.onError
+	w.mu.RUnlock()
+	if fn != nil {
+		fn(err)
 	}
 }
 
@@ -175,13 +188,14 @@ func (w *ConfigWatcher) ForceReload() error {
 	w.mu.Lock()
 	oldCfg := *w.config
 	w.config = &newCfg
+	onChange := w.onChange
 	if info, err := os.Stat(w.cfgPath); err == nil {
 		w.lastMod = info.ModTime()
 	}
 	w.mu.Unlock()
 
-	if w.onChange != nil {
-		w.onChange(&oldCfg, &newCfg)
+	if onChange != nil {
+		onChange(&oldCfg, &newCfg)
 	}
 
 	return nil
@@ -253,10 +267,6 @@ func (d *ConfigDiff) Format() string {
 	}
 	return result
 }
-
-// Ensure ConfigWatcher uses Manager's unexported fields
-// We need to expose them or use a different approach.
-// Let's add helper methods to Manager instead.
 
 // WatchConfig 启动配置文件监控
 func (m *Manager) WatchConfig(interval time.Duration) (*ConfigWatcher, error) {
