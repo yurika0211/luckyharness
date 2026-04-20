@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sync"
+	"sync/atomic"
 )
 
 // Embedder is the interface for embedding providers.
@@ -59,10 +60,10 @@ func (c *EmbeddingCache) Get(key string) []float64 {
 	defer c.mu.RUnlock()
 	vec, ok := c.items[key]
 	if !ok {
-		c.miss++
+		atomic.AddInt64(&c.miss, 1)
 		return nil
 	}
-	c.hits++
+	atomic.AddInt64(&c.hits, 1)
 	return vec
 }
 
