@@ -94,7 +94,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.14.0")
+			fmt.Println("🍀 LuckyHarness v0.15.0")
 		},
 	}
 
@@ -370,9 +370,65 @@ func main() {
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
 
+	// ===== v0.15.0: Plugin 命令 =====
+	pluginCmd := &cobra.Command{
+		Use:   "plugin",
+		Short: "插件管理",
+	}
+	pluginInstallCmd := &cobra.Command{
+		Use:   "install <path>",
+		Short: "安装插件（本地路径）",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginInstall,
+	}
+	pluginListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出已安装插件",
+		RunE:  runPluginList,
+	}
+	pluginRemoveCmd := &cobra.Command{
+		Use:   "remove <name>",
+		Short: "卸载插件",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginRemove,
+	}
+	pluginUpdateCmd := &cobra.Command{
+		Use:   "update <name> <path>",
+		Short: "更新插件",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runPluginUpdate,
+	}
+	pluginSearchCmd := &cobra.Command{
+		Use:   "search <query>",
+		Short: "搜索插件",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginSearch,
+	}
+	pluginInfoCmd := &cobra.Command{
+		Use:   "info <name>",
+		Short: "查看插件详情",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginInfo,
+	}
+	pluginEnableCmd := &cobra.Command{
+		Use:   "enable <name>",
+		Short: "启用插件",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginEnable,
+	}
+	pluginDisableCmd := &cobra.Command{
+		Use:   "disable <name>",
+		Short: "禁用插件",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runPluginDisable,
+	}
+	pluginCmd.AddCommand(pluginInstallCmd, pluginListCmd, pluginRemoveCmd,
+		pluginUpdateCmd, pluginSearchCmd, pluginInfoCmd,
+		pluginEnableCmd, pluginDisableCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

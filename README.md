@@ -32,6 +32,100 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.12.0 | API Server | HTTP RESTful API + SSE 流式 + 认证限流 |
 | v0.13.0 | Context Window | Token 估算 + 4 种裁剪策略 + 优先级管理 |
 | v0.14.0 | RAG 知识库 | 向量索引 + 语义检索 + 持久化 + API 端点 |
+| v0.15.0 | Plugin Marketplace | 插件清单 + 注册中心 + 安装器 + 沙箱 + CLI/API |
+
+## v0.15.0 新特性
+
+### Plugin Marketplace
+
+内置插件市场系统，支持插件的安装、卸载、更新、搜索和权限管理：
+
+```bash
+# 安装插件（本地路径）
+lh plugin install /path/to/my-plugin
+
+# 列出已安装插件
+lh plugin list
+
+# 查看插件详情
+lh plugin info my-plugin
+
+# 搜索插件
+lh plugin search "web search"
+
+# 更新插件
+lh plugin update my-plugin /path/to/new-version
+
+# 启用/禁用插件
+lh plugin enable my-plugin
+lh plugin disable my-plugin
+
+# 卸载插件
+lh plugin remove my-plugin
+```
+
+### plugin.yaml 清单格式
+
+```yaml
+name: my-plugin
+version: 1.0.0
+author: author-name
+description: A cool plugin
+license: MIT
+homepage: https://example.com
+entry: main.go
+type: skill          # skill | tool | provider | hook
+min_version: 0.14.0
+tags:
+  - search
+  - web
+dependencies:
+  - base-plugin@1.0.0
+permissions:
+  - filesystem
+  - network
+```
+
+### 权限系统
+
+8 种权限级别，默认受限模式：
+
+| 权限 | 说明 |
+|------|------|
+| filesystem | 文件系统访问 |
+| network | 网络访问 |
+| memory | 记忆系统访问 |
+| tool | 工具注册 |
+| rag | RAG 知识库访问 |
+| session | 会话访问 |
+| config | 配置修改 |
+| admin | 管理员操作 |
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/plugins` | 插件列表（支持 ?type=&status= 过滤） |
+| GET | `/api/v1/plugins/search?q=` | 搜索插件 |
+| POST | `/api/v1/plugins/install` | 安装插件 |
+| DELETE | `/api/v1/plugins/{name}` | 卸载插件 |
+| POST | `/api/v1/plugins/{name}/enable` | 启用插件 |
+| POST | `/api/v1/plugins/{name}/disable` | 禁用插件 |
+| GET | `/api/v1/plugins/{name}/permissions` | 查看权限 |
+| POST | `/api/v1/plugins/{name}/permissions` | 授予/撤销权限 |
+
+### 资源限制
+
+默认沙箱限制：
+
+| 限制项 | 默认值 |
+|--------|--------|
+| 最大内存 | 256 MB |
+| 最大 CPU | 50% |
+| 最大 Goroutine | 10 |
+| 执行超时 | 30s |
+| 最大输出 | 1 MB |
+| 调用频率 | 60/min |
 
 ## v0.14.0 新特性
 
