@@ -12,7 +12,9 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
@@ -30,6 +32,10 @@ type Server struct {
 
 	// 统计
 	stats ServerStats
+
+	// v0.17.0: 可观测性
+	metrics     *metrics.Metrics
+	healthCheck *health.HealthCheck
 }
 
 // ServerConfig API Server 配置
@@ -39,6 +45,9 @@ type ServerConfig struct {
 	EnableCORS  bool     `yaml:"enable_cors,omitempty"`  // 启用 CORS，默认 true
 	CORSOrigins []string `yaml:"cors_origins,omitempty"` // CORS 允许的源
 	RateLimit   int      `yaml:"rate_limit,omitempty"`   // 每分钟请求限制，默认 60
+	MetricsAddr string   `yaml:"metrics_addr,omitempty"`  // Prometheus metrics 独立端口（空=复用主端口）
+	LogLevel    string   `yaml:"log_level,omitempty"`     // 日志级别: debug, info, warn, error
+	LogFormat   string   `yaml:"log_format,omitempty"`    // 日志格式: json, text
 }
 
 // DefaultServerConfig 返回默认配置
@@ -48,6 +57,8 @@ func DefaultServerConfig() ServerConfig {
 		EnableCORS:  true,
 		CORSOrigins: []string{"*"},
 		RateLimit:   60,
+		LogLevel:    "info",
+		LogFormat:   "text",
 	}
 }
 
@@ -113,6 +124,15 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	if cfg.RateLimit <= 0 {
 		cfg.RateLimit = 60
 	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+	if cfg.LogFormat == "" {
+		cfg.LogFormat = "text"
+	}
+
+	m := metrics.NewMetrics()
+	hc := health.NewHealthCheck("v0.17.0")
 
 	return &Server{
 		agent:       a,
@@ -121,6 +141,8 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		stats: ServerStats{
 			StartTime: time.Now(),
 		},
+		metrics:     m,
+		healthCheck: hc,
 	}
 }
 
@@ -136,6 +158,10 @@ func (s *Server) Start() error {
 
 	// API v1 路由
 	mux.HandleFunc("/api/v1/health", s.handleHealth)
+	mux.HandleFunc("/api/v1/health/live", s.handleHealthLiveness)
+	mux.HandleFunc("/api/v1/health/ready", s.handleHealthReadiness)
+	mux.HandleFunc("/api/v1/health/detail", s.handleHealthDetail)
+	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
 	mux.HandleFunc("/api/v1/chat", s.handleChat)
 	mux.HandleFunc("/api/v1/chat/sync", s.handleChatSync)
 	mux.HandleFunc("/api/v1/sessions", s.handleSessions)
@@ -231,9 +257,19 @@ func (s *Server) Stats() ServerStats {
 	return s.stats
 }
 
+// Metrics 返回指标收集器
+func (s *Server) Metrics() *metrics.Metrics {
+	return s.metrics
+}
+
+// HealthCheck 返回健康检查器
+func (s *Server) HealthCheck() *health.HealthCheck {
+	return s.healthCheck
+}
+
 // ===== 路由处理 =====
 
-// handleHealth 健康检查
+// handleHealth 健康检查（兼容旧版）
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
@@ -241,9 +277,77 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "ok",
-		"version":   "v0.13.0",
+		"version":   "v0.17.0",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
+}
+
+// handleHealthLiveness 存活检查
+func (s *Server) handleHealthLiveness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	report := s.healthCheck.Liveness()
+	data, err := report.ToJSON()
+	if err != nil {
+		s.sendError(w, "internal error", http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// handleHealthReadiness 就绪检查
+func (s *Server) handleHealthReadiness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	report := s.healthCheck.Readiness()
+	statusCode := http.StatusOK
+	if report.Status == health.StatusUnhealthy {
+		statusCode = http.StatusServiceUnavailable
+	} else if report.Status == health.StatusDegraded {
+		statusCode = http.StatusOK // degraded 仍然可用
+	}
+	data, err := report.ToJSON()
+	if err != nil {
+		s.sendError(w, "internal error", http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	w.Write(data)
+}
+
+// handleHealthDetail 详细健康检查
+func (s *Server) handleHealthDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	report := s.healthCheck.Detail()
+	data, err := report.ToJSON()
+	if err != nil {
+		s.sendError(w, "internal error", http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// handleMetrics Prometheus 格式指标
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(s.metrics.ExportPrometheus()))
 }
 
 // handleChat 流式聊天 (SSE)
@@ -258,6 +362,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	s.stats.TotalReqs++
 	s.stats.LastReqTime = time.Now()
 	s.stats.mu.Unlock()
+
+	// v0.17.0: 记录 metrics
+	s.metrics.RecordChatRequest()
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -335,6 +442,9 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 	s.stats.TotalReqs++
 	s.stats.LastReqTime = time.Now()
 	s.stats.mu.Unlock()
+
+	// v0.17.0: 记录 metrics
+	s.metrics.RecordChatRequest()
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -581,7 +691,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
-		"version":        "v0.13.0",
+		"version":        "v0.17.0",
 	})
 }
 
@@ -607,7 +717,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.13.0",
+		"version":  "v0.17.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",

@@ -34,6 +34,70 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.14.0 | RAG 知识库 | 向量索引 + 语义检索 + 持久化 + API 端点 |
 | v0.15.0 | Plugin Marketplace | 插件清单 + 注册中心 + 安装器 + 沙箱 + CLI/API |
 | v0.16.0 | Function Calling | OpenAI 原生 FC + 多轮调用 + 流式 + API 端点 |
+| v0.17.0 | Observability & Metrics | 结构化日志 + Prometheus 指标 + 三级健康检查 + CLI metrics 命令 |
+
+## v0.17.0 新特性
+
+### Observability & Metrics
+
+内置可观测性系统，支持结构化日志、Prometheus 指标和三级健康检查：
+
+#### 结构化日志
+
+```bash
+# 启动时配置日志级别和格式
+lh serve --log-level debug --log-format json
+
+# 日志级别: debug, info, warn, error
+# 日志格式: json, text (默认)
+```
+
+#### Prometheus 指标
+
+```bash
+# 获取 Prometheus 格式指标
+curl http://localhost:9090/api/v1/metrics
+
+# CLI 查看指标
+lh metrics
+```
+
+指标包括：
+- `lh_requests_total` — 总请求数
+- `lh_chat_requests_total` — 聊天请求数
+- `lh_error_requests_total` — 错误请求数
+- `lh_tool_calls_total` — 工具调用数
+- `lh_function_calls_total` — Function Call 数
+- `lh_active_sessions` — 活跃会话数
+- `lh_provider_calls_total{provider=}` — Provider 调用数
+- `lh_provider_errors_total{provider=}` — Provider 错误数
+- `lh_provider_latency_ms{provider=}` — Provider 平均延迟
+
+#### 三级健康检查
+
+| 端点 | 用途 | 说明 |
+|------|------|------|
+| `GET /api/v1/health` | 兼容旧版 | 简单状态检查 |
+| `GET /api/v1/health/live` | Liveness | 进程是否存活 |
+| `GET /api/v1/health/ready` | Readiness | 是否可以接受流量 |
+| `GET /api/v1/health/detail` | Detail | 详细健康状态 |
+
+Readiness 检查包含：
+- **memory** — 记忆系统是否初始化
+- **provider** — Provider 是否配置
+
+返回状态：
+- `healthy` — 一切正常
+- `degraded` — 部分功能降级（仍可服务）
+- `unhealthy` — 关键组件不可用（返回 503）
+
+#### Serve 命令新增参数
+
+```bash
+lh serve --metrics-addr :9091    # 独立 metrics 端口
+lh serve --log-level debug       # 日志级别
+lh serve --log-format json       # JSON 格式日志
+```
 
 ## v0.16.0 新特性
 
