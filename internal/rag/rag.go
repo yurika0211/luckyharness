@@ -6,12 +6,33 @@ import (
 	"sync"
 )
 
+// VectorStoreBackend is the interface that both in-memory and persistent
+// vector stores must implement. This enables swapping backends without
+// changing the RAG pipeline.
+type VectorStoreBackend interface {
+	Dimension() int
+	Len() int
+	Upsert(id string, vector []float64, metadata map[string]string) error
+	Delete(id string) bool
+	Get(id string) (*VectorEntry, bool)
+	Search(query []float64, topK int) []SearchResult
+	SearchWithFilter(query []float64, topK int, filterKey, filterValue string) []SearchResult
+	AllIDs() []string
+	Clear()
+}
+
+// Ensure VectorStore implements VectorStoreBackend
+var _ VectorStoreBackend = (*VectorStore)(nil)
+
+// Ensure SQLiteStore implements VectorStoreBackend
+var _ VectorStoreBackend = (*SQLiteStore)(nil)
+
 // RAGManager is the top-level RAG system manager.
 type RAGManager struct {
-	store    *VectorStore
-	indexer  *Indexer
+	store     VectorStoreBackend // v0.20.0: supports both in-memory and SQLite backends
+	indexer   *Indexer
 	retriever *Retriever
-	embedder EmbeddingProvider
+	embedder  EmbeddingProvider
 
 	mu sync.RWMutex
 }
@@ -28,7 +49,7 @@ func DefaultRAGConfig() RAGConfig {
 	}
 }
 
-// NewRAGManager creates a new RAG system with the given embedder.
+// NewRAGManager creates a new RAG system with the given embedder and in-memory store.
 func NewRAGManager(embedder EmbeddingProvider, config RAGConfig) *RAGManager {
 	dim := config.EmbeddingDim
 	if dim <= 0 {
@@ -48,6 +69,59 @@ func NewRAGManager(embedder EmbeddingProvider, config RAGConfig) *RAGManager {
 		retriever: retriever,
 		embedder:  embedder,
 	}
+}
+
+// NewRAGManagerWithSQLite creates a new RAG system with SQLite-backed persistent store.
+func NewRAGManagerWithSQLite(embedder EmbeddingProvider, config RAGConfig, dbPath string) (*RAGManager, error) {
+	dim := config.EmbeddingDim
+	if dim <= 0 {
+		dim = embedder.Dimension()
+	}
+	if dim <= 0 {
+		dim = 128
+	}
+
+	store, err := NewSQLiteStore(dim, dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("create sqlite store: %w", err)
+	}
+
+	indexer := NewIndexerWithBackend(store, embedder)
+
+	// Load persisted documents and chunks from SQLite
+	if docs, err := store.LoadDocuments(); err == nil && len(docs) > 0 {
+		indexer.mu.Lock()
+		for id, doc := range docs {
+			indexer.documents[id] = doc
+		}
+		indexer.stats.DocumentCount = len(docs)
+		indexer.mu.Unlock()
+	}
+	if chunks, err := store.LoadChunks(); err == nil && len(chunks) > 0 {
+		indexer.mu.Lock()
+		for id, chunk := range chunks {
+			indexer.chunks[id] = chunk
+		}
+		indexer.stats.ChunkCount = len(chunks)
+		indexer.mu.Unlock()
+	}
+	if stats, err := store.LoadIndexStats(); err == nil {
+		indexer.mu.Lock()
+		indexer.stats.Sources = stats.Sources
+		if !stats.LastIndexed.IsZero() {
+			indexer.stats.LastIndexed = stats.LastIndexed
+		}
+		indexer.mu.Unlock()
+	}
+
+	retriever := NewRetrieverWithBackend(store, indexer, embedder, config.RetrieverConfig)
+
+	return &RAGManager{
+		store:     store,
+		indexer:   indexer,
+		retriever: retriever,
+		embedder:  embedder,
+	}, nil
 }
 
 // IndexFile indexes a single file.
@@ -110,8 +184,8 @@ func (m *RAGManager) RetrieverConfig() RetrieverConfig {
 	return m.retriever.Config()
 }
 
-// Store returns the underlying vector store (for advanced use).
-func (m *RAGManager) Store() *VectorStore {
+// Store returns the underlying vector store backend (for advanced use).
+func (m *RAGManager) Store() VectorStoreBackend {
 	return m.store
 }
 
@@ -125,9 +199,35 @@ func (m *RAGManager) Retriever() *Retriever {
 	return m.retriever
 }
 
+// IsSQLite returns true if the store backend is SQLite-backed.
+func (m *RAGManager) IsSQLite() bool {
+	_, ok := m.store.(*SQLiteStore)
+	return ok
+}
+
+// SQLiteStore returns the underlying SQLiteStore, or nil if using in-memory store.
+func (m *RAGManager) SQLiteStore() *SQLiteStore {
+	if s, ok := m.store.(*SQLiteStore); ok {
+		return s
+	}
+	return nil
+}
+
+// CloseStore closes the underlying store (for SQLite, this closes the DB connection).
+func (m *RAGManager) CloseStore() error {
+	if s, ok := m.store.(*SQLiteStore); ok {
+		return s.Close()
+	}
+	return nil
+}
+
 // String returns a summary of the RAG system.
 func (m *RAGManager) String() string {
 	stats := m.Stats()
-	return fmt.Sprintf("RAGManager{docs=%d, chunks=%d, embedder=%s, dim=%d}",
-		stats.DocumentCount, stats.ChunkCount, m.embedder.Name(), m.store.Dimension())
+	backend := "memory"
+	if m.IsSQLite() {
+		backend = "sqlite"
+	}
+	return fmt.Sprintf("RAGManager{docs=%d, chunks=%d, embedder=%s, dim=%d, backend=%s}",
+		stats.DocumentCount, stats.ChunkCount, m.embedder.Name(), m.store.Dimension(), backend)
 }

@@ -179,9 +179,12 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /serve [addr]      启动 API Server")
 		fmt.Println("  /context           上下文窗口状态")
 		fmt.Println("  /context fit       手动触发上下文裁剪")
-		fmt.Println("  /rag index <path>  索引文件/目录到知识库")
-		fmt.Println("  /rag search <q>    搜索知识库")
-		fmt.Println("  /rag stats         知识库统计")
+fmt.Println("  /rag index <path>  索引文件/目录到知识库")
+	fmt.Println("  /rag search <q>    搜索知识库")
+	fmt.Println("  /rag stats         知识库统计")
+	fmt.Println("  /rag store         存储后端信息")
+	fmt.Println("  /rag list          列出文档")
+	fmt.Println("  /rag remove <id>   删除文档")
 		fmt.Println("  /fc tools          列出 Function Calling 工具")
 		fmt.Println("  /fc history        查看调用历史")
 		fmt.Println("  /fc clear          清除调用历史")
@@ -879,7 +882,7 @@ func handleRAGCommand(arg string, a *agent.Agent) bool {
 		// 默认显示统计
 		stats := ragMgr.Stats()
 		fmt.Printf("📚 RAG 知识库: %d 文档, %d 分块\n", stats.DocumentCount, stats.ChunkCount)
-		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag list | /rag remove <docID>")
+		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag store | /rag list | /rag remove <docID>")
 		return true
 	}
 
@@ -953,6 +956,39 @@ func handleRAGCommand(arg string, a *agent.Agent) bool {
 				fmt.Printf("     %s: %d chunks\n", src, count)
 			}
 		}
+		// v0.20.0: 显示存储后端信息
+		if ragMgr.IsSQLite() {
+			sqlStore := ragMgr.SQLiteStore()
+			count, dbSize, _ := sqlStore.Stats()
+			fmt.Printf("   存储后端: SQLite\n")
+			fmt.Printf("   向量数: %d\n", count)
+			fmt.Printf("   数据库大小: %d bytes\n", dbSize)
+		} else {
+			store := ragMgr.Store()
+			fmt.Printf("   存储后端: 内存\n")
+			fmt.Printf("   向量数: %d\n", store.Len())
+		}
+
+	case "store":
+		// v0.20.0: 显示存储后端信息
+		if ragMgr.IsSQLite() {
+			sqlStore := ragMgr.SQLiteStore()
+			count, dbSize, err := sqlStore.Stats()
+			if err != nil {
+				fmt.Printf("❌ 获取存储统计失败: %v\n", err)
+				return true
+			}
+			fmt.Printf("🗄️ SQLite 存储后端:\n")
+			fmt.Printf("   路径: %s\n", sqlStore.Path())
+			fmt.Printf("   向量数: %d\n", count)
+			fmt.Printf("   数据库大小: %d bytes\n", dbSize)
+			fmt.Printf("   维度: %d\n", sqlStore.Dimension())
+		} else {
+			store := ragMgr.Store()
+			fmt.Printf("💾 内存存储后端:\n")
+			fmt.Printf("   向量数: %d\n", store.Len())
+			fmt.Printf("   维度: %d\n", store.Dimension())
+		}
 
 	case "list":
 		ids := ragMgr.ListDocuments()
@@ -982,7 +1018,7 @@ func handleRAGCommand(arg string, a *agent.Agent) bool {
 
 	default:
 		fmt.Printf("未知 rag 子命令: %s\n", parts[0])
-		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag list | /rag remove <docID>")
+		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag store | /rag list | /rag remove <docID>")
 	}
 
 	return true
