@@ -178,7 +178,7 @@ func (a *Aggregator) aggregateVote(results []string) *AggregationResult {
 
 	// 构建投票结果
 	votes := make(map[string]int)
-	for prefix, indices := range groups {
+	for _, indices := range groups {
 		votes[fmt.Sprintf("group_%d", indices[0])] = len(indices)
 	}
 

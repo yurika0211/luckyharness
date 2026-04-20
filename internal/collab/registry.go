@@ -57,7 +57,15 @@ func (r *Registry) Register(profile *AgentProfile) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	profile.LastSeen = time.Now()
+	// 检查重复 ID
+	if _, exists := r.agents[profile.ID]; exists {
+		return fmt.Errorf("agent %s already registered", profile.ID)
+	}
+
+	// 只在 LastSeen 为零值时才设置为当前时间（允许测试传入特定值）
+	if profile.LastSeen.IsZero() {
+		profile.LastSeen = time.Now()
+	}
 	if profile.Status == "" {
 		profile.Status = StatusOnline
 	}
