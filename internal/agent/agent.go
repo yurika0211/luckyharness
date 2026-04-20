@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/embedder"
@@ -36,6 +37,8 @@ type Agent struct {
 	ragManager   *rag.RAGManager         // RAG 知识库管理器
 	ragPersist   *rag.Persistence        // RAG 持久化
 	embedderReg  *embedder.Registry      // v0.21.0: 嵌入模型注册表
+	collabReg    *collab.Registry        // v0.22.0: Agent 协作注册表
+	collabMgr    *collab.DelegateManager // v0.22.0: 协作任务管理器
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -206,6 +209,19 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	}
 
+	// v0.22.0: 创建 Agent 协作注册表和管理器
+	collabReg := collab.NewRegistry()
+	// 注册本地 Agent
+	collabReg.Register(&collab.AgentProfile{
+		ID:           "local-agent",
+		Name:         "Local Agent",
+		Description:  "The primary local agent",
+		Capabilities: []string{"chat", "code", "analysis", "research"},
+		Status:       collab.StatusOnline,
+	})
+	// 创建协作任务管理器（使用默认 handler，实际执行由 Agent Loop 驱动）
+	collabMgr := collab.NewDelegateManager(collabReg, nil)
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -224,6 +240,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		ragManager:  ragManager,
 		ragPersist:  ragPersist,
 		embedderReg: embedderReg,
+		collabReg:   collabReg,
+		collabMgr:   collabMgr,
 	}, nil
 }
 
@@ -559,6 +577,16 @@ func (a *Agent) RAGPersist() *rag.Persistence {
 // EmbedderRegistry 返回嵌入模型注册表
 func (a *Agent) EmbedderRegistry() *embedder.Registry {
 	return a.embedderReg
+}
+
+// AgentRegistry 返回 Agent 协作注册表 (v0.22.0)
+func (a *Agent) AgentRegistry() *collab.Registry {
+	return a.collabReg
+}
+
+// CollabManager 返回协作任务管理器 (v0.22.0)
+func (a *Agent) CollabManager() *collab.DelegateManager {
+	return a.collabMgr
 }
 
 // Close 释放资源，保存持久化数据

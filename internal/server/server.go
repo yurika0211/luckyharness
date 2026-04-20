@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/memory"
@@ -40,6 +41,10 @@ type Server struct {
 
 	// v0.18.0: WebSocket
 	wsHub *websocket.Hub
+
+	// v0.22.0: 多 Agent 协作
+	collabRegistry   *collab.Registry
+	delegateManager  *collab.DelegateManager
 }
 
 // ServerConfig API Server 配置
@@ -136,12 +141,19 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.21.0")
+	hc := health.NewHealthCheck("v0.22.0")
 
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
 	wsHub := websocket.NewHub(wsHandler, websocket.DefaultHubConfig())
 	go wsHub.Run()
+
+	// v0.22.0: 多 Agent 协作
+	collabRegistry := collab.NewRegistry()
+	delegateManager := collab.NewDelegateManager(collabRegistry, collab.TaskHandlerFunc(func(ctx context.Context, task *collab.SubTask) (string, error) {
+		// 默认处理器：调用 Agent Chat
+		return a.Chat(ctx, task.Input)
+	}))
 
 	return &Server{
 		agent:       a,
@@ -150,9 +162,11 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		stats: ServerStats{
 			StartTime: time.Now(),
 		},
-		metrics:     m,
-		healthCheck: hc,
-		wsHub:       wsHub,
+		metrics:         m,
+		healthCheck:     hc,
+		wsHub:           wsHub,
+		collabRegistry:  collabRegistry,
+		delegateManager: delegateManager,
 	}
 }
 
@@ -211,6 +225,15 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/embedders/register", s.handleEmbedderRegister)
 	mux.HandleFunc("/api/v1/embedders/switch", s.handleEmbedderSwitch)
 	mux.HandleFunc("/api/v1/embedders/", s.handleEmbedderRoutes)
+
+	// v0.22.0: Agent 协作
+	mux.HandleFunc("/api/v1/agents", s.handleAgentsList)
+	mux.HandleFunc("/api/v1/agents/register", s.handleAgentsRegister)
+	mux.HandleFunc("/api/v1/agents/deregister", s.handleAgentsDeregister)
+	mux.HandleFunc("/api/v1/agents/delegate", s.handleAgentsDelegate)
+	mux.HandleFunc("/api/v1/agents/task", s.handleAgentsTask)
+	mux.HandleFunc("/api/v1/agents/tasks", s.handleAgentsTasks)
+	mux.HandleFunc("/api/v1/agents/cancel", s.handleAgentsCancel)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
