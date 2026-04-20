@@ -41,6 +41,50 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.21.0 | 嵌入模型管理 | Embedder 接口 + Registry + LRU 缓存 + OpenAI/Ollama Provider + API + REPL |
 | v0.22.0 | 多 Agent 协作 | Agent Registry + 任务委派 + 结果聚合 + Pipeline/Parallel/Debate 模式 + API + CLI |
 | v0.23.0 | 流式 RAG | StreamIndexer + ChangeDetector + IndexQueue + 文件监控 + 增量索引 + API + CLI |
+| v0.24.0 | 工作流引擎 | DAG 任务编排 + 拓扑排序 + 并行执行 + 重试/超时 + API 端点 |
+
+## v0.24.0 新特性
+
+### 工作流引擎
+
+支持 DAG（有向无环图）任务编排，实现复杂工作流自动化：
+
+```go
+// 定义工作流
+workflow := workflow.NewWorkflow("data-pipeline", []*workflow.Task{
+    {ID: "fetch", Name: "Fetch Data", Action: "http", Params: map[string]interface{}{"url": "https://api.example.com/data"}},
+    {ID: "parse", Name: "Parse Data", Action: "script", DependsOn: []string{"fetch"}},
+    {ID: "validate", Name: "Validate", Action: "script", DependsOn: []string{"parse"}},
+    {ID: "store", Name: "Store Results", Action: "http", DependsOn: []string{"validate"}},
+})
+
+// 注册并启动
+engine.RegisterWorkflow(workflow)
+instance, _ := engine.StartWorkflow(workflow.ID)
+```
+
+#### 特性
+
+- **DAG 定义** — YAML/JSON 工作流定义，支持复杂依赖关系
+- **拓扑排序** — 自动计算执行顺序，检测循环依赖
+- **并行执行** — 无依赖任务并行执行，提升效率
+- **重试机制** — 可配置重试次数和延迟
+- **超时控制** — 任务级别超时设置
+- **状态管理** — 实时追踪任务状态和结果
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/workflows` | 列出所有工作流 |
+| POST | `/api/v1/workflows` | 创建工作流 |
+| GET | `/api/v1/workflows/{id}` | 获取工作流详情 |
+| DELETE | `/api/v1/workflows/{id}` | 删除工作流 |
+| GET | `/api/v1/workflow-instances` | 列出所有实例 |
+| POST | `/api/v1/workflow-instances` | 启动工作流 |
+| GET | `/api/v1/workflow-instances/{id}` | 获取实例状态 |
+| GET | `/api/v1/workflow-instances/{id}/results` | 获取执行结果 |
+| DELETE | `/api/v1/workflow-instances/{id}` | 取消实例 |
 
 ## v0.23.0 新特性
 
