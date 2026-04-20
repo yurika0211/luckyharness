@@ -7,8 +7,11 @@ import (
 
 // Message 代表一条对话消息
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string `json:"role"`
+	Content    string `json:"content"`
+	ToolCallID string `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
+	Name       string `json:"name,omitempty"`        // v0.16.0: function name for tool messages
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"` // v0.16.0: assistant tool calls
 }
 
 // Response 代表 Provider 的响应
@@ -150,11 +153,21 @@ func (p *OpenAIProvider) Validate() error {
 }
 
 func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(p.cfg, messages)
+	return callOpenAI(p.cfg, messages, CallOptions{})
 }
 
 func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages)
+	return callOpenAIStream(ctx, p.cfg, messages, CallOptions{})
+}
+
+// ChatWithOptions 发送消息（支持 function calling）
+func (p *OpenAIProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
+	return callOpenAI(p.cfg, messages, opts)
+}
+
+// ChatStreamWithOptions 发送消息流式（支持 function calling）
+func (p *OpenAIProvider) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	return callOpenAIStream(ctx, p.cfg, messages, opts)
 }
 
 // --- OpenAI-Compatible Provider ---
@@ -186,15 +199,27 @@ func (p *OpenAICompatibleProvider) Validate() error {
 }
 
 func (p *OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(p.cfg, messages)
+	return callOpenAI(p.cfg, messages, CallOptions{})
 }
 
 func (p *OpenAICompatibleProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
-	return callOpenAIStream(ctx, p.cfg, messages)
+	return callOpenAIStream(ctx, p.cfg, messages, CallOptions{})
+}
+
+// ChatWithOptions 发送消息（支持 function calling）
+func (p *OpenAICompatibleProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
+	return callOpenAI(p.cfg, messages, opts)
+}
+
+// ChatStreamWithOptions 发送消息流式（支持 function calling）
+func (p *OpenAICompatibleProvider) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	return callOpenAIStream(ctx, p.cfg, messages, opts)
 }
 
 // Ensure interfaces are satisfied
 var (
-	_ Provider = (*OpenAIProvider)(nil)
-	_ Provider = (*OpenAICompatibleProvider)(nil)
+	_ Provider              = (*OpenAIProvider)(nil)
+	_ FunctionCallingProvider = (*OpenAIProvider)(nil)
+	_ Provider              = (*OpenAICompatibleProvider)(nil)
+	_ FunctionCallingProvider = (*OpenAICompatibleProvider)(nil)
 )

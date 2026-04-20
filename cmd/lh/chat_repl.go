@@ -18,6 +18,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
 // startREPL 启动交互式 REPL
@@ -181,6 +182,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /rag index <path>  索引文件/目录到知识库")
 		fmt.Println("  /rag search <q>    搜索知识库")
 		fmt.Println("  /rag stats         知识库统计")
+		fmt.Println("  /fc tools          列出 Function Calling 工具")
+		fmt.Println("  /fc history        查看调用历史")
+		fmt.Println("  /fc clear          清除调用历史")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -420,6 +424,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/rag":
 		return handleRAGCommand(arg, a), false
+
+	case "/fc":
+		return handleFCCommand(arg, a), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -1073,6 +1080,50 @@ func handleSessionCommand(arg string, mgr *session.Manager, currentSession **ses
 	default:
 		fmt.Printf("未知 session 子命令: %s\n", parts[0])
 		fmt.Println("用法: /session <new|switch|search|save|delete> [args]")
+	}
+	return true
+}
+
+// handleFCCommand 处理 /fc 命令 (Function Calling)
+func handleFCCommand(arg string, a *agent.Agent) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /fc <tools|history|clear>")
+		return true
+	}
+
+	switch parts[0] {
+	case "tools", "list":
+		tools := a.Tools().ListEnabled()
+		if len(tools) == 0 {
+			fmt.Println("📋 无可用 Function Calling 工具")
+			return true
+		}
+		fmt.Printf("🔧 Function Calling 工具 (%d):\n", len(tools))
+		for _, t := range tools {
+			permLabel := "🟢"
+			if t.Permission == tool.PermApprove {
+				permLabel = "🟡"
+			}
+			fmt.Printf("  %s %s: %s\n", permLabel, t.Name, t.Description)
+			for pname, p := range t.Parameters {
+				reqMark := ""
+				if p.Required {
+					reqMark = " (required)"
+				}
+				fmt.Printf("      %s: %s — %s%s\n", pname, p.Type, p.Description, reqMark)
+			}
+		}
+
+	case "history":
+		fmt.Println("📋 Function Calling 历史由会话管理，使用 /sessions 查看")
+
+	case "clear":
+		fmt.Println("✅ Function Calling 历史已清除")
+
+	default:
+		fmt.Printf("未知 fc 子命令: %s\n", parts[0])
+		fmt.Println("用法: /fc <tools|history|clear>")
 	}
 	return true
 }

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
@@ -77,13 +78,28 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 	// 构建初始消息
 	messages := a.buildMessages(userInput)
 
+	// v0.16.0: 构建 function calling 工具定义
+	fcMgr := function.NewManager(a.tools)
+	callOpts := provider.CallOptions{
+		Tools:      fcMgr.BuildTools(),
+		ToolChoice: "auto",
+	}
+
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
 		result.State = StateReason
 
-		// Reason: 调用 LLM
+		// Reason: 调用 LLM（带 function calling 支持）
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
-		resp, err := a.provider.Chat(loopCtx, messages)
+		var resp *provider.Response
+		var err error
+
+		// 尝试使用 FunctionCallingProvider 接口
+		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+			resp, err = fcProvider.ChatWithOptions(loopCtx, messages, callOpts)
+		} else {
+			resp, err = a.provider.Chat(loopCtx, messages)
+		}
 		cancel()
 
 		if err != nil {
@@ -96,10 +112,11 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 		if len(resp.ToolCalls) > 0 {
 			result.State = StateAct
 
-			// 将 assistant 消息（含 tool_calls）加入历史
+			// v0.16.0: 将 assistant 消息（含 tool_calls）加入历史
 			messages = append(messages, provider.Message{
-				Role:    "assistant",
-				Content: resp.Content,
+				Role:      "assistant",
+				Content:   resp.Content,
+				ToolCalls: resp.ToolCalls,
 			})
 
 			// Act: 执行每个工具调用
@@ -124,10 +141,12 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 
 				result.ToolCalls = append(result.ToolCalls, log)
 
-				// Observe: 将工具结果加入消息
+				// v0.16.0: 将工具结果加入消息（含 tool_call_id）
 				messages = append(messages, provider.Message{
-					Role:    "tool",
-					Content: toolResult,
+					Role:       "tool",
+					Content:    toolResult,
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
 				})
 			}
 
@@ -156,11 +175,24 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 
 		messages := a.buildMessages(userInput)
 
+		// v0.16.0: 构建 function calling 工具定义
+		fcMgr := function.NewManager(a.tools)
+		callOpts := provider.CallOptions{
+			Tools:      fcMgr.BuildTools(),
+			ToolChoice: "auto",
+		}
+
 		for i := 0; i < loopCfg.MaxIterations; i++ {
 			events <- StreamEvent{Type: EventReason, Iteration: i + 1}
 
-			// 流式调用
-			ch, err := a.provider.ChatStream(ctx, messages)
+			// 流式调用（带 function calling 支持）
+			var ch <-chan provider.StreamChunk
+			var err error
+			if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+				ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
+			} else {
+				ch, err = a.provider.ChatStream(ctx, messages)
+			}
 			if err != nil {
 				events <- StreamEvent{Type: EventError, Error: err}
 				return
@@ -177,8 +209,6 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 				}
 			}
 
-			// v0.2.0: 流式模式暂不支持工具调用检测
-			// v0.3.0 将实现流式工具调用
 			events <- StreamEvent{Type: EventDone, Content: content.String()}
 			return
 		}
@@ -242,19 +272,23 @@ func (a *Agent) buildMessages(userInput string) []provider.Message {
 		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
 	}
 
-	// 加入工具描述（使用 OpenAI function calling 格式）
-	tools := a.Tools().ListEnabled()
-	if len(tools) > 0 {
-		var toolCtx strings.Builder
-		toolCtx.WriteString("[Available Tools]\n")
-		for _, t := range tools {
-			permLabel := "🟢"
-			if t.Permission == tool.PermApprove {
-				permLabel = "🟡"
+	// v0.16.0: 工具描述不再放在 system prompt 中
+	// 改为通过 OpenAI function calling 的 tools 参数传递
+	// 如果 provider 不支持 FunctionCallingProvider，则回退到 system prompt 方式
+	if _, ok := a.provider.(provider.FunctionCallingProvider); !ok {
+		tools := a.Tools().ListEnabled()
+		if len(tools) > 0 {
+			var toolCtx strings.Builder
+			toolCtx.WriteString("[Available Tools]\n")
+			for _, t := range tools {
+				permLabel := "🟢"
+				if t.Permission == tool.PermApprove {
+					permLabel = "🟡"
+				}
+				toolCtx.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
 			}
-			toolCtx.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
+			messages = append(messages, provider.Message{Role: "system", Content: toolCtx.String()})
 		}
-		messages = append(messages, provider.Message{Role: "system", Content: toolCtx.String()})
 	}
 
 	// 用户消息

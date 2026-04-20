@@ -156,6 +156,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/plugins/search", s.handlePluginSearch)
 	mux.HandleFunc("/api/v1/plugins/install", s.handlePluginInstall)
 
+	// v0.16.0: Function Calling API
+	mux.HandleFunc("/api/v1/fc", s.handleFunctionCalling)
+	mux.HandleFunc("/api/v1/fc/tools", s.handleFCTools)
+	mux.HandleFunc("/api/v1/fc/history", s.handleFCHistory)
+
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
 
@@ -1229,4 +1234,141 @@ func (s *Server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 			"mmr_lambda": ragMgr.RetrieverConfig().MMRLambda,
 		},
 	})
+}
+
+// --- v0.16.0: Function Calling API ---
+
+// handleFunctionCalling 处理 /api/v1/fc 请求
+// POST: 执行 function calling
+// GET: 获取 function calling 状态
+func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.sendJSON(w, http.StatusOK, map[string]any{
+			"version":     "0.16.0",
+			"description": "OpenAI Function Calling support",
+			"endpoints": map[string]string{
+				"POST /api/v1/fc":        "Execute function calling",
+				"GET  /api/v1/fc/tools":   "List available function tools",
+				"GET  /api/v1/fc/history": "Get function call history",
+			},
+		})
+
+	case http.MethodPost:
+		var req fcRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if req.Message == "" {
+			s.sendError(w, "message is required", http.StatusBadRequest, "")
+			return
+		}
+
+		loopCfg := agent.DefaultLoopConfig()
+		loopCfg.AutoApprove = req.AutoApprove
+		if req.MaxIter > 0 {
+			loopCfg.MaxIterations = req.MaxIter
+		}
+
+		start := time.Now()
+		result, err := s.agent.RunLoop(r.Context(), req.Message, loopCfg)
+		if err != nil {
+			s.sendError(w, "function calling failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+
+		duration := time.Since(start)
+		resp := fcResponse{
+			Response:   result.Response,
+			Iterations: result.Iterations,
+			TokensUsed: result.TokensUsed,
+			Duration:   duration.String(),
+			State:      result.State.String(),
+		}
+
+		for _, tc := range result.ToolCalls {
+			resp.ToolCalls = append(resp.ToolCalls, toolCallInfo{
+				Name:      tc.Name,
+				Arguments: tc.Arguments,
+				Result:    tc.Result,
+				Duration:  tc.Duration.String(),
+			})
+		}
+
+		s.sendJSON(w, http.StatusOK, resp)
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+// handleFCTools 列出可用的 function calling 工具
+func (s *Server) handleFCTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	tools := s.agent.Tools().ListEnabled()
+	type fcToolInfo struct {
+		Name        string         `json:"name"`
+		Description string         `json:"description"`
+		Parameters  map[string]any `json:"parameters"`
+		Permission  string         `json:"permission"`
+		Category    string         `json:"category"`
+	}
+
+	var infos []fcToolInfo
+	for _, t := range tools {
+		openaiFmt := t.ToOpenAIFormat()
+		var params map[string]any
+		if fn, ok := openaiFmt["function"].(map[string]any); ok {
+			params, _ = fn["parameters"].(map[string]any)
+		}
+		infos = append(infos, fcToolInfo{
+			Name:        t.Name,
+			Description: t.Description,
+			Parameters:  params,
+			Permission:  t.Permission.String(),
+			Category:    string(t.Category),
+		})
+	}
+
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"tools": infos,
+		"count": len(infos),
+	})
+}
+
+// handleFCHistory 获取 function calling 历史
+func (s *Server) handleFCHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	// Function calling 历史由 Agent 内部管理
+	// 这里返回最近一次 loop 的工具调用信息
+	s.sendJSON(w, http.StatusOK, map[string]any{
+		"message": "Function call history is managed per-session. Use /api/v1/sessions for session history.",
+	})
+}
+
+// fcRequest 是 function calling 请求
+type fcRequest struct {
+	Message     string `json:"message"`
+	AutoApprove bool   `json:"auto_approve,omitempty"`
+	MaxIter     int    `json:"max_iterations,omitempty"`
+}
+
+// fcResponse 是 function calling 响应
+type fcResponse struct {
+	Response   string        `json:"response"`
+	Iterations int           `json:"iterations"`
+	TokensUsed int           `json:"tokens_used"`
+	ToolCalls  []toolCallInfo `json:"tool_calls,omitempty"`
+	Duration   string        `json:"duration"`
+	State      string        `json:"state"`
 }

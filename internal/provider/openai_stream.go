@@ -19,13 +19,16 @@ type openaiChatRequest struct {
 	Temperature float64             `json:"temperature,omitempty"`
 	Stream      bool                `json:"stream"`
 	Tools       []openaiTool        `json:"tools,omitempty"`
+	ToolChoice  any                 `json:"tool_choice,omitempty"`
 }
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
-	Role      string              `json:"role"`
-	Content   string              `json:"content,omitempty"`
-	ToolCalls []openaiToolCallResp `json:"tool_calls,omitempty"`
+	Role       string              `json:"role"`
+	Content    string              `json:"content,omitempty"`
+	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
+	ToolCallID string              `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
+	Name       string              `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
 }
 
 // openaiToolCallResp 是 OpenAI 响应中的工具调用格式
@@ -94,13 +97,31 @@ type openaiSSEEvent struct {
 
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
-func callOpenAI(cfg Config, messages []Message) (*Response, error) {
+func callOpenAI(cfg Config, messages []Message, opts CallOptions) (*Response, error) {
 	reqBody := openaiChatRequest{
 		Model:       cfg.Model,
 		Messages:    toOpenAIMessages(messages),
 		MaxTokens:   cfg.MaxTokens,
 		Temperature: cfg.Temperature,
 		Stream:      false,
+	}
+
+	// v0.16.0: 添加 function calling 工具定义
+	if len(opts.Tools) > 0 {
+		tools := make([]openaiTool, 0, len(opts.Tools))
+		for _, t := range opts.Tools {
+			fn, _ := t["function"].(map[string]any)
+			tools = append(tools, openaiTool{
+				Type:     "function",
+				Function: newToolFunction(fn),
+			})
+		}
+		reqBody.Tools = tools
+		if opts.ToolChoice != nil {
+			reqBody.ToolChoice = opts.ToolChoice
+		} else {
+			reqBody.ToolChoice = "auto"
+		}
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -166,13 +187,31 @@ func callOpenAI(cfg Config, messages []Message) (*Response, error) {
 
 // callOpenAIStream 执行 OpenAI API 流式调用
 // 支持文本内容和工具调用的流式解析
-func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-chan StreamChunk, error) {
+func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
 	reqBody := openaiChatRequest{
 		Model:       cfg.Model,
 		Messages:    toOpenAIMessages(messages),
 		MaxTokens:   cfg.MaxTokens,
 		Temperature: cfg.Temperature,
 		Stream:      true,
+	}
+
+	// v0.16.0: 添加 function calling 工具定义
+	if len(opts.Tools) > 0 {
+		tools := make([]openaiTool, 0, len(opts.Tools))
+		for _, t := range opts.Tools {
+			fn, _ := t["function"].(map[string]any)
+			tools = append(tools, openaiTool{
+				Type:     "function",
+				Function: newToolFunction(fn),
+			})
+		}
+		reqBody.Tools = tools
+		if opts.ToolChoice != nil {
+			reqBody.ToolChoice = opts.ToolChoice
+		} else {
+			reqBody.ToolChoice = "auto"
+		}
 	}
 
 	body, err := json.Marshal(reqBody)
@@ -275,12 +314,42 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-ch
 
 // toOpenAIMessages 将通用 Message 转换为 OpenAI 格式
 func toOpenAIMessages(messages []Message) []openaiMessage {
-	result := make([]openaiMessage, len(messages))
-	for i, m := range messages {
-		result[i] = openaiMessage{
-			Role:    m.Role,
-			Content: m.Content,
+	result := make([]openaiMessage, 0, len(messages))
+	for _, m := range messages {
+		msg := openaiMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+			Name:       m.Name,
 		}
+		// v0.16.0: 处理 tool_calls（assistant 消息）
+		if len(m.ToolCalls) > 0 {
+			msg.ToolCalls = make([]openaiToolCallResp, len(m.ToolCalls))
+			for i, tc := range m.ToolCalls {
+				msg.ToolCalls[i] = openaiToolCallResp{
+					ID:   tc.ID,
+					Type: "function",
+				}
+				msg.ToolCalls[i].Function.Name = tc.Name
+				msg.ToolCalls[i].Function.Arguments = tc.Arguments
+			}
+		}
+		result = append(result, msg)
 	}
 	return result
+}
+
+// toolFunction 从 map 创建 toolFunction 结构
+func newToolFunction(fn map[string]any) toolFunction {
+	tf := toolFunction{}
+	if name, ok := fn["name"].(string); ok {
+		tf.Name = name
+	}
+	if desc, ok := fn["description"].(string); ok {
+		tf.Description = desc
+	}
+	if params, ok := fn["parameters"].(map[string]any); ok {
+		tf.Parameters = params
+	}
+	return tf
 }
