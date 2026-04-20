@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,11 +17,12 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
+	"github.com/yurika0211/luckyharness/internal/health"
+	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/tool"
-	"path/filepath"
 )
 
 var (
@@ -345,6 +349,17 @@ func main() {
 	serveCmd.Flags().StringSlice("api-keys", nil, "API Key 白名单 (逗号分隔，空=不鉴权)")
 	serveCmd.Flags().Bool("no-cors", false, "禁用 CORS")
 	serveCmd.Flags().Int("rate-limit", 60, "每分钟请求限制")
+	serveCmd.Flags().String("metrics-addr", "", "Prometheus metrics 独立端口 (空=复用主端口)")
+	serveCmd.Flags().String("log-level", "info", "日志级别: debug, info, warn, error")
+	serveCmd.Flags().String("log-format", "text", "日志格式: json, text")
+
+	// ===== v0.17.0: Metrics 命令 =====
+	metricsCmd := &cobra.Command{
+		Use:   "metrics",
+		Short: "查看运行指标",
+		Long:  "查看 LuckyHarness 运行指标，包括请求计数、Provider 调用统计、会话数等。\n\n需要 API Server 正在运行。",
+		RunE:  runMetrics,
+	}
 
 	// ===== v0.14.0: RAG 命令 =====
 	ragCmd := &cobra.Command{
@@ -428,7 +443,7 @@ func main() {
 
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1253,6 +1268,9 @@ func runServe(cmd *cobra.Command, args []string) error {
 	apiKeys, _ := cmd.Flags().GetStringSlice("api-keys")
 	noCORS, _ := cmd.Flags().GetBool("no-cors")
 	rateLimit, _ := cmd.Flags().GetInt("rate-limit")
+	metricsAddr, _ := cmd.Flags().GetString("metrics-addr")
+	logLevel, _ := cmd.Flags().GetString("log-level")
+	logFormat, _ := cmd.Flags().GetString("log-format")
 
 	cfg := server.ServerConfig{
 		Addr:        addr,
@@ -1260,9 +1278,35 @@ func runServe(cmd *cobra.Command, args []string) error {
 		EnableCORS:  !noCORS,
 		CORSOrigins: []string{"*"},
 		RateLimit:   rateLimit,
+		MetricsAddr: metricsAddr,
+		LogLevel:    logLevel,
+		LogFormat:   logFormat,
 	}
 
+	// v0.17.0: 初始化日志
+	logger.InitLogger(logger.Config{
+		Level:  logLevel,
+		Format: logFormat,
+	})
+
 	s := server.New(a, cfg)
+
+	// v0.17.0: 注册健康检查
+	s.HealthCheck().RegisterCheck("memory", func() health.CheckResult {
+		stats := a.MemoryStats()
+		if stats == nil {
+			return health.CheckResult{Name: "memory", Status: health.StatusDegraded, Error: "memory not initialized"}
+		}
+		return health.CheckResult{Name: "memory", Status: health.StatusHealthy}
+	})
+	s.HealthCheck().RegisterCheck("provider", func() health.CheckResult {
+		p := a.Provider()
+		if p == nil {
+			return health.CheckResult{Name: "provider", Status: health.StatusUnhealthy, Error: "no provider configured"}
+		}
+		return health.CheckResult{Name: "provider", Status: health.StatusHealthy}
+	})
+
 	if err := s.Start(); err != nil {
 		return err
 	}
@@ -1382,5 +1426,37 @@ func runRAGStats(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	return nil
+}
+
+// ===== v0.17.0: Metrics 命令实现 =====
+
+func runMetrics(cmd *cobra.Command, args []string) error {
+	// 尝试从运行中的 API Server 获取指标
+	addr, _ := cmd.Flags().GetString("addr")
+	if addr == "" {
+		addr = "http://localhost:9090"
+	}
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+
+	// 尝试获取 Prometheus 格式指标
+	resp, err := http.Get(addr + "/api/v1/metrics")
+	if err != nil {
+		return fmt.Errorf("无法连接到 API Server (%s): %w\n提示: 先运行 `lh serve` 启动服务器", addr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API Server 返回状态码 %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取响应: %w", err)
+	}
+
+	fmt.Println(string(body))
 	return nil
 }
