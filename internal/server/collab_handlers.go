@@ -165,9 +165,12 @@ func (s *Server) handleAgentsDelegate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 使用 GetTask 获取深拷贝，避免 data race（后台 goroutine 正在修改 task）
+	taskCopy, _ := s.delegateManager.GetTask(task.ID)
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(task)
+	json.NewEncoder(w).Encode(taskCopy)
 }
 
 // handleAgentsTask 获取任务状态
