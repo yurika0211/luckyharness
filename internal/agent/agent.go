@@ -8,6 +8,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
@@ -34,6 +35,7 @@ type Agent struct {
 	contextWin   *contextx.ContextWindow // 上下文窗口管理器
 	ragManager   *rag.RAGManager         // RAG 知识库管理器
 	ragPersist   *rag.Persistence        // RAG 持久化
+	embedderReg  *embedder.Registry      // v0.21.0: 嵌入模型注册表
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -152,8 +154,23 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 
 	// 创建 RAG 知识库管理器
-	// v0.20.0: 支持 SQLite 持久化后端
-	ragEmbedder := rag.NewMockEmbedder(128) // v0.14.0: 默认 mock, 后续支持配置 OpenAI
+	// v0.21.0: 使用 Embedder Registry 管理嵌入模型
+	embedderReg := embedder.NewRegistry()
+	mockEmb := embedder.NewMockEmbedder(128)
+	embedderReg.Register("mock-128", mockEmb)
+
+	// 注册 OpenAI embedder (如果配置了 API key)
+	if c.APIKey != "" {
+		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
+			APIKey:  c.APIKey,
+			BaseURL: c.APIBase,
+		})
+		embedderReg.Register("openai-default", openaiEmb)
+	}
+
+	// 使用 active embedder (带缓存)
+	activeEmb := embedder.NewCachedEmbedder(embedderReg.Active(), 512)
+
 	ragConfig := rag.DefaultRAGConfig()
 
 	var ragManager *rag.RAGManager
@@ -161,10 +178,10 @@ func New(cfg *config.Manager) (*Agent, error) {
 
 	// 尝试使用 SQLite 后端
 	ragDBPath := cfg.HomeDir() + "/rag/luckyharness.db"
-	ragMgr, err := rag.NewRAGManagerWithSQLite(ragEmbedder, ragConfig, ragDBPath)
+	ragMgr, err := rag.NewRAGManagerWithSQLite(activeEmb, ragConfig, ragDBPath)
 	if err != nil {
 		// SQLite 不可用时降级到内存 + JSON 持久化
-		ragManager = rag.NewRAGManager(ragEmbedder, ragConfig)
+		ragManager = rag.NewRAGManager(activeEmb, ragConfig)
 		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
 		if ragPersist.Exists() {
 			if docCount, loadErr := ragPersist.Load(ragManager); loadErr == nil && docCount > 0 {
@@ -178,7 +195,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
 		if ragPersist.Exists() {
 			// 迁移旧 JSON 数据到 SQLite
-			tempMgr := rag.NewRAGManager(ragEmbedder, ragConfig)
+			tempMgr := rag.NewRAGManager(activeEmb, ragConfig)
 			if docCount, loadErr := ragPersist.Load(tempMgr); loadErr == nil && docCount > 0 {
 				for _, docID := range tempMgr.ListDocuments() {
 					if doc, ok := tempMgr.GetDocument(docID); ok {
@@ -204,8 +221,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 		mcpClient:  mcpClient,
 		delegate:   delegateMgr,
 		contextWin: contextWin,
-		ragManager: ragManager,
-		ragPersist: ragPersist,
+		ragManager:  ragManager,
+		ragPersist:  ragPersist,
+		embedderReg: embedderReg,
 	}, nil
 }
 
@@ -536,6 +554,11 @@ func (a *Agent) RAG() *rag.RAGManager {
 // RAGPersist 返回 RAG 持久化管理器
 func (a *Agent) RAGPersist() *rag.Persistence {
 	return a.ragPersist
+}
+
+// EmbedderRegistry 返回嵌入模型注册表
+func (a *Agent) EmbedderRegistry() *embedder.Registry {
+	return a.embedderReg
 }
 
 // Close 释放资源，保存持久化数据

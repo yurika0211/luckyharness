@@ -77,8 +77,8 @@ func TestHandleHealth(t *testing.T) {
 	if resp["status"] != "ok" {
 		t.Errorf("expected ok, got %v", resp["status"])
 	}
-	if resp["version"] != "v0.20.0" {
-		t.Errorf("expected v0.20.0, got %v", resp["version"])
+	if resp["version"] != "v0.21.0" {
+		t.Errorf("expected v0.21.0, got %v", resp["version"])
 	}
 }
 
@@ -247,8 +247,8 @@ func TestHandleStats(t *testing.T) {
 
 	var resp map[string]interface{}
 	json.NewDecoder(w.Body).Decode(&resp)
-	if resp["version"] != "v0.20.0" {
-		t.Errorf("expected v0.20.0, got %v", resp["version"])
+	if resp["version"] != "v0.21.0" {
+		t.Errorf("expected v0.21.0, got %v", resp["version"])
 	}
 }
 

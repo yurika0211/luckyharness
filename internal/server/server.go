@@ -136,7 +136,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.20.0")
+	hc := health.NewHealthCheck("v0.21.0")
 
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
@@ -186,7 +186,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/rag/index", s.handleRAGIndex)
 	mux.HandleFunc("/api/v1/rag/search", s.handleRAGSearch)
 	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
-	mux.HandleFunc("/api/v1/rag/store", s.handleRAGStore) // v0.20.0: SQLite 持久化
+	mux.HandleFunc("/api/v1/rag/store", s.handleRAGStore) // v0.21.0: SQLite 持久化
 
 	// v0.15.0: Plugin API
 	mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
@@ -205,6 +205,12 @@ func (s *Server) Start() error {
 	// v0.19.0: SOUL 模板
 	mux.HandleFunc("/api/v1/soul/templates", s.handleSoulTemplates)
 	mux.HandleFunc("/api/v1/soul/templates/", s.handleSoulTemplateByID)
+
+	// v0.21.0: 嵌入模型管理
+	mux.HandleFunc("/api/v1/embedders", s.handleEmbedderList)
+	mux.HandleFunc("/api/v1/embedders/register", s.handleEmbedderRegister)
+	mux.HandleFunc("/api/v1/embedders/switch", s.handleEmbedderSwitch)
+	mux.HandleFunc("/api/v1/embedders/", s.handleEmbedderRoutes)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
@@ -301,7 +307,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "ok",
-		"version":   "v0.20.0",
+		"version":   "v0.21.0",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
 }
@@ -715,7 +721,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
-		"version":        "v0.20.0",
+		"version":        "v0.21.0",
 	})
 }
 
@@ -777,7 +783,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.20.0",
+		"version":  "v0.21.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
@@ -1545,7 +1551,7 @@ type fcResponse struct {
 	State      string        `json:"state"`
 }
 
-// --- v0.20.0: RAG 持久化存储 API ---
+// --- v0.21.0: RAG 持久化存储 API ---
 
 // handleRAGStore 管理 RAG 向量存储后端
 func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
@@ -1608,7 +1614,7 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 		// 迁移逻辑由 Agent 层处理
 		s.sendJSON(w, http.StatusOK, map[string]interface{}{
 			"message": "migration to SQLite requires restart with SQLite backend enabled",
-			"hint":    "SQLite backend is enabled by default in v0.20.0+",
+			"hint":    "SQLite backend is enabled by default in v0.21.0+",
 		})
 
 	default:
