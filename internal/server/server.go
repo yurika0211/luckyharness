@@ -17,6 +17,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/websocket"
 )
 
 // Server 是 LuckyHarness 的 HTTP API Server
@@ -36,6 +37,9 @@ type Server struct {
 	// v0.17.0: 可观测性
 	metrics     *metrics.Metrics
 	healthCheck *health.HealthCheck
+
+	// v0.18.0: WebSocket
+	wsHub *websocket.Hub
 }
 
 // ServerConfig API Server 配置
@@ -132,7 +136,12 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.17.0")
+	hc := health.NewHealthCheck("v0.18.0")
+
+	// v0.18.0: WebSocket Hub
+	wsHandler := websocket.NewAgentHandler(a)
+	wsHub := websocket.NewHub(wsHandler, websocket.DefaultHubConfig())
+	go wsHub.Run()
 
 	return &Server{
 		agent:       a,
@@ -143,6 +152,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		},
 		metrics:     m,
 		healthCheck: hc,
+		wsHub:       wsHub,
 	}
 }
 
@@ -186,6 +196,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/fc", s.handleFunctionCalling)
 	mux.HandleFunc("/api/v1/fc/tools", s.handleFCTools)
 	mux.HandleFunc("/api/v1/fc/history", s.handleFCHistory)
+
+	// v0.18.0: WebSocket
+	mux.HandleFunc("/api/v1/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/v1/ws/stats", s.handleWSStats)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
@@ -234,6 +248,11 @@ func (s *Server) Stop() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+
+	// v0.18.0: 停止 WebSocket Hub
+	if s.wsHub != nil {
+		s.wsHub.Stop()
+	}
 
 	if err := s.server.Shutdown(ctx); err != nil {
 		return fmt.Errorf("shutdown server: %w", err)
@@ -709,6 +728,42 @@ func (s *Server) handleSoul(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleRoot 根路由
+// ===== v0.18.0: WebSocket 端点 =====
+
+// handleWebSocket 处理 WebSocket 连接
+func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if s.wsHub == nil {
+		http.Error(w, "WebSocket not available", http.StatusServiceUnavailable)
+		return
+	}
+	s.wsHub.ServeHTTP(w, r)
+}
+
+// handleWSStats 返回 WebSocket 统计信息
+func (s *Server) handleWSStats(w http.ResponseWriter, r *http.Request) {
+	if s.wsHub == nil {
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"enabled":       false,
+			"active_conns":   0,
+			"total_conns":    0,
+			"total_messages": 0,
+			"errors":         0,
+		})
+		return
+	}
+
+	stats := s.wsHub.GetStats()
+	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"enabled":       true,
+		"active_conns":  stats.ActiveConns,
+		"total_conns":   stats.TotalConns,
+		"total_messages": stats.TotalMessages,
+		"errors":         stats.Errors,
+		"sessions":       s.wsHub.SessionCount(),
+		"clients":        s.wsHub.ClientCount(),
+	})
+}
+
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -717,10 +772,12 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.17.0",
+		"version":  "v0.18.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
+			"GET  /api/v1/ws         — WebSocket 实时通信",
+			"GET  /api/v1/ws/stats   — WebSocket 统计",
 			"GET  /api/v1/sessions   — 会话列表",
 			"GET  /api/v1/memory     — 记忆统计",
 			"POST /api/v1/memory     — 保存记忆",

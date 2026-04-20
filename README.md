@@ -35,6 +35,59 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.15.0 | Plugin Marketplace | 插件清单 + 注册中心 + 安装器 + 沙箱 + CLI/API |
 | v0.16.0 | Function Calling | OpenAI 原生 FC + 多轮调用 + 流式 + API 端点 |
 | v0.17.0 | Observability & Metrics | 结构化日志 + Prometheus 指标 + 三级健康检查 + CLI metrics 命令 |
+| v0.18.0 | WebSocket 实时通信 | 双向实时通信 + 会话绑定 + 心跳保活 + 断线重连 + 流式推送 |
+
+## v0.18.0 新特性
+
+### WebSocket 实时通信
+
+内置 WebSocket 支持，实现双向实时通信、会话绑定、心跳保活和断线重连：
+
+#### 连接与通信
+
+```bash
+# 启动 API Server（自动启用 WebSocket）
+lh serve
+
+# WebSocket 端点
+ws://localhost:9090/api/v1/ws?session=my-session
+
+# 查看 WebSocket 统计
+lh ws stats
+```
+
+#### 消息协议
+
+所有消息使用 JSON 格式：
+
+```json
+// 客户端 → 服务端
+{"type": "chat", "session_id": "my-session", "data": {"message": "hello", "stream": true}}
+{"type": "ping", "session_id": "my-session", "data": null}
+{"type": "reconnect", "session_id": "my-session", "data": {"last_message_id": "ws-xxx"}}
+
+// 服务端 → 客户端
+{"type": "stream_chunk", "session_id": "my-session", "data": {"content": "Hello", "done": false}}
+{"type": "stream_end", "session_id": "my-session", "data": {"full_response": "...", "iterations": 1}}
+{"type": "status", "session_id": "my-session", "data": {"state": "thinking", "message": "processing"}}
+{"type": "pong", "session_id": "my-session", "data": null}
+{"type": "error", "session_id": "my-session", "data": {"code": "ERR001", "message": "..."}}
+```
+
+#### 特性
+
+- **会话绑定** — 多客户端可连接同一 session，消息广播到同 session 所有客户端
+- **心跳保活** — 自动 ping/pong，54s 间隔，60s 超时
+- **断线重连** — 客户端发送 `reconnect` 消息携带 `last_message_id`
+- **流式推送** — Agent 流式输出通过 WebSocket 实时推送
+- **工具调用通知** — 工具调用状态通过 `tool_call` / `tool_result` 实时推送
+
+#### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/ws` | WebSocket | WebSocket 连接（`?session=<id>`） |
+| `/api/v1/ws/stats` | GET | WebSocket 统计信息 |
 
 ## v0.17.0 新特性
 

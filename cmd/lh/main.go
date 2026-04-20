@@ -98,7 +98,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.15.0")
+			fmt.Println("🍀 LuckyHarness v0.18.0")
 		},
 	}
 
@@ -353,6 +353,19 @@ func main() {
 	serveCmd.Flags().String("log-level", "info", "日志级别: debug, info, warn, error")
 	serveCmd.Flags().String("log-format", "text", "日志格式: json, text")
 
+	// ===== v0.18.0: WebSocket 命令 =====
+	wsCmd := &cobra.Command{
+		Use:   "ws",
+		Short: "WebSocket 管理",
+	}
+	wsStatsCmd := &cobra.Command{
+		Use:   "stats",
+		Short: "查看 WebSocket 连接统计",
+		RunE:  runWSStats,
+	}
+	wsStatsCmd.Flags().String("addr", "http://localhost:9090", "API Server 地址")
+	wsCmd.AddCommand(wsStatsCmd)
+
 	// ===== v0.17.0: Metrics 命令 =====
 	metricsCmd := &cobra.Command{
 		Use:   "metrics",
@@ -443,7 +456,7 @@ func main() {
 
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1443,6 +1456,36 @@ func runMetrics(cmd *cobra.Command, args []string) error {
 
 	// 尝试获取 Prometheus 格式指标
 	resp, err := http.Get(addr + "/api/v1/metrics")
+	if err != nil {
+		return fmt.Errorf("无法连接到 API Server (%s): %w\n提示: 先运行 `lh serve` 启动服务器", addr, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API Server 返回状态码 %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("读取响应: %w", err)
+	}
+
+	fmt.Println(string(body))
+	return nil
+}
+
+// ===== v0.18.0: WebSocket 命令实现 =====
+
+func runWSStats(cmd *cobra.Command, args []string) error {
+	addr, _ := cmd.Flags().GetString("addr")
+	if addr == "" {
+		addr = "http://localhost:9090"
+	}
+	if !strings.HasPrefix(addr, "http") {
+		addr = "http://" + addr
+	}
+
+	resp, err := http.Get(addr + "/api/v1/ws/stats")
 	if err != nil {
 		return fmt.Errorf("无法连接到 API Server (%s): %w\n提示: 先运行 `lh serve` 启动服务器", addr, err)
 	}
