@@ -15,6 +15,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/profile"
+	"github.com/yurika0211/luckyharness/internal/server"
 )
 
 // startREPL 启动交互式 REPL
@@ -29,7 +30,7 @@ func startREPL(mgr *config.Manager) error {
 	watcher := cron.NewWatcher(cronEngine)
 
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.9.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.12.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -137,6 +138,7 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /profile list      列出 Profile")
 		fmt.Println("  /profile switch X  切换 Profile")
 		fmt.Println("  /dashboard start   启动 Web Dashboard")
+		fmt.Println("  /serve [addr]      启动 API Server")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -333,6 +335,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/dashboard":
 		return handleDashboardCommand(arg), false
+
+	case "/serve":
+		return handleServeCommand(arg, a), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -623,6 +628,26 @@ func handleDashboardCommand(arg string) bool {
 
 	default:
 		fmt.Printf("未知 dashboard 子命令: %s\n", parts[0])
+	}
+	return true
+}
+
+// handleServeCommand 处理 /serve 命令
+func handleServeCommand(arg string, a *agent.Agent) bool {
+	addr := ":9090"
+	if arg != "" {
+		addr = arg
+	}
+
+	cfg := server.DefaultServerConfig()
+	cfg.Addr = addr
+
+	s := server.New(a, cfg)
+	if err := s.Start(); err != nil {
+		fmt.Printf("❌ %v\n", err)
+	} else {
+		fmt.Printf("🚀 API Server 已启动: http://localhost%s\n", addr)
+		fmt.Println("   端点: /api/v1/chat | /api/v1/health | /api/v1/stats")
 	}
 	return true
 }

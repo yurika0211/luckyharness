@@ -16,6 +16,7 @@ import (
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/tool"
 	"path/filepath"
 )
@@ -93,7 +94,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.10.0")
+			fmt.Println("🍀 LuckyHarness v0.12.0")
 		},
 	}
 
@@ -333,9 +334,21 @@ func main() {
 	usageQuotaCmd.AddCommand(usageQuotaSetCmd, usageQuotaListCmd, usageQuotaRemoveCmd)
 	usageCmd.AddCommand(usageStatsCmd, usageQuotaCmd)
 
+	// ===== v0.12.0: Serve 命令 =====
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "启动 API Server",
+		Long:  "启动 LuckyHarness HTTP API Server，暴露 RESTful API 供外部调用。\n\n端点:\n  POST /api/v1/chat       — 流式聊天 (SSE)\n  POST /api/v1/chat/sync  — 同步聊天\n  GET  /api/v1/sessions   — 会话列表\n  GET  /api/v1/memory     — 记忆统计\n  POST /api/v1/memory     — 保存记忆\n  GET  /api/v1/memory/recall?q= — 搜索记忆\n  GET  /api/v1/tools      — 工具列表\n  GET  /api/v1/stats      — 服务器统计\n  GET  /api/v1/health     — 健康检查",
+		RunE:  runServe,
+	}
+	serveCmd.Flags().StringP("addr", "a", ":9090", "监听地址")
+	serveCmd.Flags().StringSlice("api-keys", nil, "API Key 白名单 (逗号分隔，空=不鉴权)")
+	serveCmd.Flags().Bool("no-cors", false, "禁用 CORS")
+	serveCmd.Flags().Int("rate-limit", 60, "每分钟请求限制")
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1138,4 +1151,44 @@ func runUsageQuotaRemove(cmd *cobra.Command, args []string) error {
 	a.Gateway().Tracker().RemoveQuota(args[0], args[1])
 	fmt.Printf("🗑️ 配额已移除: %s/%s\n", args[0], args[1])
 	return nil
+}
+
+// ===== v0.12.0: Serve 命令实现 =====
+
+func runServe(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	addr, _ := cmd.Flags().GetString("addr")
+	apiKeys, _ := cmd.Flags().GetStringSlice("api-keys")
+	noCORS, _ := cmd.Flags().GetBool("no-cors")
+	rateLimit, _ := cmd.Flags().GetInt("rate-limit")
+
+	cfg := server.ServerConfig{
+		Addr:        addr,
+		APIKeys:     apiKeys,
+		EnableCORS:  !noCORS,
+		CORSOrigins: []string{"*"},
+		RateLimit:   rateLimit,
+	}
+
+	s := server.New(a, cfg)
+	if err := s.Start(); err != nil {
+		return err
+	}
+
+	fmt.Println("按 Ctrl+C 停止 API Server...")
+
+	// 阻塞等待信号
+	select {}
 }

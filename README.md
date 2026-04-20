@@ -28,6 +28,64 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.8.0 | 沙箱与安全 | Docker/SSH 沙箱 + 权限控制 |
 | v0.9.0 | 多实例 Profile | 隔离配置 + Web Dashboard |
 | v0.10.0 | Tool Gateway | 统一工具网关 + 订阅制集成 |
+| v0.11.0 | Session & Stream | 会话持久化 + 流式工具调用 + 配置热重载 |
+| v0.12.0 | API Server | HTTP RESTful API + SSE 流式 + 认证限流 |
+
+## v0.12.0 新特性
+
+### API Server
+
+启动 HTTP API Server，暴露 RESTful API 供外部程序调用：
+
+```bash
+# 启动 API Server
+lh serve
+
+# 自定义地址和认证
+lh serve --addr :8080 --api-keys key1,key2 --rate-limit 120
+
+# 禁用 CORS
+lh serve --no-cors
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/chat` | 流式聊天 (SSE) |
+| POST | `/api/v1/chat/sync` | 同步聊天 |
+| GET  | `/api/v1/sessions` | 会话列表 |
+| GET  | `/api/v1/memory` | 记忆统计 |
+| POST | `/api/v1/memory` | 保存记忆 |
+| GET  | `/api/v1/memory/recall?q=` | 搜索记忆 |
+| GET  | `/api/v1/memory/stats` | 记忆统计 |
+| GET  | `/api/v1/tools` | 工具列表 |
+| GET  | `/api/v1/stats` | 服务器统计 |
+| GET  | `/api/v1/soul` | SOUL 信息 |
+| GET  | `/api/v1/health` | 健康检查 |
+
+### 认证
+
+支持三种 API Key 传递方式：
+
+```bash
+# Header
+curl -H "X-API-Key: your-key" http://localhost:9090/api/v1/stats
+
+# Bearer Token
+curl -H "Authorization: Bearer your-key" http://localhost:9090/api/v1/stats
+
+# Query Parameter
+curl "http://localhost:9090/api/v1/stats?api_key=your-key"
+```
+
+### SSE 流式聊天
+
+```bash
+curl -N -X POST http://localhost:9090/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!", "stream": true}'
+```
 
 ## 快速开始
 

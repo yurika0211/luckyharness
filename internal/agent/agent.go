@@ -419,5 +419,15 @@ func truncate(s string, maxLen int) string {
 	return s[:maxLen] + "..."
 }
 
+// Sessions 返回会话管理器
+func (a *Agent) Sessions() *session.Manager {
+	return a.sessions
+}
+
+// Config 返回配置管理器
+func (a *Agent) Config() *config.Manager {
+	return a.cfg
+}
+
 // unused suppress
 var _ = time.Second
