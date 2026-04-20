@@ -30,6 +30,49 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.10.0 | Tool Gateway | 统一工具网关 + 订阅制集成 |
 | v0.11.0 | Session & Stream | 会话持久化 + 流式工具调用 + 配置热重载 |
 | v0.12.0 | API Server | HTTP RESTful API + SSE 流式 + 认证限流 |
+| v0.13.0 | Context Window | Token 估算 + 4 种裁剪策略 + 优先级管理 |
+
+## v0.13.0 新特性
+
+### Context Window 管理
+
+自动管理上下文窗口，防止超出模型 token 限制：
+
+```bash
+# 查看上下文窗口状态
+/context
+
+# 手动触发裁剪
+/context fit
+
+# 查看裁剪策略
+/context strategy
+```
+
+### 4 种裁剪策略
+
+| 策略 | 说明 |
+|------|------|
+| TrimOldest | 优先裁剪最旧消息 |
+| TrimLowPriority | 优先裁剪低优先级消息 |
+| TrimSlidingWindow | 滑动窗口保留最近 N 条 |
+| TrimSummarize | 摘要压缩低优先级消息 |
+
+### Token 估算
+
+启发式 token 估算，支持英文/中文/代码/混合文本：
+
+```go
+estimator := contextx.NewTokenEstimator()
+tokens := estimator.Estimate("你好世界 Hello World")
+```
+
+### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/v1/context` | 上下文窗口配置查询 |
+| POST | `/api/v1/context/fit` | 手动触发上下文裁剪 |
 
 ## v0.12.0 新特性
 

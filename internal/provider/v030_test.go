@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
@@ -273,10 +274,13 @@ func TestFallbackChainOnSwitch(t *testing.T) {
 
 	switched := false
 	var fromName, toName string
+	var cbMu sync.Mutex
 	chain.SetOnSwitch(func(from, to string) {
+		cbMu.Lock()
 		switched = true
 		fromName = from
 		toName = to
+		cbMu.Unlock()
 	})
 
 	chain.Chat(context.Background(), []Message{{Role: "user", Content: "hi"}})
@@ -284,11 +288,17 @@ func TestFallbackChainOnSwitch(t *testing.T) {
 	// 等待 goroutine 回调
 	time.Sleep(100 * time.Millisecond)
 
-	if !switched {
+	cbMu.Lock()
+	s := switched
+	fn := fromName
+	tn := toName
+	cbMu.Unlock()
+
+	if !s {
 		t.Error("expected onSwitch callback")
 	}
-	if fromName != "mock1" || toName != "mock2" {
-		t.Errorf("expected switch from mock1 to mock2, got %s to %s", fromName, toName)
+	if fn != "mock1" || tn != "mock2" {
+		t.Errorf("expected switch from mock1 to mock2, got %s to %s", fn, tn)
 	}
 }
 
