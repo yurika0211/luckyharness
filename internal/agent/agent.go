@@ -36,6 +36,7 @@ type Agent struct {
 	contextWin   *contextx.ContextWindow // 上下文窗口管理器
 	ragManager   *rag.RAGManager         // RAG 知识库管理器
 	ragPersist   *rag.Persistence        // RAG 持久化
+	streamIndexer *rag.StreamIndexer     // v0.23.0: 流式索引器
 	embedderReg  *embedder.Registry      // v0.21.0: 嵌入模型注册表
 	collabReg    *collab.Registry        // v0.22.0: Agent 协作注册表
 	collabMgr    *collab.DelegateManager // v0.22.0: 协作任务管理器
@@ -222,6 +223,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// 创建协作任务管理器（使用默认 handler，实际执行由 Agent Loop 驱动）
 	collabMgr := collab.NewDelegateManager(collabReg, nil)
 
+	// v0.23.0: 创建流式索引器
+	streamIndexer := rag.NewStreamIndexer(ragManager, rag.DefaultStreamConfig())
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -239,6 +243,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		contextWin: contextWin,
 		ragManager:  ragManager,
 		ragPersist:  ragPersist,
+		streamIndexer: streamIndexer,
 		embedderReg: embedderReg,
 		collabReg:   collabReg,
 		collabMgr:   collabMgr,
@@ -572,6 +577,11 @@ func (a *Agent) RAG() *rag.RAGManager {
 // RAGPersist 返回 RAG 持久化管理器
 func (a *Agent) RAGPersist() *rag.Persistence {
 	return a.ragPersist
+}
+
+// StreamIndexer 返回流式索引器 (v0.23.0)
+func (a *Agent) StreamIndexer() *rag.StreamIndexer {
+	return a.streamIndexer
 }
 
 // EmbedderRegistry 返回嵌入模型注册表
