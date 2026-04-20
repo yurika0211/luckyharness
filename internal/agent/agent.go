@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -28,6 +29,7 @@ type Agent struct {
 	gateway      *tool.Gateway          // 统一工具网关
 	mcpClient    *tool.MCPClient         // MCP 客户端
 	delegate     *tool.DelegateManager   // 子代理委派管理器
+	contextWin   *contextx.ContextWindow // 上下文窗口管理器
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -131,6 +133,17 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// 创建统一工具网关
 	gateway := tool.NewGateway(tools)
 
+	// 创建上下文窗口管理器
+	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
+		MaxTokens:            c.MaxTokens,
+		ReservedTokens:      c.MaxTokens / 4, // 为回复预留 1/4
+		Strategy:             contextx.TrimLowPriority,
+		SlidingWindowSize:    10,
+		MaxConversationTurns: 50,
+		MemoryBudget:         800,
+		SummarizeThreshold:  0.8,
+	})
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -144,6 +157,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		gateway:    gateway,
 		mcpClient:  mcpClient,
 		delegate:   delegateMgr,
+		contextWin: contextWin,
 	}, nil
 }
 
@@ -162,6 +176,13 @@ func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	// 加入用户消息
 	sess.AddMessage("user", userInput)
 	messages = append(messages, provider.Message{Role: "user", Content: userInput})
+
+	// 上下文窗口管理：裁剪消息到窗口内
+	contextMessages := a.toContextMessages(messages)
+	fitted, trimResult := a.contextWin.Fit(contextMessages)
+	if trimResult.Trimmed {
+		messages = a.fromContextMessages(fitted)
+	}
 
 	// 调用 Provider
 	ch, err := a.provider.ChatStream(ctx, messages)
@@ -213,6 +234,13 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 
 	sess.AddMessage("user", userInput)
 	messages = append(messages, provider.Message{Role: "user", Content: userInput})
+
+	// 上下文窗口管理：裁剪消息到窗口内
+	contextMessages := a.toContextMessages(messages)
+	fitted, trimResult := a.contextWin.Fit(contextMessages)
+	if trimResult.Trimmed {
+		messages = a.fromContextMessages(fitted)
+	}
 
 	return a.provider.ChatStream(ctx, messages)
 }
@@ -429,5 +457,71 @@ func (a *Agent) Config() *config.Manager {
 	return a.cfg
 }
 
+// ContextWindow 返回上下文窗口管理器
+func (a *Agent) ContextWindow() *contextx.ContextWindow {
+	return a.contextWin
+}
+
+// FitContext 裁剪消息列表到上下文窗口内
+func (a *Agent) FitContext(messages []contextx.Message) ([]contextx.Message, contextx.TrimResult) {
+	return a.contextWin.Fit(messages)
+}
+
+// ContextStats 返回上下文窗口统计
+func (a *Agent) ContextStats(messages []contextx.Message) contextx.ContextStats {
+	return a.contextWin.Stats(messages)
+}
+
 // unused suppress
 var _ = time.Second
+
+// toContextMessages 将 provider.Message 转换为 contextx.Message
+func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Message {
+	result := make([]contextx.Message, len(messages))
+	for i, msg := range messages {
+		priority := contextx.PriorityNormal
+		category := msg.Role
+
+		// system 消息是 critical
+		if msg.Role == "system" {
+			priority = contextx.PriorityCritical
+			category = "system"
+		}
+
+		// 记忆上下文按层级分配优先级
+		if msg.Role == "system" && len(msg.Content) > 0 {
+			switch {
+			case strings.HasPrefix(msg.Content, "[Core Memory"):
+				priority = contextx.PriorityHigh
+				category = "memory_long"
+			case strings.HasPrefix(msg.Content, "[Working Memory"):
+				priority = contextx.PriorityNormal
+				category = "memory_medium"
+			case strings.HasPrefix(msg.Content, "[Recent Context"):
+				priority = contextx.PriorityLow
+				category = "memory_short"
+			}
+		}
+
+		result[i] = contextx.Message{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Priority: priority,
+			Category:  category,
+			Timestamp: time.Now(),
+		}
+	}
+	return result
+}
+
+// fromContextMessages 将 contextx.Message 转换回 provider.Message
+func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Message {
+	result := make([]provider.Message, len(messages))
+	for i, msg := range messages {
+		result[i] = provider.Message{
+			Role:    msg.Role,
+			Content: msg.Content,
+		}
+	}
+	return result
+}

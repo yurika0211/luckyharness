@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -144,6 +145,8 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/tools", s.handleTools)
 	mux.HandleFunc("/api/v1/stats", s.handleStats)
 	mux.HandleFunc("/api/v1/soul", s.handleSoul)
+	mux.HandleFunc("/api/v1/context", s.handleContext)
+	mux.HandleFunc("/api/v1/context/fit", s.handleContextFit)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
@@ -225,7 +228,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "ok",
-		"version":   "v0.12.0",
+		"version":   "v0.13.0",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
 }
@@ -565,7 +568,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
-		"version":        "v0.12.0",
+		"version":        "v0.13.0",
 	})
 }
 
@@ -591,7 +594,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.12.0",
+		"version":  "v0.13.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
@@ -862,3 +865,132 @@ func (rl *rateLimiter) cleanup() {
 // Ensure Agent exposes Sessions
 // We need to add Sessions() method to Agent
 var _ provider.Provider = (*provider.OpenAIProvider)(nil)
+
+// ===== v0.13.0: Context Window API =====
+
+// handleContext 上下文窗口状态查询
+func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	cw := s.agent.ContextWindow()
+	cfg := cw.Config()
+
+	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"max_tokens":        cfg.MaxTokens,
+		"reserved_tokens":  cfg.ReservedTokens,
+		"available_tokens": cfg.MaxTokens - cfg.ReservedTokens,
+		"strategy":          cfg.Strategy.String(),
+		"sliding_window_size": cfg.SlidingWindowSize,
+		"max_conversation_turns": cfg.MaxConversationTurns,
+		"memory_budget":    cfg.MemoryBudget,
+		"summarize_threshold": cfg.SummarizeThreshold,
+	})
+}
+
+// handleContextFit 上下文裁剪接口
+func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	var req struct {
+		Messages []struct {
+			Role      string `json:"role"`
+			Content   string `json:"content"`
+			Priority  int    `json:"priority,omitempty"`
+			Category  string `json:"category,omitempty"`
+		} `json:"messages"`
+		Strategy string `json:"strategy,omitempty"` // oldest_first, low_priority_first, sliding_window, summarize
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// 转换消息
+	messages := make([]contextx.Message, len(req.Messages))
+	for i, msg := range req.Messages {
+		priority := contextx.PriorityNormal
+		if msg.Priority > 0 {
+			priority = contextx.MessagePriority(msg.Priority)
+		}
+		if priority < 0 || priority > 3 {
+			priority = contextx.PriorityNormal
+		}
+		category := msg.Category
+		if category == "" {
+			category = msg.Role
+		}
+
+		messages[i] = contextx.Message{
+			Role:      msg.Role,
+			Content:   msg.Content,
+			Priority:  priority,
+			Category:  category,
+			Timestamp: time.Now(),
+		}
+	}
+
+	// 选择策略
+	cw := s.agent.ContextWindow()
+	if req.Strategy != "" {
+		switch req.Strategy {
+		case "oldest_first":
+			cw = contextx.NewContextWindow(contextx.WindowConfig{
+				MaxTokens:       cw.Config().MaxTokens,
+				ReservedTokens:  cw.Config().ReservedTokens,
+				Strategy:        contextx.TrimOldest,
+			})
+		case "low_priority_first":
+			cw = contextx.NewContextWindow(contextx.WindowConfig{
+				MaxTokens:       cw.Config().MaxTokens,
+				ReservedTokens:  cw.Config().ReservedTokens,
+				Strategy:        contextx.TrimLowPriority,
+			})
+		case "sliding_window":
+			cw = contextx.NewContextWindow(contextx.WindowConfig{
+				MaxTokens:          cw.Config().MaxTokens,
+				ReservedTokens:      cw.Config().ReservedTokens,
+				Strategy:            contextx.TrimSlidingWindow,
+				SlidingWindowSize:   cw.Config().SlidingWindowSize,
+			})
+		case "summarize":
+			cw = contextx.NewContextWindow(contextx.WindowConfig{
+				MaxTokens:       cw.Config().MaxTokens,
+				ReservedTokens:  cw.Config().ReservedTokens,
+				Strategy:        contextx.TrimSummarize,
+			})
+		}
+	}
+
+	// 执行裁剪
+	fitted, trimResult := cw.Fit(messages)
+
+	// 转换结果
+	resultMessages := make([]map[string]interface{}, len(fitted))
+	for i, msg := range fitted {
+		resultMessages[i] = map[string]interface{}{
+			"role":      msg.Role,
+			"content":   msg.Content,
+			"priority":  int(msg.Priority),
+			"category":  msg.Category,
+		}
+	}
+
+	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"trimmed":         trimResult.Trimmed,
+		"original_count":  trimResult.OriginalCount,
+		"original_tokens": trimResult.OriginalTokens,
+		"final_count":     trimResult.FinalCount,
+		"final_tokens":    trimResult.FinalTokens,
+		"available_tokens": trimResult.AvailableTokens,
+		"strategy":        trimResult.Strategy.String(),
+		"messages":        resultMessages,
+		"summary":         trimResult.Summary(),
+	})
+}
