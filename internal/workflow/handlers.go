@@ -176,7 +176,8 @@ func (h *ServerHandlers) StartWorkflow(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, instance)
+	// Return a snapshot to avoid race condition with the running goroutine
+	c.JSON(http.StatusCreated, instance.Snapshot())
 }
 
 // GetInstance handles GET /workflow-instances/:id.
@@ -187,7 +188,7 @@ func (h *ServerHandlers) GetInstance(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
 		return
 	}
-	c.JSON(http.StatusOK, instance)
+	c.JSON(http.StatusOK, instance.Snapshot())
 }
 
 // CancelInstance handles DELETE /workflow-instances/:id.
@@ -208,10 +209,12 @@ func (h *ServerHandlers) GetInstanceResults(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "instance not found"})
 		return
 	}
+
+	snapshot := instance.Snapshot()
 	c.JSON(http.StatusOK, gin.H{
-		"instanceId": instance.ID,
-		"status":     instance.GetStatus(),
-		"results":    instance.Results,
+		"instanceId": snapshot.ID,
+		"status":     snapshot.Status,
+		"results":    snapshot.Results,
 	})
 }
 

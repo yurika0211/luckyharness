@@ -1,0 +1,300 @@
+syntax = "proto3";
+
+package luckyharness;
+
+option go_package = "github.com/yurika0211/luckyharness/api/grpc;luckyharness";
+
+import "google/api/annotations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// LuckyHarness gRPC Service
+service LuckyHarnessService {
+  // Chat
+  rpc Chat(ChatRequest) returns (ChatResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/chat"
+      body: "*"
+    };
+  }
+
+  rpc ChatStream(ChatRequest) returns (stream ChatChunk) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/chat/stream"
+      body: "*"
+    };
+  }
+
+  // Memory
+  rpc MemoryStore(MemoryStoreRequest) returns (MemoryEntry) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/memory"
+      body: "*"
+    };
+  }
+
+  rpc MemoryRecall(MemoryRecallRequest) returns (MemoryRecallResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/memory/recall"
+      body: "*"
+    };
+  }
+
+  rpc MemoryList(google.protobuf.Empty) returns (MemoryListResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/grpc/memory"
+    };
+  }
+
+  rpc MemoryDelete(MemoryDeleteRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/grpc/memory/{id}"
+    };
+  }
+
+  // RAG
+  rpc RAGIndex(RAGIndexRequest) returns (RAGIndexResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/rag/index"
+      body: "*"
+    };
+  }
+
+  rpc RAGSearch(RAGSearchRequest) returns (RAGSearchResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/rag/search"
+      body: "*"
+    };
+  }
+
+  // Workflow
+  rpc WorkflowCreate(WorkflowCreateRequest) returns (Workflow) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/workflows"
+      body: "*"
+    };
+  }
+
+  rpc WorkflowGet(WorkflowGetRequest) returns (Workflow) {
+    option (google.api.http) = {
+      get: "/api/v1/grpc/workflows/{id}"
+    };
+  }
+
+  rpc WorkflowList(google.protobuf.Empty) returns (WorkflowListResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/grpc/workflows"
+    };
+  }
+
+  rpc WorkflowDelete(WorkflowDeleteRequest) returns (google.protobuf.Empty) {
+    option (google.api.http) = {
+      delete: "/api/v1/grpc/workflows/{id}"
+    };
+  }
+
+  rpc WorkflowStart(WorkflowStartRequest) returns (WorkflowInstance) {
+    option (google.api.http) = {
+      post: "/api/v1/grpc/workflow-instances"
+      body: "*"
+    };
+  }
+
+  rpc WorkflowInstanceGet(WorkflowInstanceGetRequest) returns (WorkflowInstance) {
+    option (google.api.http) = {
+      get: "/api/v1/grpc/workflow-instances/{id}"
+    };
+  }
+
+  // Health
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthCheckResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/grpc/health"
+    };
+  }
+}
+
+// Chat
+message ChatRequest {
+  string message = 1;
+  string session_id = 2;
+  int32 max_iterations = 3;
+  bool auto_approve = 4;
+  map<string, string> metadata = 5;
+}
+
+message ChatResponse {
+  string response = 1;
+  string session_id = 2;
+  int32 iterations = 3;
+  int32 tokens_used = 4;
+  repeated ToolCall tool_calls = 5;
+  string duration = 6;
+}
+
+message ChatChunk {
+  string content = 1;
+  string session_id = 2;
+  bool done = 3;
+}
+
+message ToolCall {
+  string name = 1;
+  string arguments = 2;
+  string result = 3;
+  string duration = 4;
+}
+
+// Memory
+message MemoryStoreRequest {
+  string content = 1;
+  string category = 2;
+  string tier = 3;
+  double importance = 4;
+}
+
+message MemoryEntry {
+  string id = 1;
+  string content = 2;
+  string category = 3;
+  string tier = 4;
+  double importance = 5;
+  int32 access_count = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message MemoryRecallRequest {
+  string query = 1;
+  int32 limit = 2;
+  string category = 3;
+}
+
+message MemoryRecallResponse {
+  repeated MemoryEntry entries = 1;
+  int32 total = 2;
+}
+
+message MemoryListResponse {
+  repeated MemoryEntry entries = 1;
+  int32 count = 2;
+}
+
+message MemoryDeleteRequest {
+  string id = 1;
+}
+
+// RAG
+message RAGIndexRequest {
+  string content = 1;
+  string source = 2;
+  map<string, string> metadata = 3;
+}
+
+message RAGIndexResponse {
+  string id = 1;
+  int32 dimension = 2;
+  int32 total_entries = 3;
+}
+
+message RAGSearchRequest {
+  string query = 1;
+  int32 limit = 2;
+  double threshold = 3;
+}
+
+message RAGSearchResponse {
+  repeated RAGResult results = 1;
+  int32 total = 2;
+}
+
+message RAGResult {
+  string id = 1;
+  string content = 2;
+  string source = 3;
+  double score = 4;
+  map<string, string> metadata = 5;
+}
+
+// Workflow
+message WorkflowCreateRequest {
+  string name = 1;
+  string description = 2;
+  repeated Task tasks = 3;
+  string version = 4;
+}
+
+message Task {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  string action = 4;
+  map<string, string> params = 5;
+  repeated string depends_on = 6;
+  int64 timeout_ms = 7;
+  int32 retry_count = 8;
+  int64 retry_delay_ms = 9;
+}
+
+message Workflow {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  repeated Task tasks = 4;
+  string version = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp updated_at = 7;
+}
+
+message WorkflowGetRequest {
+  string id = 1;
+}
+
+message WorkflowListResponse {
+  repeated Workflow workflows = 1;
+  int32 count = 2;
+}
+
+message WorkflowDeleteRequest {
+  string id = 1;
+}
+
+message WorkflowStartRequest {
+  string workflow_id = 1;
+}
+
+message WorkflowInstance {
+  string id = 1;
+  string workflow_id = 2;
+  string status = 3;
+  map<string, TaskResult> results = 4;
+  google.protobuf.Timestamp start_time = 5;
+  google.protobuf.Timestamp end_time = 6;
+}
+
+message TaskResult {
+  string task_id = 1;
+  string status = 2;
+  string output = 3;
+  string error = 4;
+  google.protobuf.Timestamp start_time = 5;
+  google.protobuf.Timestamp end_time = 6;
+  int64 duration_ms = 7;
+}
+
+message WorkflowInstanceGetRequest {
+  string id = 1;
+}
+
+// Health
+message HealthCheckResponse {
+  string status = 1;
+  string version = 2;
+  google.protobuf.Timestamp uptime = 3;
+  map<string, ComponentHealth> components = 4;
+}
+
+message ComponentHealth {
+  string status = 1;
+  string message = 2;
+}

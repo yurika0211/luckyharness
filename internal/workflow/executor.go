@@ -151,10 +151,10 @@ func (e *WorkflowEngine) CancelInstance(id string) error {
 // runWorkflow executes the workflow DAG.
 func (e *WorkflowEngine) runWorkflow(instance *WorkflowInstance, workflow *Workflow) {
 	instance.SetStatus(StatusRunning)
-	instance.StartTime = time.Now()
+	instance.SetStartTime(time.Now())
 
 	defer func() {
-		instance.EndTime = time.Now()
+		instance.SetEndTime(time.Now())
 		if instance.GetStatus() == StatusRunning {
 			instance.SetStatus(StatusCompleted)
 		}
