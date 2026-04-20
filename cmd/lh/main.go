@@ -448,6 +448,53 @@ func main() {
 	}
 	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
 
+	// ===== v0.23.0: 流式 RAG 命令 =====
+	ragWatchCmd := &cobra.Command{
+		Use:   "watch <dir>",
+		Short: "添加监控目录",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runRAGWatch,
+	}
+	ragUnwatchCmd := &cobra.Command{
+		Use:   "unwatch <dir>",
+		Short: "移除监控目录",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runRAGUnwatch,
+	}
+	ragScanCmd := &cobra.Command{
+		Use:   "scan",
+		Short: "扫描变更",
+		RunE:  runRAGScan,
+	}
+	ragStartCmd := &cobra.Command{
+		Use:   "start",
+		Short: "启动后台索引",
+		RunE:  runRAGStart,
+	}
+	ragStopCmd := &cobra.Command{
+		Use:   "stop",
+		Short: "停止后台索引",
+		RunE:  runRAGStop,
+	}
+	ragStreamStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "流式索引状态",
+		RunE:  runRAGStreamStatus,
+	}
+	ragQueueCmd := &cobra.Command{
+		Use:   "queue",
+		Short: "查看索引队列",
+		RunE:  runRAGQueue,
+	}
+	ragProcessCmd := &cobra.Command{
+		Use:   "process [batch]",
+		Short: "处理索引队列",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runRAGProcess,
+	}
+	ragCmd.AddCommand(ragWatchCmd, ragUnwatchCmd, ragScanCmd, ragStartCmd, ragStopCmd,
+		ragStreamStatusCmd, ragQueueCmd, ragProcessCmd)
+
 	// ===== v0.15.0: Plugin 命令 =====
 	pluginCmd := &cobra.Command{
 		Use:   "plugin",
@@ -1489,6 +1536,248 @@ func runRAGStats(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	return nil
+}
+
+// ===== v0.23.0: 流式 RAG 命令实现 =====
+
+func runRAGWatch(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	dir := args[0]
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("directory not found: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+
+	streamIndexer.AddWatchDir(dir)
+	fmt.Printf("👀 Watching: %s\n", dir)
+	return nil
+}
+
+func runRAGUnwatch(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	streamIndexer.RemoveWatchDir(args[0])
+	fmt.Printf("🚫 Unwatched: %s\n", args[0])
+	return nil
+}
+
+func runRAGScan(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	changes := streamIndexer.Scan()
+	fmt.Printf("🔍 Detected %d changes:\n", len(changes))
+	for _, c := range changes {
+		fmt.Printf("   %s: %s\n", c.Type, c.Path)
+	}
+	fmt.Printf("📋 Queue: %d jobs pending\n", streamIndexer.Queue().Len())
+	return nil
+}
+
+func runRAGStart(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	if streamIndexer.IsRunning() {
+		fmt.Println("⚠️  Stream indexer already running")
+		return nil
+	}
+
+	streamIndexer.Start()
+	fmt.Println("▶️  Stream indexer started")
+	return nil
+}
+
+func runRAGStop(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	if !streamIndexer.IsRunning() {
+		fmt.Println("⚠️  Stream indexer not running")
+		return nil
+	}
+
+	streamIndexer.Stop()
+	fmt.Println("⏹️  Stream indexer stopped")
+	return nil
+}
+
+func runRAGStreamStatus(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		fmt.Println("❌ Stream indexer not initialized")
+		return nil
+	}
+
+	stats := streamIndexer.Stats()
+	fmt.Printf("📊 Stream Indexer Status:\n")
+	fmt.Printf("   Running:       %v\n", stats.Running)
+	fmt.Printf("   Queue:         %d jobs\n", stats.QueueLen)
+	fmt.Printf("   Tracked files: %d\n", stats.TrackedFiles)
+	fmt.Printf("   Watch dirs:    %d\n", len(stats.WatchDirs))
+	for _, d := range stats.WatchDirs {
+		fmt.Printf("     - %s\n", d)
+	}
+	return nil
+}
+
+func runRAGQueue(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	jobs := streamIndexer.Queue().List()
+	fmt.Printf("📋 Index Queue (%d jobs):\n", len(jobs))
+	for i, job := range jobs {
+		fmt.Printf("  %d. [%s] %s (priority %d)\n", i+1, job.JobType, job.Path, job.Priority)
+	}
+	return nil
+}
+
+func runRAGProcess(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	streamIndexer := a.StreamIndexer()
+	if streamIndexer == nil {
+		return fmt.Errorf("stream indexer not initialized")
+	}
+
+	batch := 1
+	if len(args) > 0 {
+		fmt.Sscanf(args[0], "%d", &batch)
+	}
+
+	jobs, docs, errs := streamIndexer.ProcessBatch(context.Background(), batch)
+	fmt.Printf("⚙️  Processed %d jobs:\n", len(jobs))
+	for i := range jobs {
+		if errs[i] != nil {
+			fmt.Printf("  ❌ %s: %v\n", jobs[i].Path, errs[i])
+		} else if docs[i] != nil {
+			fmt.Printf("  ✅ %s (%d chunks)\n", docs[i].Title, len(docs[i].Chunks))
+		} else {
+			fmt.Printf("  🗑️  %s (deleted)\n", jobs[i].Path)
+		}
+	}
 	return nil
 }
 

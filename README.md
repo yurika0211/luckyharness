@@ -40,6 +40,57 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.20.0 | RAG SQLite 持久化 | SQLite 向量存储 + WAL 模式 + 增量索引 + 持久化 API + REPL 命令 |
 | v0.21.0 | 嵌入模型管理 | Embedder 接口 + Registry + LRU 缓存 + OpenAI/Ollama Provider + API + REPL |
 | v0.22.0 | 多 Agent 协作 | Agent Registry + 任务委派 + 结果聚合 + Pipeline/Parallel/Debate 模式 + API + CLI |
+| v0.23.0 | 流式 RAG | StreamIndexer + ChangeDetector + IndexQueue + 文件监控 + 增量索引 + API + CLI |
+
+## v0.23.0 新特性
+
+### 流式 RAG 系统
+
+支持文件变更监控和增量索引，实现实时知识库更新：
+
+```bash
+# 添加监控目录
+lh rag watch ./docs
+
+# 扫描变更
+lh rag scan
+
+# 启动后台索引
+lh rag start
+
+# 查看状态
+lh rag status
+
+# 处理队列
+lh rag process 10
+
+# 停止后台索引
+lh rag stop
+```
+
+#### 特性
+
+- **StreamIndexer** — 流式索引器，支持增量添加/更新/删除
+- **ChangeDetector** — 文件哈希对比，识别新增/修改/删除
+- **IndexQueue** — 索引任务队列，支持优先级和批处理
+- **File Watcher** — 目录监控，自动触发索引
+- **API 端点** — 8 个 RESTful API 端点
+- **REPL 命令** — lh rag watch/unwatch/scan/start/stop/status/queue/process
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/rag/stream/watch` | 添加监控目录 |
+| DELETE | `/api/v1/rag/stream/watch` | 移除监控目录 |
+| POST | `/api/v1/rag/stream/scan` | 扫描变更 |
+| POST | `/api/v1/rag/stream/start` | 启动后台索引 |
+| POST | `/api/v1/rag/stream/stop` | 停止后台索引 |
+| GET | `/api/v1/rag/stream/status` | 查看状态 |
+| POST | `/api/v1/rag/stream/index` | 立即索引路径 |
+| DELETE | `/api/v1/rag/stream/index` | 移除路径 |
+| GET | `/api/v1/rag/stream/queue` | 查看队列 |
+| POST | `/api/v1/rag/stream/process` | 处理队列 |
 
 ## v0.22.0 新特性
 

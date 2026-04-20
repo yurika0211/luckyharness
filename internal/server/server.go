@@ -202,6 +202,16 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
 	mux.HandleFunc("/api/v1/rag/store", s.handleRAGStore) // v0.21.0: SQLite 持久化
 
+	// v0.23.0: 流式 RAG
+	mux.HandleFunc("/api/v1/rag/stream/watch", s.handleRAGStreamWatch)
+	mux.HandleFunc("/api/v1/rag/stream/scan", s.handleRAGStreamScan)
+	mux.HandleFunc("/api/v1/rag/stream/start", s.handleRAGStreamStart)
+	mux.HandleFunc("/api/v1/rag/stream/stop", s.handleRAGStreamStop)
+	mux.HandleFunc("/api/v1/rag/stream/status", s.handleRAGStreamStatus)
+	mux.HandleFunc("/api/v1/rag/stream/index", s.handleRAGStreamIndex)
+	mux.HandleFunc("/api/v1/rag/stream/queue", s.handleRAGStreamQueue)
+	mux.HandleFunc("/api/v1/rag/stream/process", s.handleRAGStreamProcess)
+
 	// v0.15.0: Plugin API
 	mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
 	mux.HandleFunc("/api/v1/plugins/search", s.handlePluginSearch)
