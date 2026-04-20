@@ -94,7 +94,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.12.0")
+			fmt.Println("🍀 LuckyHarness v0.13.0")
 		},
 	}
 
@@ -334,7 +334,7 @@ func main() {
 	usageQuotaCmd.AddCommand(usageQuotaSetCmd, usageQuotaListCmd, usageQuotaRemoveCmd)
 	usageCmd.AddCommand(usageStatsCmd, usageQuotaCmd)
 
-	// ===== v0.12.0: Serve 命令 =====
+	// ===== v0.13.0: Serve 命令 =====
 	serveCmd := &cobra.Command{
 		Use:   "serve",
 		Short: "启动 API Server",
@@ -1153,7 +1153,7 @@ func runUsageQuotaRemove(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// ===== v0.12.0: Serve 命令实现 =====
+// ===== v0.13.0: Serve 命令实现 =====
 
 func runServe(cmd *cobra.Command, args []string) error {
 	mgr, err := config.NewManager()

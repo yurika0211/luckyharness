@@ -11,6 +11,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	"github.com/yurika0211/luckyharness/internal/memory"
@@ -30,7 +31,7 @@ func startREPL(mgr *config.Manager) error {
 	watcher := cron.NewWatcher(cronEngine)
 
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.12.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.13.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -139,6 +140,8 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /profile switch X  切换 Profile")
 		fmt.Println("  /dashboard start   启动 Web Dashboard")
 		fmt.Println("  /serve [addr]      启动 API Server")
+		fmt.Println("  /context           上下文窗口状态")
+		fmt.Println("  /context fit       手动触发上下文裁剪")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -338,6 +341,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/serve":
 		return handleServeCommand(arg, a), false
+
+	case "/context":
+		return handleContextCommand(arg, a), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -647,7 +653,132 @@ func handleServeCommand(arg string, a *agent.Agent) bool {
 		fmt.Printf("❌ %v\n", err)
 	} else {
 		fmt.Printf("🚀 API Server 已启动: http://localhost%s\n", addr)
-		fmt.Println("   端点: /api/v1/chat | /api/v1/health | /api/v1/stats")
+		fmt.Println("   端点: /api/v1/chat | /api/v1/health | /api/v1/stats | /api/v1/context")
+	}
+	return true
+}
+
+// handleContextCommand 处理 /context 命令
+func handleContextCommand(arg string, a *agent.Agent) bool {
+	cw := a.ContextWindow()
+	cfg := cw.Config()
+
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		// 显示上下文窗口状态
+		fmt.Println("📐 上下文窗口配置:")
+		fmt.Printf("  最大 Token:     %d\n", cfg.MaxTokens)
+		fmt.Printf("  预留 Token:     %d (回复)\n", cfg.ReservedTokens)
+		fmt.Printf("  可用 Token:     %d\n", cfg.MaxTokens-cfg.ReservedTokens)
+		fmt.Printf("  裁剪策略:       %s\n", cfg.Strategy.String())
+		fmt.Printf("  滑动窗口大小:   %d\n", cfg.SlidingWindowSize)
+		fmt.Printf("  最大对话轮数:   %d\n", cfg.MaxConversationTurns)
+		fmt.Printf("  记忆预算:       %d tokens\n", cfg.MemoryBudget)
+		fmt.Printf("  摘要阈值:       %.0f%%\n", cfg.SummarizeThreshold*100)
+		return true
+	}
+
+	switch parts[0] {
+	case "fit":
+		// 手动触发上下文裁剪（使用当前会话消息）
+		sessMgr := a.Sessions()
+		if sessMgr == nil {
+			fmt.Println("❌ 无活跃会话")
+			return true
+		}
+
+		// 构建模拟消息列表
+		var messages []contextx.Message
+		messages = append(messages, contextx.Message{
+			Role:      "system",
+			Content:   a.Soul().SystemPrompt(),
+			Priority:  contextx.PriorityCritical,
+			Category:  "system",
+			Timestamp: time.Now(),
+		})
+
+		// 加入记忆
+		stats := a.MemoryStats()
+		for tier, count := range stats {
+			var priority contextx.MessagePriority
+			var category string
+			switch tier {
+			case 0: // TierShort
+				priority = contextx.PriorityLow
+				category = "memory_short"
+			case 1: // TierMedium
+				priority = contextx.PriorityNormal
+				category = "memory_medium"
+			case 2: // TierLong
+				priority = contextx.PriorityHigh
+				category = "memory_long"
+			default:
+				priority = contextx.PriorityNormal
+				category = "memory"
+			}
+			_ = count // 只显示统计
+			messages = append(messages, contextx.Message{
+				Role:      "system",
+				Content:   fmt.Sprintf("[%s memory: %d entries]", category, count),
+				Priority:  priority,
+				Category:  category,
+				Timestamp: time.Now(),
+			})
+		}
+
+		// 执行裁剪
+		fitted, trimResult := cw.Fit(messages)
+		fmt.Println(trimResult.Summary())
+		fmt.Printf("  原始: %d 条消息, %d tokens\n", trimResult.OriginalCount, trimResult.OriginalTokens)
+		fmt.Printf("  裁剪后: %d 条消息, %d tokens\n", trimResult.FinalCount, trimResult.FinalTokens)
+		fmt.Printf("  可用: %d tokens\n", trimResult.AvailableTokens)
+		if trimResult.Trimmed {
+			fmt.Printf("  ⚠️  上下文已裁剪 (策略: %s)\n", trimResult.Strategy.String())
+		} else {
+			fmt.Println("  ✅ 上下文在窗口内，无需裁剪")
+		}
+
+		// 显示裁剪后消息
+		for _, msg := range fitted {
+			priEmoji := "🟢"
+			switch msg.Priority {
+			case contextx.PriorityCritical:
+				priEmoji = "🔴"
+			case contextx.PriorityHigh:
+				priEmoji = "🟠"
+			case contextx.PriorityNormal:
+				priEmoji = "🔵"
+			case contextx.PriorityLow:
+				priEmoji = "🟡"
+			}
+			content := msg.Content
+			if len(content) > 60 {
+				content = content[:60] + "..."
+			}
+			fmt.Printf("  %s [%s] %s\n", priEmoji, msg.Category, content)
+		}
+
+	case "strategy":
+		if len(parts) < 2 {
+			fmt.Println("用法: /context strategy <oldest_first|low_priority_first|sliding_window|summarize>")
+			fmt.Println("当前策略:", cfg.Strategy.String())
+			return true
+		}
+		strategyMap := map[string]contextx.TrimStrategy{
+			"oldest_first":      contextx.TrimOldest,
+			"low_priority_first": contextx.TrimLowPriority,
+			"sliding_window":    contextx.TrimSlidingWindow,
+			"summarize":         contextx.TrimSummarize,
+		}
+		if strategy, ok := strategyMap[parts[1]]; ok {
+			fmt.Printf("✅ 裁剪策略: %s (重启后生效)\n", strategy.String())
+		} else {
+			fmt.Println("❌ 未知策略，可选: oldest_first, low_priority_first, sliding_window, summarize")
+		}
+
+	default:
+		fmt.Printf("未知 context 子命令: %s\n", parts[0])
+		fmt.Println("用法: /context [fit|strategy]")
 	}
 	return true
 }
