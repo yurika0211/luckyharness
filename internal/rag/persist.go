@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// Persistence handles saving and loading RAG index data to/from disk.
+// Persistence handles saving and loading RAG index data to/from disk (JSON format).
+// This is the legacy persistence mechanism; v0.20.0+ uses SQLiteStore for automatic persistence.
 type Persistence struct {
 	dir string // directory for persistence files
 }
@@ -75,20 +76,23 @@ func (p *Persistence) Save(m *RAGManager) error {
 	}
 	indexer.mu.RUnlock()
 
-	// Get vectors
-	store.mu.RLock()
-	vectors := make(map[string]*vecEntry, len(store.entries))
-	for k, v := range store.entries {
-		vec := make([]float64, len(v.Vector))
-		copy(vec, v.Vector)
-		vectors[k] = &vecEntry{
-			ID:       v.ID,
+	// Get vectors via interface methods
+	ids := store.AllIDs()
+	vectors := make(map[string]*vecEntry, len(ids))
+	for _, id := range ids {
+		entry, ok := store.Get(id)
+		if !ok {
+			continue
+		}
+		vec := make([]float64, len(entry.Vector))
+		copy(vec, entry.Vector)
+		vectors[id] = &vecEntry{
+			ID:       entry.ID,
 			Vector:   vec,
-			Metadata: copyMap(v.Metadata),
+			Metadata: copyMap(entry.Metadata),
 		}
 	}
-	dim := store.dim
-	store.mu.RUnlock()
+	dim := store.Dimension()
 
 	data := persistData{
 		Version:   1,
@@ -166,19 +170,14 @@ func (p *Persistence) Load(m *RAGManager) (int, error) {
 	indexer := m.Indexer()
 	store := m.Store()
 
-	// Restore vectors
-	store.mu.Lock()
-	store.entries = make(map[string]*VectorEntry, len(pd.Vectors))
+	// Restore vectors via interface methods
 	for k, v := range pd.Vectors {
 		vec := make([]float64, len(v.Vector))
 		copy(vec, v.Vector)
-		store.entries[k] = &VectorEntry{
-			ID:       v.ID,
-			Vector:   vec,
-			Metadata: copyMap(v.Metadata),
+		if err := store.Upsert(k, vec, copyMap(v.Metadata)); err != nil {
+			continue // skip vectors with dimension mismatch
 		}
 	}
-	store.mu.Unlock()
 
 	// Restore documents and chunks
 	indexer.mu.Lock()

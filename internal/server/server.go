@@ -136,7 +136,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.18.0")
+	hc := health.NewHealthCheck("v0.19.0")
 
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
@@ -186,6 +186,7 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/rag/index", s.handleRAGIndex)
 	mux.HandleFunc("/api/v1/rag/search", s.handleRAGSearch)
 	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
+	mux.HandleFunc("/api/v1/rag/store", s.handleRAGStore) // v0.20.0: SQLite 持久化
 
 	// v0.15.0: Plugin API
 	mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
@@ -300,7 +301,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "ok",
-		"version":   "v0.17.0",
+		"version":   "v0.19.0",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
 }
@@ -714,7 +715,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
-		"version":        "v0.17.0",
+		"version":        "v0.19.0",
 	})
 }
 
@@ -776,7 +777,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.18.0",
+		"version":  "v0.19.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
@@ -1416,7 +1417,7 @@ func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.sendJSON(w, http.StatusOK, map[string]any{
-			"version":     "0.16.0",
+			"version":     "0.19.0",
 			"description": "OpenAI Function Calling support",
 			"endpoints": map[string]string{
 				"POST /api/v1/fc":        "Execute function calling",
@@ -1542,4 +1543,75 @@ type fcResponse struct {
 	ToolCalls  []toolCallInfo `json:"tool_calls,omitempty"`
 	Duration   string        `json:"duration"`
 	State      string        `json:"state"`
+}
+
+// --- v0.20.0: RAG 持久化存储 API ---
+
+// handleRAGStore 管理 RAG 向量存储后端
+func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
+	ragMgr := s.agent.RAG()
+	if ragMgr == nil {
+		s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		// 获取存储后端信息
+		result := map[string]interface{}{
+			"backend":  "memory",
+			"sqlite":   false,
+		}
+
+		if ragMgr.IsSQLite() {
+			sqlStore := ragMgr.SQLiteStore()
+			count, dbSize, err := sqlStore.Stats()
+			if err != nil {
+				s.sendError(w, "failed to get sqlite stats", http.StatusInternalServerError, err.Error())
+				return
+			}
+			result = map[string]interface{}{
+				"backend":  "sqlite",
+				"sqlite":   true,
+				"db_path":  sqlStore.Path(),
+				"entries":  count,
+				"db_size":  dbSize,
+				"dimension": sqlStore.Dimension(),
+			}
+		} else {
+			store := ragMgr.Store()
+			result = map[string]interface{}{
+				"backend":   "memory",
+				"sqlite":    false,
+				"entries":   store.Len(),
+				"dimension": store.Dimension(),
+			}
+		}
+
+		s.sendJSON(w, http.StatusOK, result)
+
+	case http.MethodPost:
+		// 迁移到 SQLite 后端
+		var req struct {
+			DBPath string `json:"db_path,omitempty"` // 可选自定义路径
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		if ragMgr.IsSQLite() {
+			s.sendError(w, "already using SQLite backend", http.StatusConflict, "")
+			return
+		}
+
+		// 迁移逻辑由 Agent 层处理
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"message": "migration to SQLite requires restart with SQLite backend enabled",
+			"hint":    "SQLite backend is enabled by default in v0.20.0+",
+		})
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
 }

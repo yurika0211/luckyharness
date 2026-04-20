@@ -37,13 +37,13 @@ func DefaultRetrieverConfig() RetrieverConfig {
 
 // Retriever searches the vector store and returns relevant chunks.
 type Retriever struct {
-	store    *VectorStore
+	store    VectorStoreBackend
 	indexer  *Indexer
 	embedder EmbeddingProvider
 	config   RetrieverConfig
 }
 
-func NewRetriever(store *VectorStore, indexer *Indexer, embedder EmbeddingProvider, config RetrieverConfig) *Retriever {
+func NewRetriever(store VectorStoreBackend, indexer *Indexer, embedder EmbeddingProvider, config RetrieverConfig) *Retriever {
 	if config.TopK <= 0 {
 		config.TopK = 5
 	}
@@ -59,6 +59,11 @@ func NewRetriever(store *VectorStore, indexer *Indexer, embedder EmbeddingProvid
 		embedder: embedder,
 		config:   config,
 	}
+}
+
+// NewRetrieverWithBackend creates a retriever with a VectorStoreBackend (alias for NewRetriever).
+func NewRetrieverWithBackend(store VectorStoreBackend, indexer *Indexer, embedder EmbeddingProvider, config RetrieverConfig) *Retriever {
+	return NewRetriever(store, indexer, embedder, config)
 }
 
 // Search queries the knowledge base and returns relevant chunks.

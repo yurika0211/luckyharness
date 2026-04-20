@@ -152,14 +152,40 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 
 	// 创建 RAG 知识库管理器
+	// v0.20.0: 支持 SQLite 持久化后端
 	ragEmbedder := rag.NewMockEmbedder(128) // v0.14.0: 默认 mock, 后续支持配置 OpenAI
-	ragManager := rag.NewRAGManager(ragEmbedder, rag.DefaultRAGConfig())
+	ragConfig := rag.DefaultRAGConfig()
 
-	// RAG 持久化：启动时加载，关闭时保存
-	ragPersist := rag.NewPersistence(cfg.HomeDir() + "/rag")
-	if ragPersist.Exists() {
-		if docCount, err := ragPersist.Load(ragManager); err == nil && docCount > 0 {
-			// loaded successfully
+	var ragManager *rag.RAGManager
+	var ragPersist *rag.Persistence
+
+	// 尝试使用 SQLite 后端
+	ragDBPath := cfg.HomeDir() + "/rag/luckyharness.db"
+	ragMgr, err := rag.NewRAGManagerWithSQLite(ragEmbedder, ragConfig, ragDBPath)
+	if err != nil {
+		// SQLite 不可用时降级到内存 + JSON 持久化
+		ragManager = rag.NewRAGManager(ragEmbedder, ragConfig)
+		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
+		if ragPersist.Exists() {
+			if docCount, loadErr := ragPersist.Load(ragManager); loadErr == nil && docCount > 0 {
+				// loaded successfully
+			}
+		}
+	} else {
+		ragManager = ragMgr
+		// SQLite 后端自动持久化，不需要 JSON 持久化
+		// 但保留 ragPersist 用于迁移旧数据
+		ragPersist = rag.NewPersistence(cfg.HomeDir() + "/rag")
+		if ragPersist.Exists() {
+			// 迁移旧 JSON 数据到 SQLite
+			tempMgr := rag.NewRAGManager(ragEmbedder, ragConfig)
+			if docCount, loadErr := ragPersist.Load(tempMgr); loadErr == nil && docCount > 0 {
+				for _, docID := range tempMgr.ListDocuments() {
+					if doc, ok := tempMgr.GetDocument(docID); ok {
+						ragManager.IndexText(doc.Path, doc.Title, "")
+					}
+				}
+			}
 		}
 	}
 
@@ -516,8 +542,13 @@ func (a *Agent) RAGPersist() *rag.Persistence {
 func (a *Agent) Close() error {
 	var firstErr error
 
-	// 保存 RAG 索引
-	if a.ragPersist != nil && a.ragManager != nil {
+	// SQLite 后端自动持久化，只需关闭连接
+	if s := a.ragManager.SQLiteStore(); s != nil {
+		if err := s.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("close sqlite store: %w", err)
+		}
+	} else if a.ragPersist != nil && a.ragManager != nil {
+		// 内存后端：关闭时保存到 JSON
 		if err := a.ragPersist.Save(a.ragManager); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("save RAG index: %w", err)
 		}

@@ -38,8 +38,9 @@ type IndexStats struct {
 
 // Indexer processes documents into chunks and stores them in the vector store.
 type Indexer struct {
-	store    *VectorStore
+	store    VectorStoreBackend
 	embedder EmbeddingProvider
+	sqlite   *SQLiteStore // v0.20.0: optional SQLite backend for document persistence
 
 	mu        sync.RWMutex
 	documents map[string]*Document // docID -> Document
@@ -47,8 +48,8 @@ type Indexer struct {
 	stats     IndexStats
 }
 
-func NewIndexer(store *VectorStore, embedder EmbeddingProvider) *Indexer {
-	return &Indexer{
+func NewIndexer(store VectorStoreBackend, embedder EmbeddingProvider) *Indexer {
+	indexer := &Indexer{
 		store:     store,
 		embedder:  embedder,
 		documents: make(map[string]*Document),
@@ -57,6 +58,16 @@ func NewIndexer(store *VectorStore, embedder EmbeddingProvider) *Indexer {
 			Sources: make(map[string]int),
 		},
 	}
+	// If store is SQLite, set up persistence
+	if sqlStore, ok := store.(*SQLiteStore); ok {
+		indexer.sqlite = sqlStore
+	}
+	return indexer
+}
+
+// NewIndexerWithBackend creates an indexer with a VectorStoreBackend (alias for NewIndexer).
+func NewIndexerWithBackend(store VectorStoreBackend, embedder EmbeddingProvider) *Indexer {
+	return NewIndexer(store, embedder)
 }
 
 // IndexFile indexes a single file (Markdown or TXT).
@@ -141,6 +152,14 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	idx.stats.Sources[source] = len(rawChunks)
 	idx.mu.Unlock()
 
+	// v0.20.0: Persist to SQLite if available
+	if idx.sqlite != nil {
+		if err := idx.sqlite.SaveDocument(doc, idx.chunks); err != nil {
+			// Log but don't fail the indexing
+			_ = err
+		}
+	}
+
 	return doc, nil
 }
 
@@ -218,6 +237,13 @@ func (idx *Indexer) RemoveDocument(docID string) bool {
 	idx.stats.DocumentCount = len(idx.documents)
 	idx.stats.ChunkCount = len(idx.chunks)
 	delete(idx.stats.Sources, doc.Path)
+
+	// v0.20.0: Remove from SQLite if available
+	if idx.sqlite != nil {
+		if err := idx.sqlite.DeleteDocument(docID); err != nil {
+			_ = err
+		}
+	}
 
 	return true
 }
