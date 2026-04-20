@@ -14,6 +14,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/backup"
+	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
@@ -379,6 +380,42 @@ func main() {
 	wsStatsCmd.Flags().String("addr", "http://localhost:9090", "API Server 地址")
 	wsCmd.AddCommand(wsStatsCmd)
 
+	// ===== v0.22.0: Agent 协作命令 =====
+	agentCmd := &cobra.Command{
+		Use:   "agent",
+		Short: "Agent 协作管理",
+	}
+	agentListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出注册的 Agent",
+		RunE:  runAgentList,
+	}
+	agentDelegateCmd := &cobra.Command{
+		Use:   "delegate <mode> <input> <agent_ids...>",
+		Short: "创建协作任务",
+		Long:  "创建协作任务。mode: pipeline/parallel/debate\n示例: lh agent delegate parallel \"分析这段代码\" agent-1 agent-2",
+		Args:  cobra.MinimumNArgs(3),
+		RunE:  runAgentDelegate,
+	}
+	agentTaskCmd := &cobra.Command{
+		Use:   "task <task_id>",
+		Short: "查看任务状态",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runAgentTask,
+	}
+	agentTasksCmd := &cobra.Command{
+		Use:   "tasks",
+		Short: "列出所有任务",
+		RunE:  runAgentTasks,
+	}
+	agentCancelCmd := &cobra.Command{
+		Use:   "cancel <task_id>",
+		Short: "取消任务",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runAgentCancel,
+	}
+	agentCmd.AddCommand(agentListCmd, agentDelegateCmd, agentTaskCmd, agentTasksCmd, agentCancelCmd)
+
 	// ===== v0.17.0: Metrics 命令 =====
 	metricsCmd := &cobra.Command{
 		Use:   "metrics",
@@ -469,7 +506,7 @@ func main() {
 
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1608,5 +1645,189 @@ func runSoulSwitch(cmd *cobra.Command, args []string) error {
 	fmt.Println(preview)
 
 	_ = newSoul // 将来可用于热更新
+	return nil
+}
+
+// ===== v0.22.0: Agent 协作命令实现 =====
+
+func runAgentList(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	reg := a.AgentRegistry()
+	agents := reg.List()
+
+	if len(agents) == 0 {
+		fmt.Println("📋 暂无注册的 Agent")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-12s %-10s %s\n", "ID", "名称", "状态", "能力")
+	fmt.Println(strings.Repeat("-", 70))
+	for _, p := range agents {
+		caps := strings.Join(p.Capabilities, ", ")
+		if len(caps) > 30 {
+			caps = caps[:27] + "..."
+		}
+		fmt.Printf("%-20s %-12s %-10s %s\n", p.ID, p.Name, p.Status, caps)
+	}
+
+	total, online, busy, offline := reg.Count()
+	fmt.Printf("\n统计: 总计 %d | 在线 %d | 忙碌 %d | 离线 %d\n", total, online, busy, offline)
+	return nil
+}
+
+func runAgentDelegate(cmd *cobra.Command, args []string) error {
+	modeStr := args[0]
+	input := args[1]
+	agentIDs := args[2:]
+
+	mode, err := collab.ParseMode(modeStr)
+	if err != nil {
+		return fmt.Errorf("无效的协作模式 %q: %w (支持: pipeline, parallel, debate)", modeStr, err)
+	}
+
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	dm := a.CollabManager()
+	if dm == nil {
+		return fmt.Errorf("协作管理器未初始化")
+	}
+
+	// 验证 Agent 存在
+	reg := a.AgentRegistry()
+	for _, id := range agentIDs {
+		if _, ok := reg.Get(id); !ok {
+			return fmt.Errorf("Agent %q 未注册", id)
+		}
+	}
+
+	fmt.Printf("🚀 创建协作任务 (模式: %s)\n", mode)
+	fmt.Printf("   输入: %s\n", input)
+	fmt.Printf("   Agent: %s\n", strings.Join(agentIDs, ", "))
+
+	task, err := dm.Delegate(context.Background(), mode, "CLI delegate", input, agentIDs, 60*time.Second)
+	if err != nil {
+		return fmt.Errorf("创建任务失败: %w", err)
+	}
+
+	fmt.Printf("\n✅ 任务已创建: %s\n", task.ID)
+	fmt.Printf("   状态: %s\n", task.State)
+
+	// 等待完成
+	fmt.Println("\n⏳ 等待任务完成...")
+	for {
+		time.Sleep(500 * time.Millisecond)
+		updated, ok := dm.GetTask(task.ID)
+		if !ok {
+			return fmt.Errorf("任务丢失")
+		}
+		if updated.State == collab.TaskCompleted || updated.State == collab.TaskFailed || updated.State == collab.TaskCancelled {
+			task = updated
+			break
+		}
+		fmt.Printf("   状态: %s\n", updated.State)
+	}
+
+	fmt.Printf("\n📋 任务结果:\n")
+	fmt.Printf("   状态: %s\n", task.State)
+	if task.Result != "" {
+		fmt.Printf("   结果: %s\n", task.Result)
+	}
+	if task.State == collab.TaskFailed {
+		for _, sub := range task.SubTasks {
+			if sub.Error != "" {
+				fmt.Printf("   错误 [%s]: %s\n", sub.AgentID, sub.Error)
+			}
+		}
+	}
+	return nil
+}
+
+func runAgentTask(cmd *cobra.Command, args []string) error {
+	taskID := args[0]
+
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	dm := a.CollabManager()
+	task, ok := dm.GetTask(taskID)
+	if !ok {
+		return fmt.Errorf("任务 %q 不存在", taskID)
+	}
+
+	fmt.Printf("📋 任务详情: %s\n", task.ID)
+	fmt.Printf("   模式: %s\n", task.Mode)
+	fmt.Printf("   描述: %s\n", task.Description)
+	fmt.Printf("   状态: %s\n", task.State)
+	fmt.Printf("   创建: %s\n", task.CreatedAt.Format("2006-01-02 15:04:05"))
+	if !task.CompletedAt.IsZero() {
+		fmt.Printf("   完成: %s\n", task.CompletedAt.Format("2006-01-02 15:04:05"))
+	}
+
+	fmt.Printf("\n子任务 (%d):\n", len(task.SubTasks))
+	for _, sub := range task.SubTasks {
+		fmt.Printf("  - %s [%s]: %s\n", sub.AgentID, sub.State, sub.Description)
+		if sub.Error != "" {
+			fmt.Printf("    错误: %s\n", sub.Error)
+		}
+	}
+
+	if task.Result != "" {
+		fmt.Printf("\n结果:\n%s\n", task.Result)
+	}
+	return nil
+}
+
+func runAgentTasks(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	dm := a.CollabManager()
+	tasks := dm.ListTasks()
+
+	if len(tasks) == 0 {
+		fmt.Println("📋 暂无协作任务")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-10s %-10s %s\n", "ID", "模式", "状态", "描述")
+	fmt.Println(strings.Repeat("-", 70))
+	for _, t := range tasks {
+		desc := t.Description
+		if len(desc) > 30 {
+			desc = desc[:27] + "..."
+		}
+		fmt.Printf("%-20s %-10s %-10s %s\n", t.ID, t.Mode, t.State, desc)
+	}
+
+	total, running, completed, failed := dm.Stats()
+	fmt.Printf("\n统计: 总计 %d | 运行中 %d | 已完成 %d | 失败 %d\n", total, running, completed, failed)
+	return nil
+}
+
+func runAgentCancel(cmd *cobra.Command, args []string) error {
+	taskID := args[0]
+
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	dm := a.CollabManager()
+	if err := dm.CancelTask(taskID); err != nil {
+		return fmt.Errorf("取消任务失败: %w", err)
+	}
+
+	fmt.Printf("✅ 任务 %s 已取消\n", taskID)
 	return nil
 }
