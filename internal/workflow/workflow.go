@@ -303,6 +303,41 @@ func (i *WorkflowInstance) GetResult(taskID string) (*TaskResult, bool) {
 	return result, ok
 }
 
+// Snapshot returns a copy of the instance for safe reading.
+func (i *WorkflowInstance) Snapshot() *WorkflowInstance {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+
+	results := make(map[string]*TaskResult, len(i.Results))
+	for k, v := range i.Results {
+		resultCopy := *v
+		results[k] = &resultCopy
+	}
+
+	return &WorkflowInstance{
+		ID:         i.ID,
+		WorkflowID: i.WorkflowID,
+		Status:     i.Status,
+		Results:    results,
+		StartTime:  i.StartTime,
+		EndTime:    i.EndTime,
+	}
+}
+
+// SetStartTime sets the start time safely.
+func (i *WorkflowInstance) SetStartTime(t time.Time) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.StartTime = t
+}
+
+// SetEndTime sets the end time safely.
+func (i *WorkflowInstance) SetEndTime(t time.Time) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.EndTime = t
+}
+
 // Cancel cancels the workflow instance.
 func (i *WorkflowInstance) Cancel() {
 	i.mu.Lock()
