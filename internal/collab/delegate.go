@@ -149,8 +149,23 @@ func (dm *DelegateManager) GetTask(taskID string) (*CollabTask, bool) {
 	if !ok {
 		return nil, false
 	}
-	// 返回副本
+	// 深拷贝，避免 data race
 	cp := *t
+	// 拷贝 SubTasks 切片
+	if t.SubTasks != nil {
+		cp.SubTasks = make([]*SubTask, len(t.SubTasks))
+		for i, sub := range t.SubTasks {
+			subCopy := *sub
+			cp.SubTasks[i] = &subCopy
+		}
+	}
+	// 拷贝 Metadata map
+	if t.Metadata != nil {
+		cp.Metadata = make(map[string]string, len(t.Metadata))
+		for k, v := range t.Metadata {
+			cp.Metadata[k] = v
+		}
+	}
 	return &cp, true
 }
 
@@ -161,7 +176,23 @@ func (dm *DelegateManager) ListTasks() []*CollabTask {
 
 	result := make([]*CollabTask, 0, len(dm.tasks))
 	for _, t := range dm.tasks {
+		// 深拷贝，避免 data race
 		cp := *t
+		// 拷贝 SubTasks 切片
+		if t.SubTasks != nil {
+			cp.SubTasks = make([]*SubTask, len(t.SubTasks))
+			for i, sub := range t.SubTasks {
+				subCopy := *sub
+				cp.SubTasks[i] = &subCopy
+			}
+		}
+		// 拷贝 Metadata map
+		if t.Metadata != nil {
+			cp.Metadata = make(map[string]string, len(t.Metadata))
+			for k, v := range t.Metadata {
+				cp.Metadata[k] = v
+			}
+		}
 		result = append(result, &cp)
 	}
 	return result

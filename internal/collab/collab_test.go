@@ -3,6 +3,7 @@ package collab
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -238,9 +239,9 @@ func TestDelegateManagerParallel(t *testing.T) {
 	_ = r.Register(&AgentProfile{ID: "agent-2", Name: "Agent 2"})
 	_ = r.Register(&AgentProfile{ID: "agent-3", Name: "Agent 3"})
 
-	callCount := 0
+	var callCount int64 // 使用 int64 以便原子操作
 	handler := TaskHandlerFunc(func(ctx context.Context, task *SubTask) (string, error) {
-		callCount++
+		atomic.AddInt64(&callCount, 1) // 原子递增，避免 data race
 		return "result_from_" + task.AgentID, nil
 	})
 
@@ -264,7 +265,7 @@ func TestDelegateManagerParallel(t *testing.T) {
 	}
 
 	// 所有 agent 都应该被调用
-	if callCount != 3 {
+	if atomic.LoadInt64(&callCount) != 3 {
 		t.Errorf("call count: got %d, want 3", callCount)
 	}
 }
