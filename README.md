@@ -39,6 +39,57 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.19.0 | 多语言 SOUL 模板 | TemplateManager + 6 内置模板 + 变量插值 + 语言检测 + API + CLI |
 | v0.20.0 | RAG SQLite 持久化 | SQLite 向量存储 + WAL 模式 + 增量索引 + 持久化 API + REPL 命令 |
 | v0.21.0 | 嵌入模型管理 | Embedder 接口 + Registry + LRU 缓存 + OpenAI/Ollama Provider + API + REPL |
+| v0.22.0 | 多 Agent 协作 | Agent Registry + 任务委派 + 结果聚合 + Pipeline/Parallel/Debate 模式 + API + CLI |
+
+## v0.22.0 新特性
+
+### 多 Agent 协作系统
+
+支持多个 Agent 协同完成复杂任务，提供三种协作模式：
+
+```bash
+# 列出注册的 Agent
+lh agent list
+
+# 创建并行协作任务
+lh agent delegate parallel "分析这段代码" agent-1 agent-2
+
+# 查看任务状态
+lh agent task collab-1
+
+# 取消任务
+lh agent cancel collab-1
+```
+
+#### 特性
+
+- **Agent Registry** — 注册、发现、健康检查、能力匹配
+- **任务委派** — 任务拆分、超时管理、取消、重试
+- **结果聚合** — 5 种聚合策略（concat/best/vote/merge/summary）
+- **协作模式** — Pipeline（串行）、Parallel（并行）、Debate（辩论）
+- **API 端点** — 8 个 RESTful API 端点
+- **REPL 命令** — lh agent list/delegate/task/tasks/cancel
+
+#### 协作模式
+
+| 模式 | 说明 | 适用场景 |
+|------|------|----------|
+| Pipeline | 串行执行，前一个输出作为后一个输入 | 多步骤流水线 |
+| Parallel | 并行执行，结果聚合 | 多 Agent 同时处理 |
+| Debate | 辩论模式，多轮讨论后达成共识 | 决策、评审 |
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/v1/agents` | 列出所有 Agent |
+| GET  | `/api/v1/agents/get?id=` | 获取单个 Agent |
+| POST | `/api/v1/agents/register` | 注册新 Agent |
+| DELETE | `/api/v1/agents/deregister?id=` | 注销 Agent |
+| POST | `/api/v1/agents/delegate` | 创建协作任务 |
+| GET  | `/api/v1/agents/task?id=` | 获取任务状态 |
+| GET  | `/api/v1/agents/tasks` | 列出所有任务 |
+| POST | `/api/v1/agents/cancel?id=` | 取消任务 |
 
 ## v0.21.0 新特性
 
