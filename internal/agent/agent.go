@@ -32,6 +32,7 @@ type Agent struct {
 	delegate     *tool.DelegateManager   // 子代理委派管理器
 	contextWin   *contextx.ContextWindow // 上下文窗口管理器
 	ragManager   *rag.RAGManager         // RAG 知识库管理器
+	ragPersist   *rag.Persistence        // RAG 持久化
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -150,6 +151,14 @@ func New(cfg *config.Manager) (*Agent, error) {
 	ragEmbedder := rag.NewMockEmbedder(128) // v0.14.0: 默认 mock, 后续支持配置 OpenAI
 	ragManager := rag.NewRAGManager(ragEmbedder, rag.DefaultRAGConfig())
 
+	// RAG 持久化：启动时加载，关闭时保存
+	ragPersist := rag.NewPersistence(cfg.HomeDir() + "/rag")
+	if ragPersist.Exists() {
+		if docCount, err := ragPersist.Load(ragManager); err == nil && docCount > 0 {
+			// loaded successfully
+		}
+	}
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -165,6 +174,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		delegate:   delegateMgr,
 		contextWin: contextWin,
 		ragManager: ragManager,
+		ragPersist: ragPersist,
 	}, nil
 }
 
@@ -485,6 +495,25 @@ func (a *Agent) ContextStats(messages []contextx.Message) contextx.ContextStats 
 // RAG 返回 RAG 管理器
 func (a *Agent) RAG() *rag.RAGManager {
 	return a.ragManager
+}
+
+// RAGPersist 返回 RAG 持久化管理器
+func (a *Agent) RAGPersist() *rag.Persistence {
+	return a.ragPersist
+}
+
+// Close 释放资源，保存持久化数据
+func (a *Agent) Close() error {
+	var firstErr error
+
+	// 保存 RAG 索引
+	if a.ragPersist != nil && a.ragManager != nil {
+		if err := a.ragPersist.Save(a.ragManager); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("save RAG index: %w", err)
+		}
+	}
+
+	return firstErr
 }
 
 // buildRAGContext 构建 RAG 检索上下文

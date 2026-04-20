@@ -31,6 +31,51 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.11.0 | Session & Stream | 会话持久化 + 流式工具调用 + 配置热重载 |
 | v0.12.0 | API Server | HTTP RESTful API + SSE 流式 + 认证限流 |
 | v0.13.0 | Context Window | Token 估算 + 4 种裁剪策略 + 优先级管理 |
+| v0.14.0 | RAG 知识库 | 向量索引 + 语义检索 + 持久化 + API 端点 |
+
+## v0.14.0 新特性
+
+### RAG 知识库
+
+内置 RAG（Retrieval-Augmented Generation）知识库，支持文档索引、语义检索和上下文注入：
+
+```bash
+# 索引文件到知识库
+/rag index /path/to/document.md
+
+# 索引文本内容
+/rag index --text "source" "title" "content"
+
+# 搜索知识库
+/rag search "programming language"
+
+# 查看知识库统计
+/rag stats
+
+# 列出所有文档
+/rag list
+
+# 删除文档
+/rag remove <doc_id>
+```
+
+### API 端点
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/api/v1/rag/index` | POST | 索引文件/文本/目录 |
+| `/api/v1/rag/index` | DELETE | 删除文档 |
+| `/api/v1/rag/search` | POST | 语义搜索 |
+| `/api/v1/rag/stats` | GET | 知识库统计 |
+
+### 特性
+
+- **向量索引**：内存向量存储 + 余弦相似度搜索
+- **智能分块**：按段落/句子分割，支持重叠窗口
+- **MMR 重排**：Maximal Marginal Relevance 多样性重排
+- **持久化**：JSON 序列化，启动自动加载，关闭自动保存
+- **可扩展 Embedder**：MockEmbedder（测试）/ OpenAI Embedder（生产）
+- **自动上下文注入**：对话时自动检索相关知识注入 system prompt
 
 ## v0.13.0 新特性
 
