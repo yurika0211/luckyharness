@@ -94,7 +94,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.13.0")
+			fmt.Println("🍀 LuckyHarness v0.14.0")
 		},
 	}
 
@@ -346,9 +346,33 @@ func main() {
 	serveCmd.Flags().Bool("no-cors", false, "禁用 CORS")
 	serveCmd.Flags().Int("rate-limit", 60, "每分钟请求限制")
 
+	// ===== v0.14.0: RAG 命令 =====
+	ragCmd := &cobra.Command{
+		Use:   "rag",
+		Short: "RAG 知识库管理",
+	}
+	ragIndexCmd := &cobra.Command{
+		Use:   "index <path>",
+		Short: "索引文件或目录到知识库",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runRAGIndex,
+	}
+	ragSearchCmd := &cobra.Command{
+		Use:   "search <query>",
+		Short: "搜索知识库",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runRAGSearch,
+	}
+	ragStatsCmd := &cobra.Command{
+		Use:   "stats",
+		Short: "知识库统计",
+		RunE:  runRAGStats,
+	}
+	ragCmd.AddCommand(ragIndexCmd, ragSearchCmd, ragStatsCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd)
+		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1191,4 +1215,116 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 阻塞等待信号
 	select {}
+}
+
+// ===== v0.14.0: RAG 命令实现 =====
+
+func runRAGIndex(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	ragMgr := a.RAG()
+	path := args[0]
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("path not found: %w", err)
+	}
+
+	if info.IsDir() {
+		docs, err := ragMgr.IndexDirectory(path)
+		if err != nil {
+			return fmt.Errorf("index directory: %w", err)
+		}
+		fmt.Printf("✅ Indexed %d documents\n", len(docs))
+		for _, d := range docs {
+			fmt.Printf("   📄 %s (%d chunks)\n", d.Title, len(d.Chunks))
+		}
+	} else {
+		doc, err := ragMgr.IndexFile(path)
+		if err != nil {
+			return fmt.Errorf("index file: %w", err)
+		}
+		fmt.Printf("✅ Indexed: %s (%d chunks)\n", doc.Title, len(doc.Chunks))
+	}
+
+	return nil
+}
+
+func runRAGSearch(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	ragMgr := a.RAG()
+	results, err := ragMgr.Search(context.Background(), args[0])
+	if err != nil {
+		return fmt.Errorf("search: %w", err)
+	}
+
+	if len(results) == 0 {
+		fmt.Println("🔍 No results found")
+		return nil
+	}
+
+	fmt.Printf("🔍 Found %d results:\n", len(results))
+	for i, r := range results {
+		content := r.Content
+		if len(content) > 120 {
+			content = content[:120] + "..."
+		}
+		fmt.Printf("  %d. [%.2f] %s — %s\n", i+1, r.Score, r.DocTitle, content)
+	}
+
+	return nil
+}
+
+func runRAGStats(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		return fmt.Errorf("create agent: %w", err)
+	}
+
+	stats := a.RAG().Stats()
+	fmt.Printf("📚 RAG Knowledge Base:\n")
+	fmt.Printf("   Documents: %d\n", stats.DocumentCount)
+	fmt.Printf("   Chunks:    %d\n", stats.ChunkCount)
+	if !stats.LastIndexed.IsZero() {
+		fmt.Printf("   Last indexed: %s\n", stats.LastIndexed.Format("2006-01-02 15:04:05"))
+	}
+	if len(stats.Sources) > 0 {
+		fmt.Println("   Sources:")
+		for src, count := range stats.Sources {
+			fmt.Printf("     %s: %d chunks\n", src, count)
+		}
+	}
+
+	return nil
 }

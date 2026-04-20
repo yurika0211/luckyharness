@@ -100,6 +100,8 @@ func (fc *FallbackChain) ChainNames() []string {
 
 // SetOnSwitch 设置降级切换回调
 func (fc *FallbackChain) SetOnSwitch(fn func(from, to string)) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
 	fc.onSwitch = fn
 }
 
@@ -232,9 +234,9 @@ func (fc *FallbackChain) recordFailure(idx int, err error) {
 					fc.active = i
 					newName := fc.chain[i].Name()
 					log.Printf("[fallback] switching from %s to %s", oldName, newName)
-					if fc.onSwitch != nil {
-						// 在锁内调用回调可能死锁，用 goroutine
-						go fc.onSwitch(oldName, newName)
+					cb := fc.onSwitch // read under lock
+					if cb != nil {
+						go cb(oldName, newName)
 					}
 					break
 				}
@@ -257,16 +259,18 @@ func (fc *FallbackChain) recordSuccess(idx int) {
 		fc.active = idx
 		newName := fc.chain[idx].Name()
 		log.Printf("[fallback] switching back from %s to %s (higher priority)", oldName, newName)
-		if fc.onSwitch != nil {
-			go fc.onSwitch(oldName, newName)
+		cb := fc.onSwitch
+		if cb != nil {
+			go cb(oldName, newName)
 		}
 	} else if idx != fc.active {
 		oldName := fc.chain[fc.active].Name()
 		fc.active = idx
 		newName := fc.chain[idx].Name()
 		log.Printf("[fallback] switching from %s to %s", oldName, newName)
-		if fc.onSwitch != nil {
-			go fc.onSwitch(oldName, newName)
+		cb := fc.onSwitch
+		if cb != nil {
+			go cb(oldName, newName)
 		}
 	}
 }

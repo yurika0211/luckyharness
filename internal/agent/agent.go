@@ -10,6 +10,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -30,6 +31,8 @@ type Agent struct {
 	mcpClient    *tool.MCPClient         // MCP 客户端
 	delegate     *tool.DelegateManager   // 子代理委派管理器
 	contextWin   *contextx.ContextWindow // 上下文窗口管理器
+	ragManager   *rag.RAGManager         // RAG 知识库管理器
+	ragPersist   *rag.Persistence        // RAG 持久化
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -144,6 +147,18 @@ func New(cfg *config.Manager) (*Agent, error) {
 		SummarizeThreshold:  0.8,
 	})
 
+	// 创建 RAG 知识库管理器
+	ragEmbedder := rag.NewMockEmbedder(128) // v0.14.0: 默认 mock, 后续支持配置 OpenAI
+	ragManager := rag.NewRAGManager(ragEmbedder, rag.DefaultRAGConfig())
+
+	// RAG 持久化：启动时加载，关闭时保存
+	ragPersist := rag.NewPersistence(cfg.HomeDir() + "/rag")
+	if ragPersist.Exists() {
+		if docCount, err := ragPersist.Load(ragManager); err == nil && docCount > 0 {
+			// loaded successfully
+		}
+	}
+
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -158,6 +173,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		mcpClient:  mcpClient,
 		delegate:   delegateMgr,
 		contextWin: contextWin,
+		ragManager: ragManager,
+		ragPersist: ragPersist,
 	}, nil
 }
 
@@ -172,6 +189,9 @@ func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 
 	// 加入分层记忆上下文
 	messages = a.buildMemoryContext(messages)
+
+	// 加入 RAG 检索上下文
+	messages = a.buildRAGContext(ctx, messages, userInput)
 
 	// 加入用户消息
 	sess.AddMessage("user", userInput)
@@ -470,6 +490,49 @@ func (a *Agent) FitContext(messages []contextx.Message) ([]contextx.Message, con
 // ContextStats 返回上下文窗口统计
 func (a *Agent) ContextStats(messages []contextx.Message) contextx.ContextStats {
 	return a.contextWin.Stats(messages)
+}
+
+// RAG 返回 RAG 管理器
+func (a *Agent) RAG() *rag.RAGManager {
+	return a.ragManager
+}
+
+// RAGPersist 返回 RAG 持久化管理器
+func (a *Agent) RAGPersist() *rag.Persistence {
+	return a.ragPersist
+}
+
+// Close 释放资源，保存持久化数据
+func (a *Agent) Close() error {
+	var firstErr error
+
+	// 保存 RAG 索引
+	if a.ragPersist != nil && a.ragManager != nil {
+		if err := a.ragPersist.Save(a.ragManager); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("save RAG index: %w", err)
+		}
+	}
+
+	return firstErr
+}
+
+// buildRAGContext 构建 RAG 检索上下文
+func (a *Agent) buildRAGContext(ctx context.Context, messages []provider.Message, query string) []provider.Message {
+	if a.ragManager == nil {
+		return messages
+	}
+
+	stats := a.ragManager.Stats()
+	if stats.DocumentCount == 0 {
+		return messages // 没有索引文档，跳过 RAG
+	}
+
+	ragCtx, _, err := a.ragManager.SearchWithContext(ctx, query)
+	if err != nil || ragCtx == "" {
+		return messages
+	}
+
+	return append(messages, provider.Message{Role: "system", Content: ragCtx})
 }
 
 // unused suppress

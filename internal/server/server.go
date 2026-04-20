@@ -147,6 +147,9 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/soul", s.handleSoul)
 	mux.HandleFunc("/api/v1/context", s.handleContext)
 	mux.HandleFunc("/api/v1/context/fit", s.handleContextFit)
+	mux.HandleFunc("/api/v1/rag/index", s.handleRAGIndex)
+	mux.HandleFunc("/api/v1/rag/search", s.handleRAGSearch)
+	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
@@ -992,5 +995,233 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 		"strategy":        trimResult.Strategy.String(),
 		"messages":        resultMessages,
 		"summary":         trimResult.Summary(),
+	})
+}
+
+// --- RAG 知识库 API ---
+
+// handleRAGIndex 索引文档到 RAG 知识库
+func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			Source  string `json:"source"`            // 文件路径或来源标识
+			Title   string `json:"title,omitempty"`  // 文档标题（索引文本时使用）
+			Content string `json:"content,omitempty"` // 文本内容（索引文本时使用）
+			Dir     string `json:"dir,omitempty"`    // 目录路径（批量索引时使用）
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		ragMgr := s.agent.RAG()
+		if ragMgr == nil {
+			s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+			return
+		}
+
+		var result map[string]interface{}
+		if req.Dir != "" {
+			// 批量索引目录
+			docs, err := ragMgr.IndexDirectory(req.Dir)
+			if err != nil {
+				s.sendError(w, "index directory failed", http.StatusInternalServerError, err.Error())
+				return
+			}
+			docIDs := make([]string, len(docs))
+			for i, d := range docs {
+				docIDs[i] = d.ID
+			}
+			result = map[string]interface{}{
+				"action":   "index_directory",
+				"dir":      req.Dir,
+				"indexed":  len(docs),
+				"doc_ids":  docIDs,
+			}
+		} else if req.Content != "" {
+			// 索引文本内容
+			title := req.Title
+			if title == "" {
+				title = req.Source
+			}
+			doc, err := ragMgr.IndexText(req.Source, title, req.Content)
+			if err != nil {
+				s.sendError(w, "index text failed", http.StatusInternalServerError, err.Error())
+				return
+			}
+			result = map[string]interface{}{
+				"action":    "index_text",
+				"doc_id":    doc.ID,
+				"title":     doc.Title,
+				"chunks":    len(doc.Chunks),
+				"indexed_at": doc.IndexedAt,
+			}
+		} else if req.Source != "" {
+			// 索引单个文件
+			doc, err := ragMgr.IndexFile(req.Source)
+			if err != nil {
+				s.sendError(w, "index file failed", http.StatusInternalServerError, err.Error())
+				return
+			}
+			result = map[string]interface{}{
+				"action":    "index_file",
+				"doc_id":    doc.ID,
+				"title":     doc.Title,
+				"chunks":    len(doc.Chunks),
+				"indexed_at": doc.IndexedAt,
+			}
+		} else {
+			s.sendError(w, "must provide source, content, or dir", http.StatusBadRequest, "")
+			return
+		}
+
+		s.sendJSON(w, http.StatusOK, result)
+
+	case http.MethodDelete:
+		var req struct {
+			DocID string `json:"doc_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+		ragMgr := s.agent.RAG()
+		if ragMgr == nil {
+			s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+			return
+		}
+		removed := ragMgr.RemoveDocument(req.DocID)
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"doc_id":  req.DocID,
+			"removed": removed,
+		})
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+// handleRAGSearch 搜索 RAG 知识库
+func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	var req struct {
+		Query  string  `json:"query"`
+		TopK   int     `json:"top_k,omitempty"`
+		MinScore float64 `json:"min_score,omitempty"`
+		Source string  `json:"source,omitempty"` // 按来源过滤
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if req.Query == "" {
+		s.sendError(w, "query is required", http.StatusBadRequest, "")
+		return
+	}
+
+	ragMgr := s.agent.RAG()
+	if ragMgr == nil {
+		s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+		return
+	}
+
+	// 应用临时检索配置
+	if req.TopK > 0 || req.MinScore > 0 || req.Source != "" {
+		cfg := ragMgr.RetrieverConfig()
+		if req.TopK > 0 {
+			cfg.TopK = req.TopK
+		}
+		if req.MinScore > 0 {
+			cfg.MinScore = req.MinScore
+		}
+		if req.Source != "" {
+			cfg.FilterSource = req.Source
+		}
+		ragMgr.UpdateRetrieverConfig(cfg)
+	}
+
+	results, err := ragMgr.Search(r.Context(), req.Query)
+	if err != nil {
+		s.sendError(w, "search failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// 重置过滤
+	if req.Source != "" {
+		cfg := ragMgr.RetrieverConfig()
+		cfg.FilterSource = ""
+		ragMgr.UpdateRetrieverConfig(cfg)
+	}
+
+	// 转换结果
+	searchResults := make([]map[string]interface{}, len(results))
+	for i, res := range results {
+		searchResults[i] = map[string]interface{}{
+			"chunk_id":   res.ChunkID,
+			"content":    res.Content,
+			"score":      res.Score,
+			"doc_title":  res.DocTitle,
+			"doc_source": res.DocSource,
+			"metadata":   res.Metadata,
+		}
+	}
+
+	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"query":   req.Query,
+		"count":   len(searchResults),
+		"results": searchResults,
+	})
+}
+
+// handleRAGStats 返回 RAG 知识库统计信息
+func (s *Server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+		return
+	}
+
+	ragMgr := s.agent.RAG()
+	if ragMgr == nil {
+		s.sendError(w, "RAG not initialized", http.StatusServiceUnavailable, "")
+		return
+	}
+
+	stats := ragMgr.Stats()
+	docIDs := ragMgr.ListDocuments()
+
+	docs := make([]map[string]interface{}, 0, len(docIDs))
+	for _, id := range docIDs {
+		if doc, ok := ragMgr.GetDocument(id); ok {
+			docs = append(docs, map[string]interface{}{
+				"id":         doc.ID,
+				"title":      doc.Title,
+				"path":       doc.Path,
+				"chunks":     len(doc.Chunks),
+				"indexed_at": doc.IndexedAt,
+			})
+		}
+	}
+
+	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+		"document_count": stats.DocumentCount,
+		"chunk_count":    stats.ChunkCount,
+		"total_tokens":   stats.TotalTokens,
+		"last_indexed":   stats.LastIndexed,
+		"sources":        stats.Sources,
+		"documents":      docs,
+		"retriever": map[string]interface{}{
+			"top_k":     ragMgr.RetrieverConfig().TopK,
+			"min_score": ragMgr.RetrieverConfig().MinScore,
+			"use_mmr":   ragMgr.RetrieverConfig().UseMMR,
+			"mmr_lambda": ragMgr.RetrieverConfig().MMRLambda,
+		},
 	})
 }
