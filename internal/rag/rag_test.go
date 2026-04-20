@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/yurika0211/luckyharness/internal/embedder"
 )
 
 func TestMockEmbedder(t *testing.T) {
@@ -66,15 +68,15 @@ func TestMockEmbedderBatch(t *testing.T) {
 }
 
 func TestOpenAIEmbedder(t *testing.T) {
-	cfg := OpenAIEmbedderConfig{
+	cfg := embedder.OpenAIEmbedderConfig{
 		APIKey:    "test-key",
 		Model:     "text-embedding-3-small",
 		Dimension: 256,
 	}
 	e := NewOpenAIEmbedder(cfg)
 
-	if e.Name() != "openai-embedding" {
-		t.Errorf("expected name 'openai-embedding', got %s", e.Name())
+	if e.Name() != "openai" {
+		t.Errorf("expected name 'openai', got %s", e.Name())
 	}
 	if e.Dimension() != 256 {
 		t.Errorf("expected dimension 256, got %d", e.Dimension())
@@ -91,7 +93,7 @@ func TestOpenAIEmbedder(t *testing.T) {
 }
 
 func TestOpenAIEmbedderDefaults(t *testing.T) {
-	e := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	e := NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{})
 	if e.Dimension() != 1536 {
 		t.Errorf("expected default dimension 1536, got %d", e.Dimension())
 	}

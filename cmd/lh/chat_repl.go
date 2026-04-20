@@ -188,6 +188,9 @@ fmt.Println("  /rag index <path>  索引文件/目录到知识库")
 		fmt.Println("  /fc tools          列出 Function Calling 工具")
 		fmt.Println("  /fc history        查看调用历史")
 		fmt.Println("  /fc clear          清除调用历史")
+		fmt.Println("  /embedder          列出嵌入模型")
+		fmt.Println("  /embedder switch <id>  切换嵌入模型")
+		fmt.Println("  /embedder test [text]  测试嵌入模型")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -430,6 +433,9 @@ fmt.Println("  /rag index <path>  索引文件/目录到知识库")
 
 	case "/fc":
 		return handleFCCommand(arg, a), false
+
+	case "/embedder":
+		return handleEmbedderCommand(arg, a), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -1160,6 +1166,78 @@ func handleFCCommand(arg string, a *agent.Agent) bool {
 	default:
 		fmt.Printf("未知 fc 子命令: %s\n", parts[0])
 		fmt.Println("用法: /fc <tools|history|clear>")
+	}
+	return true
+}
+
+// ===== v0.21.0: Embedder 命令 =====
+
+func handleEmbedderCommand(arg string, a *agent.Agent) bool {
+	reg := a.EmbedderRegistry()
+	if reg == nil {
+		fmt.Println("❌ 嵌入模型注册表不可用")
+		return true
+	}
+
+	parts := strings.SplitN(arg, " ", 2)
+	subcmd := parts[0]
+	subarg := ""
+	if len(parts) > 1 {
+		subarg = parts[1]
+	}
+
+	switch subcmd {
+	case "", "list":
+		list := reg.List()
+		if len(list) == 0 {
+			fmt.Println("📋 暂无嵌入模型")
+			return true
+		}
+		fmt.Println("📋 嵌入模型:")
+		for _, info := range list {
+			active := ""
+			if info.Active {
+				active = " ← active"
+			}
+			fmt.Printf("  %-20s %-10s %-30s dim=%d%s\n",
+				info.ID, info.Name, info.Model, info.Dimension, active)
+		}
+
+	case "switch":
+		if subarg == "" {
+			fmt.Println("用法: /embedder switch <id>")
+			return true
+		}
+		if !reg.Switch(subarg) {
+			fmt.Printf("❌ 嵌入模型未找到: %s\n", subarg)
+			return true
+		}
+		e := reg.Active()
+		fmt.Printf("✅ 已切换到: %s (%s/%s, dim=%d)\n",
+			subarg, e.Name(), e.Model(), e.Dimension())
+
+	case "test":
+		text := subarg
+		if text == "" {
+			text = "Hello, world!"
+		}
+		e := reg.Active()
+		vec, err := e.Embed(context.Background(), text)
+		if err != nil {
+			fmt.Printf("❌ 嵌入失败: %v\n", err)
+			return true
+		}
+		sampleLen := 5
+		if len(vec) < sampleLen {
+			sampleLen = len(vec)
+		}
+		fmt.Printf("🧮 嵌入测试 (%s/%s, dim=%d):\n", e.Name(), e.Model(), len(vec))
+		fmt.Printf("  输入: %q\n", text)
+		fmt.Printf("  向量前%d维: %v\n", sampleLen, vec[:sampleLen])
+
+	default:
+		fmt.Printf("未知 embedder 子命令: %s\n", subcmd)
+		fmt.Println("用法: /embedder <list|switch|test>")
 	}
 	return true
 }

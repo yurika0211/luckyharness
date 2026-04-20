@@ -38,6 +38,43 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.18.0 | WebSocket 实时通信 | 双向实时通信 + 会话绑定 + 心跳保活 + 断线重连 + 流式推送 |
 | v0.19.0 | 多语言 SOUL 模板 | TemplateManager + 6 内置模板 + 变量插值 + 语言检测 + API + CLI |
 | v0.20.0 | RAG SQLite 持久化 | SQLite 向量存储 + WAL 模式 + 增量索引 + 持久化 API + REPL 命令 |
+| v0.21.0 | 嵌入模型管理 | Embedder 接口 + Registry + LRU 缓存 + OpenAI/Ollama Provider + API + REPL |
+
+## v0.21.0 新特性
+
+### 嵌入模型管理系统
+
+统一的嵌入模型管理，支持多 Provider 注册、切换和缓存：
+
+```bash
+# 列出嵌入模型
+/embedder
+
+# 切换嵌入模型
+/embedder switch openai-default
+
+# 测试嵌入
+/embedder test "Hello, world!"
+```
+
+#### 特性
+
+- **Embedder 接口** — 统一的 Embed/EmbedBatch/Dimension/Name/Model 接口
+- **Embedder Registry** — 注册、切换、列表管理多个嵌入模型
+- **LRU 缓存** — 相同输入自动缓存向量结果，避免重复 API 调用
+- **OpenAI Provider** — 支持 text-embedding-3-small/large, ada-002 及兼容端点
+- **Ollama Provider** — 支持 nomic-embed-text, mxbai-embed-large 等本地模型
+- **RAG 集成** — RAG 管理器使用 Embedder Registry 的 active embedder（带缓存）
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/v1/embedders` | 列出所有嵌入模型 |
+| GET  | `/api/v1/embedders/{id}` | 获取嵌入模型详情 |
+| POST | `/api/v1/embedders/register` | 注册新嵌入模型 |
+| POST | `/api/v1/embedders/switch` | 切换活跃嵌入模型 |
+| POST | `/api/v1/embedders/{id}/test` | 测试嵌入模型 |
 
 ## v0.20.0 新特性
 
@@ -404,7 +441,8 @@ permissions:
 - **智能分块**：按段落/句子分割，支持重叠窗口
 - **MMR 重排**：Maximal Marginal Relevance 多样性重排
 - **持久化**：JSON 序列化，启动自动加载，关闭自动保存
-- **可扩展 Embedder**：MockEmbedder（测试）/ OpenAI Embedder（生产）
+- **可扩展 Embedder**：MockEmbedder（测试）/ OpenAI Embedder（生产）/ Ollama Embedder（本地）
+- **Embedder Registry**：多模型注册、切换、LRU 缓存（v0.21.0）
 - **自动上下文注入**：对话时自动检索相关知识注入 system prompt
 
 ## v0.13.0 新特性
