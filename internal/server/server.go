@@ -136,7 +136,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.19.0")
+	hc := health.NewHealthCheck("v0.20.0")
 
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
@@ -301,7 +301,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"status":    "ok",
-		"version":   "v0.19.0",
+		"version":   "v0.20.0",
 		"timestamp": time.Now().Format(time.RFC3339),
 	})
 }
@@ -715,7 +715,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		"uptime":         uptime.String(),
 		"start_time":     stats.StartTime.Format(time.RFC3339),
 		"last_request":   stats.LastReqTime.Format(time.RFC3339),
-		"version":        "v0.19.0",
+		"version":        "v0.20.0",
 	})
 }
 
@@ -777,7 +777,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
 		"name":     "LuckyHarness API",
-		"version":  "v0.19.0",
+		"version":  "v0.20.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
@@ -1417,7 +1417,7 @@ func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.sendJSON(w, http.StatusOK, map[string]any{
-			"version":     "0.19.0",
+			"version":     "0.20.0",
 			"description": "OpenAI Function Calling support",
 			"endpoints": map[string]string{
 				"POST /api/v1/fc":        "Execute function calling",

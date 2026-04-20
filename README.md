@@ -36,6 +36,81 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.16.0 | Function Calling | OpenAI 原生 FC + 多轮调用 + 流式 + API 端点 |
 | v0.17.0 | Observability & Metrics | 结构化日志 + Prometheus 指标 + 三级健康检查 + CLI metrics 命令 |
 | v0.18.0 | WebSocket 实时通信 | 双向实时通信 + 会话绑定 + 心跳保活 + 断线重连 + 流式推送 |
+| v0.19.0 | 多语言 SOUL 模板 | TemplateManager + 6 内置模板 + 变量插值 + 语言检测 + API + CLI |
+| v0.20.0 | RAG SQLite 持久化 | SQLite 向量存储 + WAL 模式 + 增量索引 + 持久化 API + REPL 命令 |
+
+## v0.20.0 新特性
+
+### RAG SQLite 持久化存储
+
+RAG 知识库支持 SQLite 后端持久化，替代纯内存/JSON 方案，支持增量更新和高效查询：
+
+```bash
+# 使用 SQLite 后端（默认启用）
+/rag store sqlite --db ./data/rag.db
+
+# 查看存储状态
+/rag store status
+
+# 切换回内存存储
+/rag store memory
+```
+
+#### 特性
+
+- **SQLite 向量存储** — 向量和元数据持久化到 SQLite 数据库
+- **WAL 模式** — 启用 Write-Ahead Logging，支持并发读写
+- **增量更新** — Upsert 语义，支持插入和更新
+- **内存缓存** — 懒加载缓存，搜索时自动从 DB 加载
+- **并发安全** — RWMutex 保护，支持多 goroutine 并发访问
+- **自动持久化** — Agent 关闭时自动保存，启动时自动加载
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/v1/rag/store` | 查看存储后端状态 |
+| POST | `/api/v1/rag/store` | 切换存储后端 (sqlite/memory) |
+
+## v0.19.0 新特性
+
+### 多语言 SOUL 模板系统
+
+内置 SOUL 模板管理器，支持多语言人格模板的加载、变量插值和语言检测：
+
+```bash
+# 列出可用模板
+lh soul templates
+
+# 使用模板创建 SOUL
+lh soul apply --template coder --lang zh
+
+# 查看模板详情
+lh soul template-info coder
+```
+
+#### 6 个内置模板
+
+| 模板 | 说明 | 适用场景 |
+|------|------|----------|
+| `coder` | 编程助手 | 代码生成、调试、重构 |
+| `writer` | 写作助手 | 文案、文章、翻译 |
+| `analyst` | 数据分析师 | 数据分析、报告生成 |
+| `tutor` | 教学助手 | 知识讲解、学习指导 |
+| `creative` | 创意助手 | 头脑风暴、创意生成 |
+| `minimal` | 极简模板 | 自定义起点 |
+
+#### 变量插值
+
+模板支持 `{{.Variable}}` 格式的变量插值，自动检测语言并填充默认值。
+
+#### API 端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET  | `/api/v1/soul/templates` | 模板列表 |
+| GET  | `/api/v1/soul/templates/{name}` | 模板详情 |
+| POST | `/api/v1/soul/apply` | 应用模板 |
 
 ## v0.18.0 新特性
 
