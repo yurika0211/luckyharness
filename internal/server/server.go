@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/websocket"
+	"github.com/yurika0211/luckyharness/internal/workflow"
 )
 
 // Server 是 LuckyHarness 的 HTTP API Server
@@ -45,6 +46,9 @@ type Server struct {
 	// v0.22.0: 多 Agent 协作
 	collabRegistry   *collab.Registry
 	delegateManager  *collab.DelegateManager
+
+	// v0.24.0: Workflow Engine
+	workflowEngine *workflow.WorkflowEngine
 }
 
 // ServerConfig API Server 配置
@@ -141,7 +145,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 	}
 
 	m := metrics.NewMetrics()
-	hc := health.NewHealthCheck("v0.22.0")
+	hc := health.NewHealthCheck("v0.24.0")
 
 	// v0.18.0: WebSocket Hub
 	wsHandler := websocket.NewAgentHandler(a)
@@ -155,6 +159,10 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		return a.Chat(ctx, task.Input)
 	}))
 
+	// v0.24.0: Workflow Engine
+	workflowExecutor := workflow.NewDefaultExecutor()
+	workflowEngine := workflow.NewWorkflowEngine(workflowExecutor, 10)
+
 	return &Server{
 		agent:       a,
 		config:      cfg,
@@ -167,6 +175,7 @@ func New(a *agent.Agent, cfg ServerConfig) *Server {
 		wsHub:           wsHub,
 		collabRegistry:  collabRegistry,
 		delegateManager: delegateManager,
+		workflowEngine:  workflowEngine,
 	}
 }
 
@@ -244,6 +253,12 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/agents/task", s.handleAgentsTask)
 	mux.HandleFunc("/api/v1/agents/tasks", s.handleAgentsTasks)
 	mux.HandleFunc("/api/v1/agents/cancel", s.handleAgentsCancel)
+
+	// v0.24.0: Workflow Engine
+	mux.HandleFunc("/api/v1/workflows", s.handleWorkflows)
+	mux.HandleFunc("/api/v1/workflows/", s.handleWorkflowByID)
+	mux.HandleFunc("/api/v1/workflow-instances", s.handleWorkflowInstances)
+	mux.HandleFunc("/api/v1/workflow-instances/", s.handleWorkflowInstanceByID)
 
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
@@ -1649,6 +1664,148 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 			"message": "migration to SQLite requires restart with SQLite backend enabled",
 			"hint":    "SQLite backend is enabled by default in v0.21.0+",
 		})
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+// ============================================================================
+// v0.24.0: Workflow Engine Handlers
+// ============================================================================
+
+func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		workflows := s.workflowEngine.ListWorkflows()
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"workflows": workflows,
+			"count":     len(workflows),
+		})
+
+	case http.MethodPost:
+		var req struct {
+			Name        string              `json:"name"`
+			Description string              `json:"description,omitempty"`
+			Tasks       []*workflow.Task    `json:"tasks"`
+			Version     string              `json:"version,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		wf := workflow.NewWorkflow(req.Name, req.Tasks)
+		wf.Description = req.Description
+		wf.Version = req.Version
+
+		if err := s.workflowEngine.RegisterWorkflow(wf); err != nil {
+			s.sendError(w, "invalid workflow", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		s.sendJSON(w, http.StatusCreated, wf)
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+func (s *Server) handleWorkflowByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/workflows/")
+	if id == "" {
+		s.sendError(w, "workflow ID required", http.StatusBadRequest, "")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		wf, ok := s.workflowEngine.GetWorkflow(id)
+		if !ok {
+			s.sendError(w, "workflow not found", http.StatusNotFound, "")
+			return
+		}
+		s.sendJSON(w, http.StatusOK, wf)
+
+	case http.MethodDelete:
+		if err := s.workflowEngine.DeleteWorkflow(id); err != nil {
+			s.sendError(w, "failed to delete workflow", http.StatusInternalServerError, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]string{"message": "workflow deleted"})
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+func (s *Server) handleWorkflowInstances(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		instances := s.workflowEngine.ListInstances()
+		s.sendJSON(w, http.StatusOK, map[string]interface{}{
+			"instances": instances,
+			"count":     len(instances),
+		})
+
+	case http.MethodPost:
+		var req struct {
+			WorkflowID string `json:"workflowId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		instance, err := s.workflowEngine.StartWorkflow(req.WorkflowID)
+		if err != nil {
+			s.sendError(w, "failed to start workflow", http.StatusBadRequest, err.Error())
+			return
+		}
+
+		s.sendJSON(w, http.StatusCreated, instance)
+
+	default:
+		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
+	}
+}
+
+func (s *Server) handleWorkflowInstanceByID(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/workflow-instances/")
+	parts := strings.SplitN(path, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		s.sendError(w, "instance ID required", http.StatusBadRequest, "")
+		return
+	}
+
+	id := parts[0]
+
+	switch r.Method {
+	case http.MethodGet:
+		instance, ok := s.workflowEngine.GetInstance(id)
+		if !ok {
+			s.sendError(w, "instance not found", http.StatusNotFound, "")
+			return
+		}
+
+		// Check if requesting results
+		if len(parts) > 1 && parts[1] == "results" {
+			s.sendJSON(w, http.StatusOK, map[string]interface{}{
+				"instanceId": instance.ID,
+				"status":     instance.GetStatus(),
+				"results":    instance.Results,
+			})
+			return
+		}
+
+		s.sendJSON(w, http.StatusOK, instance)
+
+	case http.MethodDelete:
+		if err := s.workflowEngine.CancelInstance(id); err != nil {
+			s.sendError(w, "failed to cancel instance", http.StatusNotFound, err.Error())
+			return
+		}
+		s.sendJSON(w, http.StatusOK, map[string]string{"message": "instance cancelled"})
 
 	default:
 		s.sendError(w, "method not allowed", http.StatusMethodNotAllowed, "")
