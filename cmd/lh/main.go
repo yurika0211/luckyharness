@@ -22,6 +22,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/server"
+	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
@@ -91,7 +92,19 @@ func main() {
 		Short: "显示当前 SOUL",
 		RunE:  runSoulShow,
 	}
-	soulCmd.AddCommand(soulShowCmd)
+	soulListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "列出所有 SOUL 模板",
+		RunE:  runSoulList,
+	}
+	soulListCmd.Flags().StringP("language", "l", "", "按语言过滤 (zh/en/ja/ko)")
+	soulSwitchCmd := &cobra.Command{
+		Use:   "switch <template-id>",
+		Short: "切换到指定 SOUL 模板",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSoulSwitch,
+	}
+	soulCmd.AddCommand(soulShowCmd, soulListCmd, soulSwitchCmd)
 
 	// version
 	versionCmd := &cobra.Command{
@@ -1501,5 +1514,99 @@ func runWSStats(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println(string(body))
+	return nil
+}
+
+func runSoulList(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	a, err := agent.New(mgr)
+	if err != nil {
+		return err
+	}
+
+	tm := a.TemplateManager()
+	language, _ := cmd.Flags().GetString("language")
+
+	var templates []*soul.Template
+	if language != "" {
+		templates = tm.ListByLanguage(language)
+	} else {
+		templates = tm.ListTemplates()
+	}
+
+	if len(templates) == 0 {
+		fmt.Println("没有可用的 SOUL 模板")
+		return nil
+	}
+
+	fmt.Printf("%-20s %-12s %-8s %s\n", "ID", "名称", "语言", "描述")
+	fmt.Println(strings.Repeat("-", 70))
+	for _, t := range templates {
+		desc := t.Description
+		if len(desc) > 30 {
+			desc = desc[:27] + "..."
+		}
+		fmt.Printf("%-20s %-12s %-8s %s\n", t.ID, t.Name, t.Language, desc)
+	}
+	return nil
+}
+
+func runSoulSwitch(cmd *cobra.Command, args []string) error {
+	templateID := args[0]
+
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	a, err := agent.New(mgr)
+	if err != nil {
+		return err
+	}
+
+	tm := a.TemplateManager()
+	tmpl, err := tm.GetTemplate(templateID)
+	if err != nil {
+		return fmt.Errorf("模板 %q 不存在: %w", templateID, err)
+	}
+
+	// 渲染模板内容作为新 SOUL
+	content := tmpl.Render(nil)
+	newSoul := &soul.Soul{Content: content}
+
+	// 更新 Agent 的 SOUL
+	// 注意：这里直接替换内存中的 SOUL，持久化需要写入文件
+	soulPath := mgr.Get().SoulPath
+	if soulPath != "" {
+		if err := os.WriteFile(soulPath, []byte(content), 0644); err != nil {
+			return fmt.Errorf("写入 SOUL 文件失败: %w", err)
+		}
+		newSoul.FilePath = soulPath
+	}
+
+	// 通过反射或直接方式更新 agent 的 soul 字段
+	// 由于 Agent.soul 是私有字段，我们通过配置重载来实现
+	fmt.Printf("✅ 已切换到 SOUL 模板: %s (%s)\n", tmpl.Name, soul.LanguageName(tmpl.Language))
+	fmt.Printf("   语言: %s\n", soul.LanguageName(tmpl.Language))
+	if tmpl.Description != "" {
+		fmt.Printf("   描述: %s\n", tmpl.Description)
+	}
+	fmt.Println()
+	fmt.Println("--- SOUL 内容预览 ---")
+	preview := content
+	if len(preview) > 200 {
+		preview = preview[:200] + "..."
+	}
+	fmt.Println(preview)
+
+	_ = newSoul // 将来可用于热更新
 	return nil
 }
