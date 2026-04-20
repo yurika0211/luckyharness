@@ -33,6 +33,50 @@ LuckyHarness 是一个用 Go 重写的 AI Agent 框架，参考 Hermes Agent 的
 | v0.13.0 | Context Window | Token 估算 + 4 种裁剪策略 + 优先级管理 |
 | v0.14.0 | RAG 知识库 | 向量索引 + 语义检索 + 持久化 + API 端点 |
 | v0.15.0 | Plugin Marketplace | 插件清单 + 注册中心 + 安装器 + 沙箱 + CLI/API |
+| v0.16.0 | Function Calling | OpenAI 原生 FC + 多轮调用 + 流式 + API 端点 |
+
+## v0.16.0 新特性
+
+### Function Calling (OpenAI 原生)
+
+内置 OpenAI Function Calling 协议适配，支持多轮工具调用：
+
+```bash
+# 列出 Function Calling 工具
+lh fc tools
+
+# 查看调用历史
+lh fc history
+
+# 清除历史
+lh fc clear
+```
+
+### API 端点
+
+```bash
+# 执行 function calling
+curl -X POST http://localhost:9090/api/v1/fc \
+  -H "Content-Type: application/json" \
+  -d '{"message": "What is the weather in Tokyo?", "auto_approve": true}'
+
+# 列出可用工具
+curl http://localhost:9090/api/v1/fc/tools
+
+# 查看调用历史
+curl http://localhost:9090/api/v1/fc/history
+```
+
+### FunctionCallingProvider 接口
+
+```go
+// 支持 Function Calling 的 Provider 接口
+type FunctionCallingProvider interface {
+    Provider
+    ChatWithOptions(ctx, messages, opts) (*Response, error)
+    ChatStreamWithOptions(ctx, messages, opts) (<-chan StreamChunk, error)
+}
+```
 
 ## v0.15.0 新特性
 
