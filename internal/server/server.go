@@ -201,6 +201,10 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/v1/ws/stats", s.handleWSStats)
 
+	// v0.19.0: SOUL 模板
+	mux.HandleFunc("/api/v1/soul/templates", s.handleSoulTemplates)
+	mux.HandleFunc("/api/v1/soul/templates/", s.handleSoulTemplateByID)
+
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
 

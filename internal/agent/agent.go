@@ -20,6 +20,7 @@ import (
 type Agent struct {
 	cfg          *config.Manager
 	soul         *soul.Soul
+	tmplMgr      *soul.TemplateManager // v0.19.0: SOUL 模板管理器
 	provider     provider.Provider       // 当前活跃 provider (可能是 FallbackChain)
 	registry     *provider.Registry     // provider 注册表
 	catalog      *provider.ModelCatalog  // 模型目录
@@ -53,6 +54,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 	} else {
 		s = soul.Default()
 	}
+
+	// v0.19.0: 创建 SOUL 模板管理器
+	tmplMgr := soul.NewTemplateManager()
 
 	// 创建 Provider 注册表
 	registry := provider.NewRegistry()
@@ -162,6 +166,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	return &Agent{
 		cfg:        cfg,
 		soul:       s,
+		tmplMgr:    tmplMgr,
 		provider:   p,
 		registry:   registry,
 		catalog:    catalog,
@@ -374,6 +379,11 @@ func (a *Agent) PromoteMemory(id string) error {
 // Soul 返回当前 SOUL
 func (a *Agent) Soul() *soul.Soul {
 	return a.soul
+}
+
+// TemplateManager 返回 SOUL 模板管理器
+func (a *Agent) TemplateManager() *soul.TemplateManager {
+	return a.tmplMgr
 }
 
 // Tools 返回工具注册表
