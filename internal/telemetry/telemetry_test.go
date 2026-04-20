@@ -1,0 +1,205 @@
+package telemetry
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel/attribute"
+)
+
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	assert.True(t, cfg.Enabled)
+	assert.Equal(t, "stdout", cfg.ExporterType)
+	assert.Equal(t, 1.0, cfg.SampleRate)
+}
+
+func TestSetupNoop(t *testing.T) {
+	cfg := Config{
+		Enabled: false,
+	}
+
+	shutdown, err := Setup(context.Background(), cfg)
+	assert.NoError(t, err)
+	assert.NotNil(t, shutdown)
+	assert.NotNil(t, Tracer())
+	// Propagator may be nil in noop mode
+
+	// Shutdown should not error
+	err = shutdown(context.Background())
+	assert.NoError(t, err)
+}
+
+func TestSetupStdout(t *testing.T) {
+	cfg := Config{
+		Enabled:      true,
+		ExporterType: "stdout",
+		SampleRate:   1.0,
+	}
+
+	shutdown, err := Setup(context.Background(), cfg)
+	assert.NoError(t, err)
+	assert.NotNil(t, shutdown)
+	assert.NotNil(t, Tracer())
+
+	// Shutdown
+	err = shutdown(context.Background())
+	assert.NoError(t, err)
+}
+
+func TestSetupOTLP(t *testing.T) {
+	// OTLP requires a running collector, so we just test config parsing
+	cfg := Config{
+		Enabled:       true,
+		ExporterType:  "otlp",
+		OTLPEndpoint:  "localhost:4317",
+		SampleRate:    0.5,
+	}
+
+	// This will fail without a collector, but we test the config path
+	shutdown, err := Setup(context.Background(), cfg)
+	// OTLP connection may fail, that's expected in tests
+	if err != nil {
+		assert.Contains(t, err.Error(), "OTLP")
+	} else {
+		assert.NotNil(t, shutdown)
+		_ = shutdown(context.Background())
+	}
+}
+
+func TestStartSpan(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	ctx, span := StartSpan(context.Background(), "test-operation")
+	assert.NotNil(t, span)
+	assert.NotNil(t, ctx)
+
+	span.End()
+}
+
+func TestTraceIDFromContext(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// Without span
+	traceID := TraceIDFromContext(context.Background())
+	assert.Empty(t, traceID)
+
+	// With span
+	ctx, span := StartSpan(context.Background(), "test")
+	traceID = TraceIDFromContext(ctx)
+	assert.NotEmpty(t, traceID)
+	span.End()
+}
+
+func TestGinMiddleware(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	router := gin.New()
+	router.Use(GinMiddleware())
+	router.GET("/test", func(c *gin.Context) {
+		traceID := TraceIDFromContext(c.Request.Context())
+		c.JSON(http.StatusOK, gin.H{"trace_id": traceID})
+	})
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.NotEmpty(t, w.Header().Get("X-Trace-ID"))
+}
+
+func TestGinMiddlewareWithError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	router := gin.New()
+	router.Use(GinMiddleware())
+	router.GET("/error", func(c *gin.Context) {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "test error"})
+	})
+
+	req := httptest.NewRequest("GET", "/error", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAddAttributes(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	ctx, span := StartSpan(context.Background(), "test")
+	defer span.End()
+
+	AddAttributes(ctx,
+		attribute.String("key1", "value1"),
+		attribute.Int("key2", 42),
+	)
+}
+
+func TestRecordError(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	ctx, span := StartSpan(context.Background(), "test")
+	defer span.End()
+
+	RecordError(ctx, assert.AnError)
+}
+
+func TestHTTPClient(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// Create test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create traced client with explicit transport
+	client := HTTPClient(&http.Client{
+		Transport: http.DefaultTransport,
+	})
+	resp, err := client.Get(server.URL)
+
+	assert.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+}
+
+func TestSpanFromContext(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// No span in context
+	span := SpanFromContext(context.Background())
+	assert.NotNil(t, span)
+
+	// With span
+	ctx, s := StartSpan(context.Background(), "test")
+	span = SpanFromContext(ctx)
+	assert.NotNil(t, span)
+	s.End()
+}
