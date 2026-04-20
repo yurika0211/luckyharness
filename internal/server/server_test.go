@@ -659,3 +659,231 @@ func TestSendError(t *testing.T) {
 		t.Errorf("expected 'details', got %s", resp.Details)
 	}
 }
+
+// --- RAG Handler Tests ---
+
+func TestHandleRAGIndexText(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	body := map[string]string{
+		"source":  "test-doc",
+		"title":   "Test Document",
+		"content": "This is a test document for RAG indexing. It contains some text to be chunked and embedded.",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleRAGIndex(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["action"] != "index_text" {
+		t.Errorf("expected action=index_text, got %v", resp["action"])
+	}
+	if resp["doc_id"] == nil {
+		t.Error("expected doc_id to be set")
+	}
+}
+
+func TestHandleRAGIndexMissingFields(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	body := map[string]string{}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleRAGIndex(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleRAGIndexMethodNotAllowed(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/rag/index", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRAGIndex(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRAGIndexDelete(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	// First index a document
+	body := map[string]string{
+		"source":  "delete-test",
+		"title":   "Delete Test",
+		"content": "Document to be deleted from the index.",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleRAGIndex(w, req)
+
+	var indexResp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&indexResp)
+	docID, _ := indexResp["doc_id"].(string)
+
+	// Now delete it
+	delBody := map[string]string{"doc_id": docID}
+	b, _ = json.Marshal(delBody)
+
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	s.handleRAGIndex(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if removed, ok := resp["removed"].(bool); !ok || !removed {
+		t.Errorf("expected removed=true, got %v", resp["removed"])
+	}
+}
+
+func TestHandleRAGSearch(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	// Index a document first
+	body := map[string]string{
+		"source":  "search-test",
+		"title":   "Search Test",
+		"content": "Go is a statically typed compiled programming language designed at Google.",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleRAGIndex(w, req)
+
+	// Now search
+	searchBody := map[string]interface{}{
+		"query": "programming language",
+		"top_k": 3,
+	}
+	b, _ = json.Marshal(searchBody)
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	s.handleRAGSearch(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["query"] != "programming language" {
+		t.Errorf("expected query=programming language, got %v", resp["query"])
+	}
+}
+
+func TestHandleRAGSearchNoQuery(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	body := map[string]string{}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/search", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	s.handleRAGSearch(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleRAGSearchMethodNotAllowed(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/rag/search", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRAGSearch(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}
+
+func TestHandleRAGStats(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	// Index a document first
+	body := map[string]string{
+		"source":  "stats-test",
+		"title":   "Stats Test",
+		"content": "Some content for stats testing.",
+	}
+	b, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/index", bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleRAGIndex(w, req)
+
+	// Get stats
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/rag/stats", nil)
+	w = httptest.NewRecorder()
+	s.handleRAGStats(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp["document_count"] == nil {
+		t.Error("expected document_count to be set")
+	}
+	if resp["chunk_count"] == nil {
+		t.Error("expected chunk_count to be set")
+	}
+}
+
+func TestHandleRAGStatsMethodNotAllowed(t *testing.T) {
+	a := createTestAgent(t)
+	s := New(a, DefaultServerConfig())
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rag/stats", nil)
+	w := httptest.NewRecorder()
+
+	s.handleRAGStats(w, req)
+
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("expected 405, got %d", w.Code)
+	}
+}

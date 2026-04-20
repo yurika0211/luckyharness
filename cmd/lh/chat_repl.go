@@ -31,7 +31,7 @@ func startREPL(mgr *config.Manager) error {
 	watcher := cron.NewWatcher(cronEngine)
 
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.13.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.14.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
@@ -142,6 +142,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /serve [addr]      启动 API Server")
 		fmt.Println("  /context           上下文窗口状态")
 		fmt.Println("  /context fit       手动触发上下文裁剪")
+		fmt.Println("  /rag index <path>  索引文件/目录到知识库")
+		fmt.Println("  /rag search <q>    搜索知识库")
+		fmt.Println("  /rag stats         知识库统计")
 		fmt.Println("  /clear             清屏")
 		return true, false
 
@@ -344,6 +347,9 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/context":
 		return handleContextCommand(arg, a), false
+
+	case "/rag":
+		return handleRAGCommand(arg, a), false
 
 	default:
 		fmt.Printf("未知命令: %s (输入 /help 查看帮助)\n", cmd)
@@ -780,5 +786,127 @@ func handleContextCommand(arg string, a *agent.Agent) bool {
 		fmt.Printf("未知 context 子命令: %s\n", parts[0])
 		fmt.Println("用法: /context [fit|strategy]")
 	}
+	return true
+}
+
+// handleRAGCommand 处理 /rag 命令
+func handleRAGCommand(arg string, a *agent.Agent) bool {
+	ragMgr := a.RAG()
+	if ragMgr == nil {
+		fmt.Println("❌ RAG 系统未初始化")
+		return true
+	}
+
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		// 默认显示统计
+		stats := ragMgr.Stats()
+		fmt.Printf("📚 RAG 知识库: %d 文档, %d 分块\n", stats.DocumentCount, stats.ChunkCount)
+		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag list | /rag remove <docID>")
+		return true
+	}
+
+	switch parts[0] {
+	case "index":
+		if len(parts) < 2 {
+			fmt.Println("用法: /rag index <文件或目录路径>")
+			return true
+		}
+		path := strings.Join(parts[1:], " ")
+		info, err := os.Stat(path)
+		if err != nil {
+			fmt.Printf("❌ 路径不存在: %s\n", err)
+			return true
+		}
+
+		if info.IsDir() {
+			docs, err := ragMgr.IndexDirectory(path)
+			if err != nil {
+				fmt.Printf("❌ 索引目录失败: %v\n", err)
+				return true
+			}
+			fmt.Printf("✅ 索引了 %d 个文档\n", len(docs))
+			for _, d := range docs {
+				fmt.Printf("   📄 %s (%d chunks)\n", d.Title, len(d.Chunks))
+			}
+		} else {
+			doc, err := ragMgr.IndexFile(path)
+			if err != nil {
+				fmt.Printf("❌ 索引文件失败: %v\n", err)
+				return true
+			}
+			fmt.Printf("✅ 索引完成: %s (%d chunks)\n", doc.Title, len(doc.Chunks))
+		}
+
+	case "search", "query":
+		if len(parts) < 2 {
+			fmt.Println("用法: /rag search <查询内容>")
+			return true
+		}
+		query := strings.Join(parts[1:], " ")
+		results, err := ragMgr.Search(context.Background(), query)
+		if err != nil {
+			fmt.Printf("❌ 搜索失败: %v\n", err)
+			return true
+		}
+		if len(results) == 0 {
+			fmt.Println("🔍 无匹配结果")
+			return true
+		}
+		fmt.Printf("🔍 找到 %d 个结果:\n", len(results))
+		for i, r := range results {
+			content := r.Content
+			if len(content) > 100 {
+				content = content[:100] + "..."
+			}
+			fmt.Printf("  %d. [%.2f] %s — %s\n", i+1, r.Score, r.DocTitle, content)
+		}
+
+	case "stats":
+		stats := ragMgr.Stats()
+		fmt.Printf("📚 RAG 知识库统计:\n")
+		fmt.Printf("   文档数: %d\n", stats.DocumentCount)
+		fmt.Printf("   分块数: %d\n", stats.ChunkCount)
+		if !stats.LastIndexed.IsZero() {
+			fmt.Printf("   最后索引: %s\n", stats.LastIndexed.Format("2006-01-02 15:04:05"))
+		}
+		if len(stats.Sources) > 0 {
+			fmt.Println("   来源:")
+			for src, count := range stats.Sources {
+				fmt.Printf("     %s: %d chunks\n", src, count)
+			}
+		}
+
+	case "list":
+		ids := ragMgr.ListDocuments()
+		if len(ids) == 0 {
+			fmt.Println("📚 知识库为空")
+			return true
+		}
+		fmt.Printf("📚 已索引文档 (%d):\n", len(ids))
+		for _, id := range ids {
+			doc, ok := ragMgr.GetDocument(id)
+			if ok {
+				fmt.Printf("   %s — %s (%d chunks, %s)\n", id[:8], doc.Title, len(doc.Chunks), doc.Path)
+			}
+		}
+
+	case "remove":
+		if len(parts) < 2 {
+			fmt.Println("用法: /rag remove <docID>")
+			return true
+		}
+		docID := parts[1]
+		if ragMgr.RemoveDocument(docID) {
+			fmt.Printf("✅ 已删除文档: %s\n", docID)
+		} else {
+			fmt.Printf("❌ 文档不存在: %s\n", docID)
+		}
+
+	default:
+		fmt.Printf("未知 rag 子命令: %s\n", parts[0])
+		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag list | /rag remove <docID>")
+	}
+
 	return true
 }
