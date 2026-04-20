@@ -151,6 +151,11 @@ func (s *Server) Start() error {
 	mux.HandleFunc("/api/v1/rag/search", s.handleRAGSearch)
 	mux.HandleFunc("/api/v1/rag/stats", s.handleRAGStats)
 
+	// v0.15.0: Plugin API
+	mux.HandleFunc("/api/v1/plugins", s.handlePlugins)
+	mux.HandleFunc("/api/v1/plugins/search", s.handlePluginSearch)
+	mux.HandleFunc("/api/v1/plugins/install", s.handlePluginInstall)
+
 	// 根路由
 	mux.HandleFunc("/", s.handleRoot)
 
