@@ -23,9 +23,19 @@ type openaiChatRequest struct {
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role      string              `json:"role"`
+	Content   string              `json:"content,omitempty"`
+	ToolCalls []openaiToolCallResp `json:"tool_calls,omitempty"`
+}
+
+// openaiToolCallResp 是 OpenAI 响应中的工具调用格式
+type openaiToolCallResp struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
 }
 
 // openaiTool 是 OpenAI function calling 的工具定义
@@ -83,6 +93,7 @@ type openaiSSEEvent struct {
 }
 
 // callOpenAI 执行 OpenAI API 调用（非流式）
+// 支持文本响应和工具调用解析
 func callOpenAI(cfg Config, messages []Message) (*Response, error) {
 	reqBody := openaiChatRequest{
 		Model:       cfg.Model,
@@ -138,10 +149,23 @@ func callOpenAI(cfg Config, messages []Message) (*Response, error) {
 		result.TokensUsed = chatResp.Usage.TotalTokens
 	}
 
+	// 解析工具调用
+	if len(choice.Message.ToolCalls) > 0 {
+		result.ToolCalls = make([]ToolCall, len(choice.Message.ToolCalls))
+		for i, tc := range choice.Message.ToolCalls {
+			result.ToolCalls[i] = ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			}
+		}
+	}
+
 	return result, nil
 }
 
 // callOpenAIStream 执行 OpenAI API 流式调用
+// 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-chan StreamChunk, error) {
 	reqBody := openaiChatRequest{
 		Model:       cfg.Model,
@@ -175,7 +199,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-ch
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	ch := make(chan StreamChunk, 64)
+	ch := make(chan StreamChunk, 128)
 
 	go func() {
 		defer close(ch)
@@ -210,6 +234,8 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-ch
 			}
 
 			choice := chatResp.Choices[0]
+
+			// 处理文本内容
 			if choice.Delta != nil && choice.Delta.Content != "" {
 				ch <- StreamChunk{
 					Content: choice.Delta.Content,
@@ -217,7 +243,27 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message) (<-ch
 				}
 			}
 
+			// 处理工具调用（流式增量）
+			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				for _, dtc := range choice.Delta.ToolCalls {
+					// 发送工具调用增量
+					// 使用特殊前缀标记，让 loop 层可以识别
+					if dtc.Function.Name != "" {
+						ch <- StreamChunk{
+							Content: fmt.Sprintf("\n🔧 Calling: %s", dtc.Function.Name),
+							Model:   cfg.Model,
+						}
+					}
+				}
+			}
+
 			if choice.FinishReason == "stop" || choice.FinishReason == "length" {
+				ch <- StreamChunk{Done: true, Model: cfg.Model}
+				return
+			}
+
+			// 工具调用完成
+			if choice.FinishReason == "tool_calls" {
 				ch <- StreamChunk{Done: true, Model: cfg.Model}
 				return
 			}

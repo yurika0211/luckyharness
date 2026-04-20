@@ -31,6 +31,31 @@ func TestAddMessage(t *testing.T) {
 	}
 }
 
+func TestAutoTitle(t *testing.T) {
+	s := NewSession("test-title", t.TempDir())
+	if s.Title != "" {
+		t.Error("expected empty title initially")
+	}
+
+	s.AddMessage("user", "this is a very long message that should be truncated to fifty characters or so")
+	if s.Title != "this is a very long message that should be truncat..." {
+		t.Errorf("expected truncated title, got: %s", s.Title)
+	}
+}
+
+func TestAddToolMessage(t *testing.T) {
+	s := NewSession("test-tool", t.TempDir())
+	s.AddToolMessage("shell", "output: hello world")
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].Role != "tool" {
+		t.Errorf("expected tool role, got %s", msgs[0].Role)
+	}
+}
+
 func TestLastMessage(t *testing.T) {
 	s := NewSession("test-3", t.TempDir())
 	if last := s.LastMessage(); last != nil {
@@ -46,13 +71,42 @@ func TestLastMessage(t *testing.T) {
 	}
 }
 
-func TestSessionSave(t *testing.T) {
+func TestMessageCount(t *testing.T) {
+	s := NewSession("test-count", t.TempDir())
+	if s.MessageCount() != 0 {
+		t.Errorf("expected 0 messages, got %d", s.MessageCount())
+	}
+	s.AddMessage("user", "hello")
+	if s.MessageCount() != 1 {
+		t.Errorf("expected 1 message, got %d", s.MessageCount())
+	}
+}
+
+func TestSessionSaveAndLoad(t *testing.T) {
 	dir := t.TempDir()
 	s := NewSession("test-save", dir)
 	s.AddMessage("user", "test message")
+	s.AddMessage("assistant", "response")
 
 	if err := s.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
+	}
+
+	// Load from disk
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	loaded, ok := m.Get("test-save")
+	if !ok {
+		t.Fatal("session not found after save/load")
+	}
+	if loaded.Title != "test message" {
+		t.Errorf("expected title 'test message', got '%s'", loaded.Title)
+	}
+	if len(loaded.GetMessages()) != 2 {
+		t.Errorf("expected 2 messages, got %d", len(loaded.GetMessages()))
 	}
 }
 
@@ -67,13 +121,24 @@ func TestManagerNew(t *testing.T) {
 		t.Error("expected non-empty session ID")
 	}
 
-	// Should be retrievable
 	s2, ok := m.Get(s.ID)
 	if !ok {
 		t.Error("session not found after creation")
 	}
 	if s2.ID != s.ID {
 		t.Errorf("expected %s, got %s", s.ID, s2.ID)
+	}
+}
+
+func TestManagerNewWithTitle(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s := m.NewWithTitle("My Session")
+	if s.Title != "My Session" {
+		t.Errorf("expected 'My Session', got '%s'", s.Title)
 	}
 }
 
@@ -90,5 +155,131 @@ func TestManagerList(t *testing.T) {
 	sessions := m.List()
 	if len(sessions) != 3 {
 		t.Errorf("expected 3 sessions, got %d", len(sessions))
+	}
+}
+
+func TestManagerListInfo(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.New()
+	s1.AddMessage("user", "hello")
+
+	s2 := m.New()
+	s2.AddMessage("user", "world")
+
+	infos := m.ListInfo()
+	if len(infos) != 2 {
+		t.Fatalf("expected 2 infos, got %d", len(infos))
+	}
+
+	// Should be sorted by UpdatedAt (most recent first)
+	if infos[0].MessageCount != 1 {
+		t.Errorf("expected 1 message, got %d", infos[0].MessageCount)
+	}
+}
+
+func TestManagerSearch(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.NewWithTitle("Go Programming")
+	s1.AddMessage("user", "how to use goroutines")
+
+	s2 := m.NewWithTitle("Python Tips")
+	s2.AddMessage("user", "list comprehension tricks")
+
+	// Search by title
+	results := m.Search("go")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'go', got %d", len(results))
+	}
+
+	// Search by content
+	results = m.Search("comprehension")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'comprehension', got %d", len(results))
+	}
+
+	// Case insensitive
+	results = m.Search("PYTHON")
+	if len(results) != 1 {
+		t.Errorf("expected 1 result for 'PYTHON', got %d", len(results))
+	}
+
+	// No results
+	results = m.Search("rust")
+	if len(results) != 0 {
+		t.Errorf("expected 0 results for 'rust', got %d", len(results))
+	}
+}
+
+func TestManagerDelete(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s := m.New()
+	s.AddMessage("user", "test")
+	s.Save()
+
+	if err := m.Delete(s.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, ok := m.Get(s.ID); ok {
+		t.Error("session should be deleted")
+	}
+}
+
+func TestManagerSaveAll(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	s1 := m.New()
+	s1.AddMessage("user", "hello")
+
+	s2 := m.New()
+	s2.AddMessage("user", "world")
+
+	if err := m.SaveAll(); err != nil {
+		t.Fatalf("SaveAll: %v", err)
+	}
+
+	// Reload
+	m2, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager2: %v", err)
+	}
+
+	if m2.Count() != 2 {
+		t.Errorf("expected 2 sessions after reload, got %d", m2.Count())
+	}
+}
+
+func TestManagerCount(t *testing.T) {
+	m, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if m.Count() != 0 {
+		t.Errorf("expected 0, got %d", m.Count())
+	}
+
+	m.New()
+	m.New()
+
+	if m.Count() != 2 {
+		t.Errorf("expected 2, got %d", m.Count())
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/server"
+	"github.com/yurika0211/luckyharness/internal/session"
 )
 
 // startREPL 启动交互式 REPL
@@ -30,9 +31,33 @@ func startREPL(mgr *config.Manager) error {
 	cronEngine := cron.NewEngine()
 	watcher := cron.NewWatcher(cronEngine)
 
+	// 创建会话管理器
+	home, _ := os.UserHomeDir()
+	sessionMgr, err := session.NewManager(filepath.Join(home, ".luckyharness", "sessions"))
+	if err != nil {
+		return fmt.Errorf("create session manager: %w", err)
+	}
+
+	// 创建当前会话
+	currentSession := sessionMgr.New()
+
+	// 启动配置热重载
+	configWatcher, _ := mgr.WatchConfig(5 * time.Second)
+	configWatcher.OnChange(func(oldCfg, newCfg *config.Config) {
+		diff := config.DiffConfig(oldCfg, newCfg)
+		if diff.HasChanged() {
+			fmt.Println("\n📋 配置已更新:")
+			fmt.Print(diff.Format())
+			fmt.Println("  重启后生效")
+		}
+	})
+	configWatcher.Start()
+	defer configWatcher.Stop()
+
 	cfg := mgr.Get()
-	fmt.Println("🍀 LuckyHarness Chat v0.14.0")
+	fmt.Println("🍀 LuckyHarness Chat v0.15.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
+	fmt.Printf("   会话: %s\n", currentSession.ID[:8])
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
 
@@ -52,7 +77,7 @@ func startREPL(mgr *config.Manager) error {
 
 		// 处理命令
 		if strings.HasPrefix(input, "/") {
-			handled, exit := handleCommand(input, a, &loopCfg, cronEngine, watcher)
+			handled, exit := handleCommand(input, a, &loopCfg, cronEngine, watcher, sessionMgr, &currentSession, mgr)
 			if exit {
 				break
 			}
@@ -70,6 +95,10 @@ func startREPL(mgr *config.Manager) error {
 		}
 
 		fmt.Println(result.Response)
+
+		// 保存到会话
+		currentSession.AddMessage("user", input)
+		currentSession.AddMessage("assistant", result.Response)
 
 		// 显示工具调用信息
 		if len(result.ToolCalls) > 0 {
@@ -92,7 +121,7 @@ func startREPL(mgr *config.Manager) error {
 }
 
 // handleCommand 处理 REPL 命令
-func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, watcher *cron.Watcher) (handled bool, exit bool) {
+func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
 	parts := strings.SplitN(input, " ", 2)
 	cmd := parts[0]
 	arg := ""
@@ -124,6 +153,13 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /memstats          记忆统计")
 		fmt.Println("  /memdecay          执行记忆衰减")
 		fmt.Println("  /promote [id]      提升记忆层级")
+		fmt.Println("  /sessions          列出所有会话")
+		fmt.Println("  /session new       创建新会话")
+		fmt.Println("  /session switch ID 切换会话")
+		fmt.Println("  /session search KW 搜索会话")
+		fmt.Println("  /session save      保存当前会话")
+		fmt.Println("  /session delete ID 删除会话")
+		fmt.Println("  /reload            重新加载配置")
 		fmt.Println("  /cron add <id> <schedule> <cmd>  添加定时任务")
 		fmt.Println("  /cron list         列出定时任务")
 		fmt.Println("  /cron remove <id>  移除定时任务")
@@ -277,6 +313,40 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 
 	case "/clear":
 		fmt.Print("\033[2J\033[H")
+		return true, false
+
+	case "/sessions":
+		infos := sessionMgr.ListInfo()
+		if len(infos) == 0 {
+			fmt.Println("📋 暂无会话")
+		} else {
+			fmt.Println("📋 会话列表:")
+			for _, info := range infos {
+				active := ""
+				if info.ID == (*currentSession).ID {
+					active = " ← 当前"
+				}
+				title := info.Title
+				if title == "" {
+					title = "(无标题)"
+				}
+				fmt.Printf("  %s | %s | %d 条消息 | %s%s\n",
+					info.ID[:8], title, info.MessageCount,
+					info.UpdatedAt.Format("2006-01-02 15:04"), active)
+			}
+		}
+		return true, false
+
+	case "/session":
+		return handleSessionCommand(arg, sessionMgr, currentSession), false
+
+	case "/reload":
+		if err := cfgMgr.Reload(); err != nil {
+			fmt.Printf("❌ 重载配置失败: %v\n", err)
+		} else {
+			cfg := cfgMgr.Get()
+			fmt.Printf("✅ 配置已重载 | Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
+		}
 		return true, false
 
 	case "/skills":
@@ -908,5 +978,101 @@ func handleRAGCommand(arg string, a *agent.Agent) bool {
 		fmt.Println("用法: /rag index <path> | /rag search <query> | /rag stats | /rag list | /rag remove <docID>")
 	}
 
+	return true
+}
+
+// handleSessionCommand 处理 /session 命令
+func handleSessionCommand(arg string, mgr *session.Manager, currentSession **session.Session) bool {
+	parts := strings.Fields(arg)
+	if len(parts) == 0 {
+		fmt.Println("用法: /session <new|switch|search|save|delete> [args]")
+		return true
+	}
+
+	switch parts[0] {
+	case "new":
+		s := mgr.New()
+		*currentSession = s
+		fmt.Printf("✅ 新会话已创建: %s\n", s.ID[:8])
+
+	case "switch":
+		if len(parts) < 2 {
+			fmt.Println("用法: /session switch <id-prefix>")
+			return true
+		}
+		idPrefix := parts[1]
+		sessions := mgr.List()
+		var found *session.Session
+		for _, s := range sessions {
+			if strings.HasPrefix(s.ID, idPrefix) {
+				found = s
+				break
+			}
+		}
+		if found == nil {
+			fmt.Printf("❌ 未找到会话: %s\n", idPrefix)
+		} else {
+			*currentSession = found
+			fmt.Printf("✅ 已切换到会话: %s (%d 条消息)\n", found.ID[:8], found.MessageCount())
+		}
+
+	case "search":
+		if len(parts) < 2 {
+			fmt.Println("用法: /session search <keyword>")
+			return true
+		}
+		query := strings.Join(parts[1:], " ")
+		results := mgr.Search(query)
+		if len(results) == 0 {
+			fmt.Println("🔍 未找到匹配的会话")
+		} else {
+			fmt.Printf("🔍 找到 %d 个会话:\n", len(results))
+			for _, info := range results {
+				title := info.Title
+				if title == "" {
+					title = "(无标题)"
+				}
+				fmt.Printf("  %s | %s | %d 条消息\n",
+					info.ID[:8], title, info.MessageCount)
+			}
+		}
+
+	case "save":
+		if err := (*currentSession).Save(); err != nil {
+			fmt.Printf("❌ 保存失败: %v\n", err)
+		} else {
+			fmt.Printf("✅ 会话已保存: %s\n", (*currentSession).ID[:8])
+		}
+
+	case "delete":
+		if len(parts) < 2 {
+			fmt.Println("用法: /session delete <id-prefix>")
+			return true
+		}
+		idPrefix := parts[1]
+		sessions := mgr.List()
+		var targetID string
+		for _, s := range sessions {
+			if strings.HasPrefix(s.ID, idPrefix) {
+				targetID = s.ID
+				break
+			}
+		}
+		if targetID == "" {
+			fmt.Printf("❌ 未找到会话: %s\n", idPrefix)
+		} else if targetID == (*currentSession).ID {
+			fmt.Println("❌ 不能删除当前活跃会话")
+		} else {
+			if err := mgr.Delete(targetID); err != nil {
+				fmt.Printf("❌ %v\n", err)
+			} else {
+				fmt.Printf("✅ 会话已删除: %s\n", targetID[:8])
+			}
+		}
+
+	default:
+		fmt.Printf("未知 session 子命令: %s\n", parts[0])
+		fmt.Println("用法: /session <new|switch|search|save|delete> [args]")
+	}
 	return true
 }
