@@ -22,8 +22,8 @@ func TestSkillLoaderLoad(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if info.Name != "Test Skill" {
-		t.Errorf("expected name 'Test Skill', got %s", info.Name)
+	if info.Name != "test_skill" {
+		t.Errorf("expected name 'test_skill', got %s", info.Name)
 	}
 	if !info.Available {
 		t.Error("skill should be available")
