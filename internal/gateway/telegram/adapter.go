@@ -489,9 +489,11 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 
 	msg := a.convertMessage(tgMsg)
 
-	// In group chats, only respond to @bot mentions or replies
+	// In group chats, only respond to @bot mentions or replies to bot's own messages
 	if msg.Chat.Type != gateway.ChatPrivate {
-		if !a.isMentioned(tgMsg) && msg.ReplyTo == nil {
+		mentioned := a.isMentioned(tgMsg)
+		replyToBot := a.isReplyToBot(tgMsg)
+		if !mentioned && !replyToBot {
 			return
 		}
 		// Strip @botusername from text
@@ -499,6 +501,12 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 			msg.Text = strings.ReplaceAll(msg.Text, "@"+a.botUsername, "")
 			msg.Text = strings.TrimSpace(msg.Text)
 			msg.Args = strings.TrimSpace(strings.TrimPrefix(msg.Args, "@"+a.botUsername))
+		}
+		// 标记群聊触发方式，供 handler 使用
+		msg.IsGroupTrigger = true
+		msg.TriggerType = "mention"
+		if replyToBot && !mentioned {
+			msg.TriggerType = "reply"
 		}
 	}
 
@@ -676,17 +684,32 @@ func (a *Adapter) isMentioned(tgMsg *tgbotapi.Message) bool {
 		return true
 	}
 
-	// Check entities for mention
+	// Check entities for mention / text_mention
 	for _, entity := range tgMsg.Entities {
-		if entity.Type == "mention" {
+		switch entity.Type {
+		case "mention":
 			mention := tgMsg.Text[entity.Offset : entity.Offset+entity.Length]
 			if mention == "@"+a.botUsername {
+				return true
+			}
+		case "text_mention":
+			// text_mention 用于没有 username 的用户 @bot，检查 User 字段
+			if entity.User != nil && entity.User.UserName == a.botUsername {
 				return true
 			}
 		}
 	}
 
 	return false
+}
+
+// isReplyToBot checks if the message is a reply to the bot's own message.
+func (a *Adapter) isReplyToBot(tgMsg *tgbotapi.Message) bool {
+	if tgMsg.ReplyToMessage == nil {
+		return false
+	}
+	// 检查被回复消息的发送者是否是 bot 自己
+	return tgMsg.ReplyToMessage.From != nil && tgMsg.ReplyToMessage.From.IsBot
 }
 
 // escapeMarkdownV2 转义 Telegram MarkdownV2 特殊字符

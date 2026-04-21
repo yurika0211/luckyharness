@@ -210,15 +210,21 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 
 	sessionID := h.getSessionID(msg.Chat.ID)
 
+	// 群聊中在输入文本前加上发送者名字，让 agent 知道是谁在说话
+	inputText := text
+	if msg.IsGroupTrigger && msg.Sender.DisplayName() != "" {
+		inputText = fmt.Sprintf("[%s]: %s", msg.Sender.DisplayName(), text)
+	}
+
 	// 尝试流式输出（Adapter 已实现 StreamGateway）
 	sender, err := h.adapter.SendStream(ctx, msg.Chat.ID, msg.ID)
 	if err == nil {
-		return h.handleChatStream(ctx, sender, msg, text, sessionID)
+		return h.handleChatStream(ctx, sender, msg, inputText, sessionID)
 	}
 	// SendStream 失败，回退到非流式
 
 	// 回退到非流式
-	return h.handleChatSync(ctx, msg, text, sessionID)
+	return h.handleChatSync(ctx, msg, inputText, sessionID)
 }
 
 // handleChatStream 流式对话处理（Telegram 专用）
@@ -320,7 +326,8 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 		}
 	}
 
-	if msg.ReplyTo != nil {
+	// 群聊中始终 reply to 原消息，方便上下文追踪
+	if msg.Chat.Type != gateway.ChatPrivate {
 		return h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response)
 	}
 	return h.adapter.Send(ctx, msg.Chat.ID, response)

@@ -75,6 +75,10 @@ type Message struct {
 
 	// v0.36.0: 多媒体附件
 	Attachments []Attachment
+
+	// v0.44.0: 群聊触发信息
+	IsGroupTrigger bool   // 是否在群聊中被触发（@或回复bot）
+	TriggerType    string // 触发方式: "mention" | "reply"
 }
 
 // Attachment represents a media attachment in a message.
