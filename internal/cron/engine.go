@@ -48,6 +48,7 @@ type Job struct {
 	ErrorCount  int
 	LastError   string
 	CreatedAt   time.Time
+	Metadata    map[string]string // v0.44.0: 自定义元数据（如 chatID, triggerType 等）
 }
 
 // Schedule 调度策略
@@ -175,11 +176,12 @@ type Engine struct {
 
 // Event 调度事件
 type Event struct {
-	Type    EventType
-	JobID   string
-	JobName string
-	Time    time.Time
-	Error   error
+	Type     EventType
+	JobID    string
+	JobName  string
+	Time     time.Time
+	Error    error
+	Metadata map[string]string // v0.44.0: 从 Job 透传的元数据
 }
 
 // EventType 事件类型
@@ -232,6 +234,11 @@ func (e *Engine) SetEventHandler(handler func(event Event)) {
 
 // AddJob 添加定时任务
 func (e *Engine) AddJob(id, name, description string, schedule Schedule, task func() error) error {
+	return e.AddJobWithMeta(id, name, description, schedule, task, nil)
+}
+
+// AddJobWithMeta 添加定时任务（带元数据）
+func (e *Engine) AddJobWithMeta(id, name, description string, schedule Schedule, task func() error, metadata map[string]string) error {
 	e.mu.Lock()
 	if _, exists := e.jobs[id]; exists {
 		e.mu.Unlock()
@@ -248,6 +255,7 @@ func (e *Engine) AddJob(id, name, description string, schedule Schedule, task fu
 		Status:      StatusIdle,
 		NextRun:     schedule.Next(now),
 		CreatedAt:   now,
+		Metadata:    metadata,
 	}
 
 	e.jobs[id] = job
@@ -425,9 +433,10 @@ func (e *Engine) executeJob(jobID string, now time.Time) {
 	job.Status = StatusRunning
 	job.LastRun = now
 	jobName := job.Name
+	jobMeta := job.Metadata
 	e.mu.Unlock()
 
-	e.emit(Event{Type: EventJobStarted, JobID: jobID, JobName: jobName, Time: now})
+	e.emit(Event{Type: EventJobStarted, JobID: jobID, JobName: jobName, Time: now, Metadata: jobMeta})
 
 	// 执行任务
 	err := job.Task()
@@ -446,9 +455,9 @@ func (e *Engine) executeJob(jobID string, now time.Time) {
 
 	// 在锁外发送事件
 	if err != nil {
-		e.emit(Event{Type: EventJobFailed, JobID: jobID, JobName: jobName, Time: time.Now(), Error: err})
+		e.emit(Event{Type: EventJobFailed, JobID: jobID, JobName: jobName, Time: time.Now(), Error: err, Metadata: jobMeta})
 	} else {
-		e.emit(Event{Type: EventJobCompleted, JobID: jobID, JobName: jobName, Time: time.Now()})
+		e.emit(Event{Type: EventJobCompleted, JobID: jobID, JobName: jobName, Time: time.Now(), Metadata: jobMeta})
 	}
 }
 

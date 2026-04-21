@@ -547,12 +547,28 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 			prompt = name
 		}
 
-		err := engine.AddJob(id, name, prompt, cron.IntervalSchedule{Interval: time.Duration(intervalSec) * time.Second}, func() error {
-			// 执行时调用 agent chat
-			chatCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		err := engine.AddJobWithMeta(id, name, prompt, cron.IntervalSchedule{Interval: time.Duration(intervalSec) * time.Second}, func() error {
+			// 执行时调用 agent chat，并把结果发回创建任务的聊天
+			chatCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 			defer cancel()
-			_, err := h.agent.Chat(chatCtx, prompt)
-			return err
+
+			response, err := h.agent.Chat(chatCtx, prompt)
+			if err != nil {
+				// 执行失败，通知聊天
+				_ = h.adapter.Send(context.Background(), msg.Chat.ID,
+					fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", name, truncateString(err.Error(), 200)))
+				return err
+			}
+
+			// 执行成功，把 agent 回复发到聊天
+			if response != "" {
+				resultMsg := fmt.Sprintf("⏰ 定时任务 [%s] 执行结果:\n\n%s", name, response)
+				_ = h.adapter.Send(context.Background(), msg.Chat.ID, resultMsg)
+			}
+			return nil
+		}, map[string]string{
+			"chatID":      msg.Chat.ID,
+			"triggerType": "cron",
 		})
 		if err != nil {
 			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to add job: %s", err.Error()))
