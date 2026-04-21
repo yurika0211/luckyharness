@@ -2,10 +2,12 @@ package tool
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -347,7 +349,7 @@ func handleFileList(args map[string]any) (string, error) {
 	return b.String(), nil
 }
 
-// WebSearchTool 网络搜索（占位，后续接入真实 API）
+// WebSearchTool 网络搜索
 func WebSearchTool() *Tool {
 	return &Tool{
 		Name:        "web_search",
@@ -378,8 +380,6 @@ func handleWebSearch(args map[string]any) (string, error) {
 		return "", fmt.Errorf("query is required")
 	}
 
-	// v0.5.0: 占位实现，使用 shell curl 调用 DuckDuckGo
-	// 后续版本将接入专用搜索 API
 	count := 5
 	if c, ok := args["count"]; ok {
 		switch v := c.(type) {
@@ -390,33 +390,155 @@ func handleWebSearch(args map[string]any) (string, error) {
 		}
 	}
 
-	_ = count // suppress unused
+	// 策略 1: 使用 ddgs Python 包（绕过 DDG 验证码）
+	if result, err := searchWithDDGS(query, count); err == nil && result != "" {
+		return result, nil
+	}
 
-	// 使用 curl 调用 DuckDuckGo Lite
+	// 策略 2: 降级到 curl DDG Lite（可能遇到验证码）
+	if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
+		return result, nil
+	}
+
+	return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+}
+
+// searchWithDDGS 使用 ddgs Python 包搜索（推荐，绕过验证码）
+func searchWithDDGS(query string, count int) (string, error) {
+	// 用 python3 -c 调用 ddgs，输出 JSON
+	script := fmt.Sprintf(
+		`import json; from ddgs import DDGS; ddgs=DDGS(timeout=10); results=ddgs.text(%q, max_results=%d); print(json.dumps(results, ensure_ascii=False))`,
+		query, count,
+	)
+
+	cmd := exec.Command("python3", "-c", script)
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("ddgs search failed: %w", err)
+	}
+
+	output := stdout.String()
+	if output == "" || output == "[]" {
+		return "", fmt.Errorf("ddgs returned empty results")
+	}
+
+	// 解析 JSON 结果
+	var results []map[string]any
+	if err := json.Unmarshal([]byte(output), &results); err != nil {
+		// JSON 解析失败，返回原始输出
+		if len(output) > 5000 {
+			output = output[:5000] + "\n... (truncated)"
+		}
+		return output, nil
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("ddgs returned empty results")
+	}
+
+	// 格式化为可读文本
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Results for: %s\n\n", query))
+	for i, r := range results {
+		if i >= count {
+			break
+		}
+		title, _ := r["title"].(string)
+		href, _ := r["href"].(string)
+		body, _ := r["body"].(string)
+		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, title, href))
+		if body != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", body))
+		}
+		b.WriteString("\n")
+	}
+
+	result := b.String()
+	if len(result) > 8000 {
+		result = result[:8000] + "\n... (truncated)"
+	}
+	return result, nil
+}
+
+// searchWithDDGLite 使用 curl 调用 DDG Lite（降级方案，可能遇到验证码）
+func searchWithDDGLite(query string, count int) (string, error) {
 	cmd := exec.Command("curl", "-s", "-L",
 		"https://lite.duckduckgo.com/lite/",
 		"-d", "q="+query,
-		"-d", "format=json",
+		"-d", "kl=cn-zh",
+		"--max-time", "10",
 	)
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = nil
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Sprintf("Web search for '%s': API not yet configured. Query received.", query), nil
+		return "", fmt.Errorf("curl ddg lite failed: %w", err)
 	}
 
 	output := stdout.String()
-	if len(output) == 0 {
-		return fmt.Sprintf("No results found for '%s'", query), nil
+	if output == "" {
+		return "", fmt.Errorf("ddg lite returned empty response")
 	}
 
-	// 截断
-	if len(output) > 5000 {
-		output = output[:5000] + "\n... (truncated)"
+	// 检测验证码/反爬页面
+	if strings.Contains(output, "challenge-form") ||
+		strings.Contains(output, "anomaly-modal") ||
+		strings.Contains(output, "confirm this search was made by a human") {
+		return "", fmt.Errorf("ddg lite returned captcha/challenge page")
 	}
 
-	return output, nil
+	// 简单解析 HTML 结果
+	result := parseDDGLiteHTML(output, count)
+	if result == "" {
+		return "", fmt.Errorf("ddg lite: no parseable results")
+	}
+
+	if len(result) > 5000 {
+		result = result[:5000] + "\n... (truncated)"
+	}
+	return result, nil
+}
+
+// parseDDGLiteHTML 从 DDG Lite HTML 中提取搜索结果
+func parseDDGLiteHTML(html string, count int) string {
+	var b strings.Builder
+	b.WriteString("Results (DDG Lite):\n\n")
+
+	// DDG Lite 结果在 <a class="result__a"> 中
+	linkRe := regexp.MustCompile(`<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>`)
+	snippetRe := regexp.MustCompile(`<a[^>]*class="result__snippet"[^>]*>(.*?)</a>`)
+
+	links := linkRe.FindAllStringSubmatch(html, -1)
+	snippets := snippetRe.FindAllStringSubmatch(html, -1)
+
+	n := len(links)
+	if n > count {
+		n = count
+	}
+
+	for i := 0; i < n; i++ {
+		url := links[i][1]
+		title := stripHTMLTags(links[i][2])
+		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, title, url))
+		if i < len(snippets) {
+			snippet := stripHTMLTags(snippets[i][1])
+			if snippet != "" {
+				b.WriteString(fmt.Sprintf("   %s\n", snippet))
+			}
+		}
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// stripHTMLTags 去除 HTML 标签
+func stripHTMLTags(s string) string {
+	return regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
 }
 
 // CurrentTimeTool 获取当前时间
