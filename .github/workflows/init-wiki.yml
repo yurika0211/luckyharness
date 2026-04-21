@@ -9,12 +9,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}.wiki
-          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Create Home page
         run: |
-          echo "# LuckyHarness Wiki" > Home.md
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "# LuckyHarness Wiki" > Home.md
           git add Home.md
-          git commit -m "init wiki" || true
+          git diff --cached --quiet || git commit -m "init wiki"
           git push
