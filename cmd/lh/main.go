@@ -20,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/backup"
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
+	"github.com/yurika0211/luckyharness/internal/cost"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
 	"github.com/yurika0211/luckyharness/internal/eval"
@@ -46,6 +47,11 @@ var (
 	evalOutput    string
 	// template command flags
 	tmplVars []string
+	// cost command flags
+	costProvider string
+	costModel    string
+	costPeriod   string
+	costLimit    int
 )
 
 func main() {
@@ -649,9 +655,42 @@ func main() {
 
 	tmplCmd.AddCommand(tmplRenderCmd, tmplListCmd, tmplValidateCmd)
 
+	// ---- cost command ----
+	costCmd := &cobra.Command{
+		Use:   "cost",
+		Short: "API cost tracking and budget management",
+	}
+	costSummaryCmd := &cobra.Command{
+		Use:   "summary",
+		Short: "Show cost summary",
+		RunE:  runCostSummary,
+	}
+	costDetailCmd := &cobra.Command{
+		Use:   "detail",
+		Short: "Show recent cost records",
+		RunE:  runCostDetail,
+	}
+	costBudgetCmd := &cobra.Command{
+		Use:   "budget",
+		Short: "Show budget status",
+		RunE:  runCostBudget,
+	}
+	costSetBudgetCmd := &cobra.Command{
+		Use:   "set-budget <period> <limit-usd>",
+		Short: "Set a budget (period: daily/weekly/monthly)",
+		Args:  cobra.ExactArgs(2),
+		RunE:  runCostSetBudget,
+	}
+	costSummaryCmd.Flags().StringVar(&costProvider, "provider", "", "Filter by provider")
+	costSummaryCmd.Flags().StringVar(&costModel, "model", "", "Filter by model")
+	costSummaryCmd.Flags().StringVar(&costPeriod, "period", "all", "Time period: today/week/month/all")
+	costDetailCmd.Flags().IntVarP(&costLimit, "limit", "n", 20, "Number of records to show")
+
+	costCmd.AddCommand(costSummaryCmd, costDetailCmd, costBudgetCmd, costSetBudgetCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd, tmplCmd)
+		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd, tmplCmd, costCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -2566,4 +2605,157 @@ func runTemplateValidate(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("✅ 模板验证通过: %s\n", path)
 	return nil
+}
+
+// ---- cost command implementations ----
+
+func getCostStore() (*cost.CostStore, error) {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return nil, err
+	}
+	home := mgr.HomeDir()
+	costFile := filepath.Join(home, "costs.json")
+
+	prices := cost.NewPriceTable()
+	store := cost.NewCostStore(prices)
+
+	if _, err := os.Stat(costFile); err == nil {
+		_ = store.Load(costFile)
+	}
+	store.SetFilePath(costFile)
+	return store, nil
+}
+
+func runCostSummary(cmd *cobra.Command, args []string) error {
+	store, err := getCostStore()
+	if err != nil {
+		return fmt.Errorf("初始化成本存储失败: %w", err)
+	}
+
+	summary := store.Summary(cost.SummaryOptions{
+		Provider: costProvider,
+		Model:    costModel,
+		Period:   costPeriod,
+	})
+
+	fmt.Printf("💰 成本汇总 (%s)\n", periodLabel(costPeriod))
+	if costProvider != "" {
+		fmt.Printf("  Provider: %s\n", costProvider)
+	}
+	if costModel != "" {
+		fmt.Printf("  Model: %s\n", costModel)
+	}
+	fmt.Printf("  调用次数: %d\n", summary.TotalCalls)
+	fmt.Printf("  总 Token: %d (prompt: %d, completion: %d)\n",
+		summary.TotalTokens, summary.PromptTokens, summary.CompletionTokens)
+	fmt.Printf("  总费用: $%.6f\n", summary.TotalCostUSD)
+
+	// Show breakdown by model
+	if costProvider == "" && costModel == "" {
+		byModel := store.ByModel(costPeriod)
+		if len(byModel) > 0 {
+			fmt.Println("\n  📊 按模型分布:")
+			for key, s := range byModel {
+				fmt.Printf("    %-30s  %d calls  $%.4f\n", key, s.TotalCalls, s.TotalCostUSD)
+			}
+		}
+	}
+
+	return nil
+}
+
+func runCostDetail(cmd *cobra.Command, args []string) error {
+	store, err := getCostStore()
+	if err != nil {
+		return fmt.Errorf("初始化成本存储失败: %w", err)
+	}
+
+	records := store.Recent(costLimit)
+	if len(records) == 0 {
+		fmt.Println("没有成本记录")
+		return nil
+	}
+
+	fmt.Printf("📋 最近 %d 条记录:\n", len(records))
+	for _, r := range records {
+		fmt.Printf("  %s | %s/%s | tokens: %d+%d=%d | $%.6f\n",
+			r.Timestamp.Format("2006-01-02 15:04:05"),
+			r.Provider, r.Model,
+			r.PromptTokens, r.CompletionTokens, r.TotalTokens,
+			r.CostUSD)
+	}
+
+	return nil
+}
+
+func runCostBudget(cmd *cobra.Command, args []string) error {
+	store, err := getCostStore()
+	if err != nil {
+		return fmt.Errorf("初始化成本存储失败: %w", err)
+	}
+
+	bm := cost.NewBudgetManager(store)
+	statuses := bm.Status()
+
+	if len(statuses) == 0 {
+		fmt.Println("未设置预算。使用 lh cost set-budget <period> <limit-usd> 设置。")
+		return nil
+	}
+
+	fmt.Println("📊 预算状态:")
+	for _, s := range statuses {
+		provider := ""
+		if s.Config.Provider != "" {
+			provider = fmt.Sprintf(" (%s)", s.Config.Provider)
+		}
+		status := "🟢 正常"
+		if s.Percentage >= s.Config.CriticalPct {
+			status = "🔴 超支"
+		} else if s.Percentage >= s.Config.WarningPct {
+			status = "🟡 警告"
+		}
+		fmt.Printf("  %s%s: $%.4f / $%.2f (%.1f%%) 剩余 $%.4f  %s\n",
+			s.Config.Period, provider,
+			s.SpentUSD, s.Config.LimitUSD, s.Percentage, s.Remaining, status)
+	}
+
+	return nil
+}
+
+func runCostSetBudget(cmd *cobra.Command, args []string) error {
+	period := args[0]
+	var limit float64
+	if _, err := fmt.Sscanf(args[1], "%f", &limit); err != nil {
+		return fmt.Errorf("无效金额: %s", args[1])
+	}
+
+	store, err := getCostStore()
+	if err != nil {
+		return fmt.Errorf("初始化成本存储失败: %w", err)
+	}
+
+	bm := cost.NewBudgetManager(store)
+	bm.SetBudget(cost.BudgetConfig{
+		Period:   period,
+		LimitUSD: limit,
+	})
+
+	fmt.Printf("✅ 已设置 %s 预算: $%.2f\n", period, limit)
+	return nil
+}
+
+func periodLabel(period string) string {
+	switch period {
+	case "today":
+		return "今天"
+	case "week":
+		return "最近一周"
+	case "month":
+		return "最近一月"
+	case "all":
+		return "全部"
+	default:
+		return period
+	}
 }
