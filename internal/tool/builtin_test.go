@@ -150,3 +150,57 @@ func TestToolPermissions(t *testing.T) {
 		t.Errorf("current_time should be auto, got %s", timePerm)
 	}
 }
+
+func TestSandboxPathValidation(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	lhDir := filepath.Join(home, ".luckyharness")
+
+	tests := []struct {
+		name    string
+		path    string
+		wantErr bool
+	}{
+		{"luckyharness dir allowed", lhDir, false},
+		{"luckyharness subfile allowed", filepath.Join(lhDir, "memory.json"), false},
+		{"tmp allowed", "/tmp/test.txt", false},
+		{"nanobot denied", filepath.Join(home, ".nanobot", "config.json"), true},
+		{"ssh denied", filepath.Join(home, ".ssh", "id_rsa"), true},
+		{"etc shadow denied", "/etc/shadow", true},
+		{"root home denied", home + "/.bashrc", true},
+		{"path traversal denied", filepath.Join(lhDir, "../../../etc/passwd"), true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePath(tt.path)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validatePath(%q) error = %v, wantErr %v", tt.path, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestShellSandboxValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		cmd     string
+		wantErr bool
+	}{
+		{"ls luckyharness ok", "ls ~/.luckyharness/", false},
+		{"cat nanobot denied", "cat ~/.nanobot/config.json", true},
+		{"grep ssh denied", "grep key ~/.ssh/id_rsa", true},
+		{"echo OPENAI_API_KEY denied", "echo $OPENAI_API_KEY", true},
+		{"cat FILEBROWSER denied", "echo $FILEBROWSER_TOKEN", true},
+		{"normal command ok", "ls -la /tmp/", false},
+		{"python script ok", "python3 /tmp/test.py", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateShellSandbox(tt.cmd)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateShellSandbox(%q) error = %v, wantErr %v", tt.cmd, err, tt.wantErr)
+			}
+		})
+	}
+}

@@ -69,6 +69,11 @@ func handleShell(args map[string]any) (string, error) {
 		return "", fmt.Errorf("command is required")
 	}
 
+	// Shell 沙箱检查：拦截对禁止路径的访问
+	if err := validateShellSandbox(command); err != nil {
+		return "", err
+	}
+
 	timeout := 30
 	if t, ok := args["timeout"]; ok {
 		switch v := t.(type) {
@@ -1178,7 +1183,7 @@ func handleCurrentTime(args map[string]any) (string, error) {
 	return fmt.Sprintf("Current time: %s (%s)", now.Format("2006-01-02 15:04:05"), now.Location()), nil
 }
 
-// validatePath 路径安全检查（防止路径遍历）
+// validatePath 路径安全检查（防止路径遍历 + 沙箱限制）
 func validatePath(path string) error {
 	// 清理路径
 	clean := filepath.Clean(path)
@@ -1186,6 +1191,96 @@ func validatePath(path string) error {
 	// 检查路径遍历
 	if strings.Contains(clean, "..") {
 		return fmt.Errorf("path traversal detected: %s", path)
+	}
+
+	// 沙箱限制：只允许访问特定目录
+	return validateSandbox(clean)
+}
+
+// validateSandbox 检查路径是否在允许的沙箱范围内
+func validateSandbox(cleanPath string) error {
+	// 解析为绝对路径
+	absPath := cleanPath
+	if !filepath.IsAbs(absPath) {
+		// 相对路径基于当前工作目录解析
+		if wd, err := os.Getwd(); err == nil {
+			absPath = filepath.Join(wd, absPath)
+		}
+	}
+	absPath = filepath.Clean(absPath)
+
+	// 获取用户 home 目录
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "/root"
+	}
+
+	// 允许的路径前缀
+	allowedPrefixes := []string{
+		filepath.Join(home, ".luckyharness"), // LuckyHarness 自身目录
+		"/tmp",                               // 临时文件
+		"/dev/null",                          // 空设备
+	}
+
+	// 禁止的路径前缀（即使在上面的允许列表下也拦截）
+	deniedPrefixes := []string{
+		filepath.Join(home, ".nanobot"),       // nanobot 配置
+		filepath.Join(home, ".ssh"),           // SSH 密钥
+		filepath.Join(home, ".gnupg"),         // GPG 密钥
+		filepath.Join(home, ".aws"),           // AWS 凭证
+		filepath.Join(home, ".config/gcloud"), // GCP 凭证
+		"/etc/shadow",                         // 系统密码
+		"/etc/ssh",                            // SSH 配置
+	}
+
+	// 先检查禁止列表
+	for _, denied := range deniedPrefixes {
+		if strings.HasPrefix(absPath, denied) || absPath == denied {
+			return fmt.Errorf("access denied: path is outside sandbox (%s)", cleanPath)
+		}
+	}
+
+	// 再检查允许列表
+	for _, allowed := range allowedPrefixes {
+		if strings.HasPrefix(absPath, allowed) || absPath == allowed {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("access denied: path is outside sandbox (allowed: ~/.luckyharness/, /tmp/). Requested: %s", cleanPath)
+}
+
+// validateShellSandbox 检查 shell 命令是否试图访问禁止路径
+func validateShellSandbox(command string) error {
+	// 禁止在 shell 命令中引用的路径模式
+	deniedPatterns := []string{
+		".nanobot",
+		".ssh/",
+		".gnupg/",
+		".aws/",
+		"/etc/shadow",
+		"/etc/ssh/",
+		"config.json", // nanobot 配置文件
+	}
+
+	lowerCmd := strings.ToLower(command)
+	for _, pattern := range deniedPatterns {
+		if strings.Contains(lowerCmd, strings.ToLower(pattern)) {
+			return fmt.Errorf("access denied: command references restricted path (%s)", pattern)
+		}
+	}
+
+	// 禁止的环境变量读取
+	deniedEnvVars := []string{
+		"FILEBROWSER_",
+		"NANOBOT_",
+		"OPENAI_API_KEY",
+		"ANTHROPIC_API_KEY",
+	}
+	for _, envVar := range deniedEnvVars {
+		if strings.Contains(lowerCmd, strings.ToLower(envVar)) {
+			return fmt.Errorf("access denied: command references restricted environment variable (%s)", envVar)
+		}
 	}
 
 	return nil
