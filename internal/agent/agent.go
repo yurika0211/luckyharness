@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,6 +44,7 @@ type Agent struct {
 	embedderReg  *embedder.Registry      // v0.21.0: 嵌入模型注册表
 	collabReg    *collab.Registry        // v0.22.0: Agent 协作注册表
 	collabMgr    *collab.DelegateManager // v0.22.0: 协作任务管理器
+	skills       []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -598,8 +600,74 @@ func (a *Agent) LoadSkills(skillsDir string) (int, error) {
 		return 0, fmt.Errorf("load skills: %w", err)
 	}
 
+	a.skills = skills
 	tool.RegisterSkillTools(a.tools, skills, nil)
+
+	// v0.35.0: 注册 skill_read 工具，让 LLM 能读取 SKILL.md 内容
+	a.tools.Register(&tool.Tool{
+		Name:        "skill_read",
+		Description: "读取指定 skill 的 SKILL.md 内容，了解该 skill 的完整使用方法和步骤。当用户请求涉及某个 skill 的能力时，先调用此工具读取 SKILL.md，再按指引操作。",
+		Category:    tool.CatSkill,
+		Permission:  tool.PermAuto,
+		Enabled:     true,
+		Parameters: map[string]tool.Param{
+			"name": {
+				Type:        "string",
+				Description: "Skill 名称（如 web-search, summarize, rewrite 等）",
+				Required:    true,
+			},
+		},
+		Handler: a.handleSkillRead(),
+	})
+
 	return len(skills), nil
+}
+
+// Skills 返回已加载的 skill 列表
+func (a *Agent) Skills() []*tool.SkillInfo {
+	return a.skills
+}
+
+// handleSkillRead 返回 skill_read 工具的 handler
+func (a *Agent) handleSkillRead() func(args map[string]any) (string, error) {
+	return func(args map[string]any) (string, error) {
+		name, _ := args["name"].(string)
+		if name == "" {
+			// 没指定名称，返回所有 skill 列表
+			var b strings.Builder
+			b.WriteString("Available skills:\n")
+			for _, s := range a.skills {
+				b.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+			}
+			return b.String(), nil
+		}
+
+		// 查找匹配的 skill
+		for _, s := range a.skills {
+			if s.Name == name || strings.EqualFold(s.Name, name) {
+				skillFile := filepath.Join(s.Dir, "SKILL.md")
+				data, err := os.ReadFile(skillFile)
+				if err != nil {
+					return "", fmt.Errorf("read SKILL.md for %s: %w", name, err)
+				}
+				return string(data), nil
+			}
+		}
+
+		// 模糊匹配
+		var candidates []string
+		lowerName := strings.ToLower(name)
+		for _, s := range a.skills {
+			if strings.Contains(strings.ToLower(s.Name), lowerName) {
+				candidates = append(candidates, s.Name)
+			}
+		}
+		if len(candidates) > 0 {
+			return fmt.Sprintf("Skill '%s' not found. Did you mean: %s?", name, strings.Join(candidates, ", ")), nil
+		}
+
+		return fmt.Sprintf("Skill '%s' not found. Use skill_read without name to list all skills.", name), nil
+	}
 }
 
 // ConnectMCPServer 连接 MCP Server
