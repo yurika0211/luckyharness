@@ -21,6 +21,7 @@
 | v0.15.0 | Plugin Marketplace | ✅ Done | Manifest + Registry + Installer + Sandbox + CLI + API + 测试 |
 | v0.16.0 | Multi-turn RAG | ✅ Done | ConversationContext + QueryRewriter + FollowUpDetector + ContextAwareRetriever + FeedbackStore |
 | v0.32.0 | Evaluation & Benchmark | ✅ Done | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
+| v0.33.0 | Prompt Template Engine | 🟡 In Progress | 模板引擎 + 变量插值 + 条件/循环 + 继承 + CLI |
 
 ---
 
@@ -61,6 +62,18 @@
 - [x] **EB-4**: 评估用例格式 — YAML 定义测试用例（input/expected_output/tools/context）
 - [x] **EB-5**: CLI — `lh eval run/list/report`
 - [x] **EB-6**: 测试 — 每个子模块单元测试
+
+---
+
+## 🟡 In Progress — v0.33.0 Prompt Template Engine
+
+### 子任务
+
+- [ ] **PT-1**: Template 定义与解析 — `{{variable}}` 插值 + `{{#if}}`/`{{#each}}` 控制 + `{{>partial}}` 引用
+- [ ] **PT-2**: TemplateStore — 模板存储（内存 + 文件系统），支持热加载
+- [ ] **PT-3**: Render 引擎 — 递归渲染 + 继承（layout/block）+ 内置函数（upper/lower/truncate/date）
+- [ ] **PT-4**: CLI — `lh template render/list/validate`
+- [ ] **PT-5**: 测试 — 每个子模块单元测试
 
 ---
 

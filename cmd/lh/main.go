@@ -27,6 +27,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/profile"
+	"github.com/yurika0211/luckyharness/internal/prompt"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
@@ -43,6 +44,8 @@ var (
 	evalFormat    string
 	evalThreshold float64
 	evalOutput    string
+	// template command flags
+	tmplVars []string
 )
 
 func main() {
@@ -617,9 +620,37 @@ func main() {
 	evalReportCmd.Flags().StringVarP(&evalFormat, "format", "f", "text", "Report format: text, json, yaml")
 	evalCmd.AddCommand(evalRunCmd, evalListCmd, evalReportCmd)
 
+	// ---- template command ----
+	tmplCmd := &cobra.Command{
+		Use:   "template",
+		Short: "Prompt template management",
+	}
+	tmplRenderCmd := &cobra.Command{
+		Use:   "render <template-name>",
+		Short: "Render a template with variables",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runTemplateRender,
+	}
+	tmplListCmd := &cobra.Command{
+		Use:   "list [dir]",
+		Short: "List available templates",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runTemplateList,
+	}
+	tmplValidateCmd := &cobra.Command{
+		Use:   "validate <file>",
+		Short: "Validate a template file",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runTemplateValidate,
+	}
+	var tmplVars []string
+	tmplRenderCmd.Flags().StringSliceVarP(&tmplVars, "var", "v", nil, "Variables in key=value format")
+
+	tmplCmd.AddCommand(tmplRenderCmd, tmplListCmd, tmplValidateCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd)
+		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd, tmplCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -2422,4 +2453,97 @@ func (r *cliAgentRunner) Run(ctx context.Context, input eval.EvalInput) (eval.Ev
 	}
 
 	return output, nil
+}
+
+// ---- template command implementations ----
+
+func getTemplateStore() (*prompt.TemplateStore, error) {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return nil, err
+	}
+	home := mgr.HomeDir()
+	tmplDir := filepath.Join(home, "templates")
+
+	store := prompt.NewTemplateStore()
+	if _, err := os.Stat(tmplDir); err == nil {
+		_ = store.LoadFromDir(tmplDir)
+	}
+	return store, nil
+}
+
+func runTemplateRender(cmd *cobra.Command, args []string) error {
+	name := args[0]
+
+	store, err := getTemplateStore()
+	if err != nil {
+		return fmt.Errorf("初始化模板存储失败: %w", err)
+	}
+
+	data := make(prompt.RenderData)
+	for _, v := range tmplVars {
+		parts := strings.SplitN(v, "=", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("无效变量格式: %s (期望 key=value)", v)
+		}
+		data[parts[0]] = parts[1]
+	}
+
+	engine := prompt.NewEngine(store)
+
+	result, err := engine.Render(name, data)
+	if err != nil {
+		return fmt.Errorf("渲染模板失败: %w", err)
+	}
+
+	fmt.Println(result)
+	return nil
+}
+
+func runTemplateList(cmd *cobra.Command, args []string) error {
+	store, err := getTemplateStore()
+	if err != nil {
+		return fmt.Errorf("初始化模板存储失败: %w", err)
+	}
+
+	if len(args) > 0 {
+		if err := store.LoadFromDir(args[0]); err != nil {
+			return fmt.Errorf("加载目录失败: %w", err)
+		}
+	}
+
+	names := store.List()
+	if len(names) == 0 {
+		fmt.Println("没有找到模板")
+		return nil
+	}
+
+	fmt.Printf("📋 共 %d 个模板:\n", len(names))
+	for _, name := range names {
+		t, _ := store.Get(name)
+		layout := ""
+		if t != nil && t.Layout != "" {
+			layout = fmt.Sprintf(" (layout: %s)", t.Layout)
+		}
+		fmt.Printf("  • %s%s\n", name, layout)
+	}
+	return nil
+}
+
+func runTemplateValidate(cmd *cobra.Command, args []string) error {
+	path := args[0]
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取文件失败: %w", err)
+	}
+
+	engine := prompt.NewEngine(prompt.NewTemplateStore())
+	if err := engine.Validate(string(data)); err != nil {
+		fmt.Printf("❌ 模板验证失败: %v\n", err)
+		return nil
+	}
+
+	fmt.Printf("✅ 模板验证通过: %s\n", path)
+	return nil
 }
