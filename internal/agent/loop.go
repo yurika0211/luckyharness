@@ -453,9 +453,13 @@ func (a *Agent) buildMessages(userInput string) []provider.Message {
 	// v0.35.0: 注入 skill 列表摘要，引导 LLM 用 skill_read 读取详情
 	if len(a.skills) > 0 {
 		var skillCtx strings.Builder
-		skillCtx.WriteString("[Available Skills — use skill_read to get full instructions]\n")
+		skillCtx.WriteString("[Available Skills — use skill_read(name) to get full SKILL.md]\n")
 		for _, s := range a.skills {
-			skillCtx.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+			if s.Summary != "" {
+				skillCtx.WriteString(fmt.Sprintf("- %s: %s | %s\n", s.Name, s.Description, s.Summary))
+			} else {
+				skillCtx.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
+			}
 		}
 		messages = append(messages, provider.Message{Role: "system", Content: skillCtx.String()})
 	}

@@ -24,6 +24,7 @@ func NewSkillLoader(skillsDir string) *SkillLoader {
 type SkillInfo struct {
 	Name         string
 	Description  string
+	Summary      string // v0.36.0: SKILL.md 精简摘要，用于注入 system prompt
 	Dir          string
 	Tools        []SkillToolDef
 	Available    bool
@@ -112,6 +113,9 @@ func (sl *SkillLoader) Load(path string) (*SkillInfo, error) {
 	if len(info.Tools) == 0 {
 		info.Tools = sl.autoGenerateTools(info, content)
 	}
+
+	// v0.36.0: 提取 SKILL.md 精简摘要
+	info.Summary = sl.extractSummary(content)
 
 	return info, nil
 }
@@ -465,4 +469,99 @@ func executeScript(scriptPath string, args map[string]any) (string, error) {
 		return string(output), fmt.Errorf("script error: %w", err)
 	}
 	return string(output), nil
+}
+
+// extractSummary 从 SKILL.md 提取精简摘要，用于注入 system prompt
+// 策略：提取关键 section（Trigger/When to use/Steps/Tools）的要点，限制总长 500 字符
+func (sl *SkillLoader) extractSummary(content string) string {
+	body := stripFrontmatter(content)
+	lines := strings.Split(body, "\n")
+
+	var summary strings.Builder
+	var inTargetSection bool
+
+	// 目标 section 关键词（大小写不敏感，中英文）
+	targetSections := []string{
+		// English
+		"trigger", "when to use", "when to apply", "steps", "how to use",
+		"usage", "tools", "workflow", "overview", "description",
+		"quick start", "key concepts", "core tools", "how to search",
+		"routing rules", "how it works", "rule of thumb",
+		"command reference", "common patterns", "best practices",
+		"quick decision", "conflict resolution",
+		// Chinese
+		"触发", "工作流", "工作流程", "核心规则", "核心能力",
+		"使用方式", "子技能路由", "覆盖范围", "执行规则",
+		"快速原则", "服务地图", "可用机制", "触发方式",
+		"聊天交付", "商业模式", "战略分析", "参考文档",
+		"核心概念", "工作原理", "认证", "环境变量",
+		"默认策略", "工作规则", "命令", "常见自动化",
+		"设计自动化", "首次使用", "固定配置",
+		"搜索源", "搜索策略", "内容提取", "快速参考",
+		"执行步骤", "快速开始", "技术规范", "页面类型",
+		"输出规范", "身份", "核心人格", "说话风格",
+		"禁忌", "对话模式", "前置依赖", "功能说明",
+		"参数表", "协议", "角色",
+	}
+
+	for _, line := range lines {
+		// 检测 section 标题
+		if strings.HasPrefix(line, "## ") {
+			heading := strings.ToLower(strings.TrimPrefix(line, "## "))
+			inTargetSection = false
+			for _, ts := range targetSections {
+				if strings.Contains(heading, ts) {
+					inTargetSection = true
+					summary.WriteString("[" + strings.TrimPrefix(line, "## ") + "] ")
+					break
+				}
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, "### ") {
+			// 子标题，如果在目标 section 内则保留
+			if inTargetSection {
+				summary.WriteString(strings.TrimPrefix(line, "### ") + ": ")
+			}
+			continue
+		}
+
+		if !inTargetSection {
+			continue
+		}
+
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
+		// 列表项直接保留
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "1.") || strings.HasPrefix(trimmed, "2.") {
+			summary.WriteString(trimmed + " ")
+		} else if len(trimmed) > 0 {
+			// 普通文本截断
+			if len(trimmed) > 80 {
+				trimmed = trimmed[:77] + "..."
+			}
+			summary.WriteString(trimmed + " ")
+		}
+
+		// 限制总长
+		if summary.Len() > 500 {
+			break
+		}
+	}
+
+	result := strings.TrimSpace(summary.String())
+	if len(result) > 500 {
+		result = result[:497] + "..."
+	}
+
+	// 如果没提取到任何内容，用 description 兜底
+	if result == "" {
+		return ""
+	}
+
+	return result
 }
