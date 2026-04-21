@@ -1367,6 +1367,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		}
 		tgAdapter := telegram.NewAdapter(telegram.Config{Token: token})
 		handler := telegram.NewHandler(tgAdapter, a)
+		// 持久化 chatID→sessionID 映射，重启后恢复会话
+		home, _ := os.UserHomeDir()
+		handler.SetDataDir(filepath.Join(home, ".luckyharness", "data", "telegram"))
 		tgAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
 			return handler.HandleMessage(ctx, msg)
 		})

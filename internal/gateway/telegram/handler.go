@@ -2,7 +2,10 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,14 @@ type Handler struct {
 
 	mu       sync.RWMutex
 	sessions map[string]string // chatID → sessionID
+
+	// v0.44.0: chatID→sessionID 映射持久化
+	dataDir string
+}
+
+// chatSessionsData 是持久化的 chatID→sessionID 映射
+type chatSessionsData struct {
+	ChatSessions map[string]string `json:"chat_sessions"`
 }
 
 // NewHandler creates a new Telegram command handler.
@@ -27,6 +38,89 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		adapter:  adapter,
 		agent:    a,
 		sessions: make(map[string]string),
+		dataDir:  "", // 默认不持久化，需 SetDataDir 启用
+	}
+}
+
+// SetDataDir 设置数据目录并从磁盘恢复 chatID→sessionID 映射
+func (h *Handler) SetDataDir(dir string) {
+	h.mu.Lock()
+	h.dataDir = dir
+	h.mu.Unlock()
+
+	// 确保目录存在
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		fmt.Printf("[telegram] warning: failed to create data dir %s: %v\n", dir, err)
+		return
+	}
+
+	// 从磁盘恢复映射
+	h.loadChatSessions()
+}
+
+// chatSessionsPath 返回持久化文件路径
+func (h *Handler) chatSessionsPath() string {
+	if h.dataDir == "" {
+		return ""
+	}
+	return filepath.Join(h.dataDir, "chat_sessions.json")
+}
+
+// loadChatSessions 从磁盘加载 chatID→sessionID 映射
+func (h *Handler) loadChatSessions() {
+	path := h.chatSessionsPath()
+	if path == "" {
+		return
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// 文件不存在是正常的
+		return
+	}
+
+	var csd chatSessionsData
+	if err := json.Unmarshal(data, &csd); err != nil {
+		fmt.Printf("[telegram] warning: failed to parse chat_sessions.json: %v\n", err)
+		return
+	}
+
+	h.mu.Lock()
+	for chatID, sessionID := range csd.ChatSessions {
+		// 验证 session 是否还存在
+		if _, ok := h.agent.Sessions().Get(sessionID); ok {
+			h.sessions[chatID] = sessionID
+		}
+	}
+	h.mu.Unlock()
+
+	fmt.Printf("[telegram] restored %d chat→session mappings from disk\n", len(h.sessions))
+}
+
+// saveChatSessions 持久化 chatID→sessionID 映射到磁盘
+func (h *Handler) saveChatSessions() {
+	path := h.chatSessionsPath()
+	if path == "" {
+		return
+	}
+
+	h.mu.RLock()
+	csd := chatSessionsData{
+		ChatSessions: make(map[string]string, len(h.sessions)),
+	}
+	for k, v := range h.sessions {
+		csd.ChatSessions[k] = v
+	}
+	h.mu.RUnlock()
+
+	data, err := json.MarshalIndent(csd, "", "  ")
+	if err != nil {
+		fmt.Printf("[telegram] warning: failed to marshal chat_sessions: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		fmt.Printf("[telegram] warning: failed to write chat_sessions.json: %v\n", err)
 	}
 }
 
@@ -44,6 +138,7 @@ func (h *Handler) getSessionID(chatID string) string {
 	h.mu.Lock()
 	h.sessions[chatID] = sess.ID
 	h.mu.Unlock()
+	h.saveChatSessions()
 	return sess.ID
 }
 
@@ -53,6 +148,7 @@ func (h *Handler) resetSession(chatID string) string {
 	h.mu.Lock()
 	h.sessions[chatID] = sess.ID
 	h.mu.Unlock()
+	h.saveChatSessions()
 	return sess.ID
 }
 
