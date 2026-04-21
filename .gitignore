@@ -2,3 +2,5 @@
 .luckyharness/
 *.db
 /lh
+tasks/bangumi_published.json
+lh-new

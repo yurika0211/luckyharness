@@ -1,0 +1,73 @@
+{
+  "agents": {
+    "defaults": {
+      "model": "glm-5.1",
+      "provider": "openai",
+      "maxTokens": 102768,
+      "contextWindowTokens": 195536,
+      "temperature": 0.1,
+      "maxToolIterations": 500,
+      "reasoningEffort": null
+    }
+  },
+  "channels": {
+    "feishu": {
+      "allowFrom": [
+        "*"
+      ],
+      "appId": "YOUR_APP_ID_HERE",
+      "appSecret": "YOUR_APP_SECRET_HERE",
+      "enabled": false
+    },
+    "qq": {
+      "allowFrom": [
+        "*"
+      ],
+      "appId": "YOUR_APP_ID_HERE",
+      "appSecret": "YOUR_APP_SECRET_HERE",
+      "enabled": true,
+      "isPrivate": false,
+      "sandbox": true,
+      "secret": "YOUR_SECRET_HERE",
+      "streaming": true
+    },
+    "telegram": {
+      "allowFrom": [
+        "*"
+      ],
+      "connectionPoolSize": 32,
+      "enabled": true,
+      "groupPolicy": "mention",
+      "poolTimeout": 5,
+      "privacy_mode": false,
+      "proxy": null,
+      "reactEmoji": "\ud83d\udc40",
+      "replyToMessage": false,
+      "streamEditInterval": 0.6,
+      "streaming": true,
+      "token": "YOUR_TOKEN_HERE",
+      "model": "glm-5.1",
+      "api_base": "http://maas.icompify.com:32788/v1",
+      "api_key": "YOUR_API_KEY_HERE"
+    }
+  },
+  "providers": {
+    "openai": {
+      "apiKey": "YOUR_API_KEY_HERE",
+      "apiBase": "http://maas.icompify.com:32788/v1",
+      "extraHeaders": {
+        "User-Agent": "nanobot/1.0",
+        "X-Stainless-Arch": "x",
+        "X-Stainless-Lang": "x",
+        "X-Stainless-Os": "x",
+        "X-Stainless-Package-Version": "x",
+        "X-Stainless-Runtime": "x",
+        "X-Stainless-Runtime-Version": "x"
+      }
+    }
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 18790
+  }
+}
