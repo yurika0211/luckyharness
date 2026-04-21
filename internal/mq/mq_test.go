@@ -2,6 +2,7 @@ package mq
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,12 +16,15 @@ func TestMemoryBackend_PublishSubscribe(t *testing.T) {
 	defer backend.Close()
 
 	ctx := context.Background()
+	var mu sync.Mutex
 	var received Message
 	var got bool
 
 	_, err := backend.Subscribe(ctx, "test.topic", func(ctx context.Context, msg Message) error {
+		mu.Lock()
 		received = msg
 		got = true
+		mu.Unlock()
 		return nil
 	})
 	require.NoError(t, err)
@@ -28,10 +32,15 @@ func TestMemoryBackend_PublishSubscribe(t *testing.T) {
 	_, err = backend.Publish(ctx, "test.topic", []byte("hello"), nil)
 	require.NoError(t, err)
 
-	// Wait for async delivery
-	assert.Eventually(t, func() bool { return got }, time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}, time.Second, 10*time.Millisecond)
+	mu.Lock()
 	assert.Equal(t, "hello", string(received.Payload))
 	assert.Equal(t, "test.topic", received.Topic)
+	mu.Unlock()
 }
 
 func TestMemoryBackend_MultipleSubscribers(t *testing.T) {
@@ -123,12 +132,15 @@ func TestMemoryBackend_MessageHeaders(t *testing.T) {
 	defer backend.Close()
 
 	ctx := context.Background()
+	var mu sync.Mutex
 	var received Message
 	var got bool
 
 	_, err := backend.Subscribe(ctx, "headers.topic", func(ctx context.Context, msg Message) error {
+		mu.Lock()
 		received = msg
 		got = true
+		mu.Unlock()
 		return nil
 	})
 	require.NoError(t, err)
@@ -140,9 +152,15 @@ func TestMemoryBackend_MessageHeaders(t *testing.T) {
 	_, err = backend.Publish(ctx, "headers.topic", []byte("data"), headers)
 	require.NoError(t, err)
 
-	assert.Eventually(t, func() bool { return got }, time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}, time.Second, 10*time.Millisecond)
+	mu.Lock()
 	assert.Equal(t, "abc123", received.Headers["trace-id"])
 	assert.Equal(t, "test", received.Headers["source"])
+	mu.Unlock()
 }
 
 func TestQueue_PublishSubscribe(t *testing.T) {
@@ -152,12 +170,15 @@ func TestQueue_PublishSubscribe(t *testing.T) {
 	defer q.Close()
 
 	ctx := context.Background()
+	var mu sync.Mutex
 	var received Message
 	var got bool
 
 	_, err = q.Subscribe(ctx, "queue.test", func(ctx context.Context, msg Message) error {
+		mu.Lock()
 		received = msg
 		got = true
+		mu.Unlock()
 		return nil
 	})
 	require.NoError(t, err)
@@ -165,8 +186,14 @@ func TestQueue_PublishSubscribe(t *testing.T) {
 	_, err = q.Publish(ctx, "queue.test", []byte("hello"), nil)
 	require.NoError(t, err)
 
-	assert.Eventually(t, func() bool { return got }, time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}, time.Second, 10*time.Millisecond)
+	mu.Lock()
 	assert.Equal(t, "hello", string(received.Payload))
+	mu.Unlock()
 }
 
 func TestQueue_PublishString(t *testing.T) {
@@ -176,18 +203,27 @@ func TestQueue_PublishString(t *testing.T) {
 	defer q.Close()
 
 	ctx := context.Background()
+	var mu sync.Mutex
 	var received Message
 	var got bool
 
 	q.Subscribe(ctx, "str.test", func(ctx context.Context, msg Message) error {
+		mu.Lock()
 		received = msg
 		got = true
+		mu.Unlock()
 		return nil
 	})
 
 	q.PublishString(ctx, "str.test", "hello string")
-	assert.Eventually(t, func() bool { return got }, time.Second, 10*time.Millisecond)
+	assert.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return got
+	}, time.Second, 10*time.Millisecond)
+	mu.Lock()
 	assert.Equal(t, "hello string", string(received.Payload))
+	mu.Unlock()
 }
 
 func TestQueue_Unsubscribe(t *testing.T) {
