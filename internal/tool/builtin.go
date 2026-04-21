@@ -28,6 +28,7 @@ func ShellTool() *Tool {
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove, // shell 命令需要审批
+		ShellAware:  true,
 		Parameters: map[string]Param{
 			"command": {
 				Type:        "string",
@@ -66,13 +67,30 @@ func handleShell(args map[string]any) (string, error) {
 		}
 	}
 
-	workdir := ""
+	// 从 shell context 注入的值
+	cwd, _ := args["_cwd"].(string)
+	env, _ := args["_env"].(map[string]string)
+
+	workdir := cwd
 	if w, ok := args["workdir"]; ok {
-		workdir, _ = w.(string)
+		if ws, ok := w.(string); ok && ws != "" {
+			workdir = ws
+		}
 	}
 
+	// 构建 shell 前缀：注入环境变量
+	prefix := ""
+	if len(env) > 0 {
+		for k, v := range env {
+			// 转义单引号
+			escaped := strings.ReplaceAll(v, "'", "'\\''")
+			prefix += fmt.Sprintf("export %s='%s'; ", k, escaped)
+		}
+	}
+	fullCommand := prefix + command
+
 	ctx := time.Duration(timeout) * time.Second
-	cmd := exec.Command("sh", "-c", command)
+	cmd := exec.Command("sh", "-c", fullCommand)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}

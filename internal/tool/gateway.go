@@ -95,6 +95,73 @@ func (g *Gateway) Execute(name string, args map[string]any, userID string) (*Gat
 	}, execErr
 }
 
+// ExecuteWithShellContext 执行工具并注入 shell 上下文
+func (g *Gateway) ExecuteWithShellContext(name string, args map[string]any, userID string, sc *ShellContext) (*GatewayResult, error) {
+	start := time.Now()
+
+	// 1. 路由：查找工具
+	t, ok := g.registry.Get(name)
+	if !ok {
+		return nil, ErrToolNotFound{name: name}
+	}
+	if !t.Enabled {
+		return nil, ErrToolDisabled{name: name}
+	}
+
+	// 2. 权限检查
+	perm, err := g.registry.CheckPermission(name)
+	if err != nil {
+		return nil, err
+	}
+	if perm == PermDeny {
+		return nil, ErrToolDenied{name: name}
+	}
+
+	// 3. 订阅检查
+	if userID != "" {
+		if !g.sub.CanUse(userID, name) {
+			return nil, ErrQuotaExceeded{
+				Tool:   name,
+				UserID: userID,
+				Reason: "subscription does not allow this tool",
+			}
+		}
+	}
+
+	// 4. 配额检查
+	if userID != "" {
+		if !g.tracker.CheckQuota(userID, name) {
+			return nil, ErrQuotaExceeded{
+				Tool:   name,
+				UserID: userID,
+				Reason: "usage quota exceeded",
+			}
+		}
+	}
+
+	// 5. 执行（带 shell 上下文）
+	result, execErr := g.registry.CallWithShellContext(name, args, sc)
+	duration := time.Since(start)
+
+	// 6. 计量记录
+	if userID != "" {
+		g.tracker.Record(userID, name, duration, execErr == nil)
+	}
+
+	// 7. 订阅扣减
+	if userID != "" {
+		g.sub.RecordUsage(userID, name)
+	}
+
+	return &GatewayResult{
+		ToolName:  name,
+		Output:    result,
+		Duration:  duration,
+		Success:   execErr == nil,
+		Timestamp: start,
+	}, execErr
+}
+
 // Tracker 返回用量追踪器
 func (g *Gateway) Tracker() *UsageTracker {
 	return g.tracker

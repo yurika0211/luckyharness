@@ -49,6 +49,8 @@ type Tool struct {
 	Category     Category        // 工具分类
 	Source       string          // 来源（skill名/mcp server名/builtin）
 	Enabled      bool            // 是否启用
+	// ShellAware 标记该工具需要 shell 上下文注入（cwd + env）
+	ShellAware bool
 }
 
 // Param 代表工具参数
@@ -202,6 +204,47 @@ func (r *Registry) Call(name string, args map[string]any) (string, error) {
 	}
 	if perm == PermDeny {
 		return "", ErrToolDenied{name: name}
+	}
+
+	return t.Handler(args)
+}
+
+// ShellContext 提供 shell 环境状态给工具调用
+type ShellContext struct {
+	Cwd string            // 当前工作目录
+	Env map[string]string // 自定义环境变量
+}
+
+// CallWithShellContext 执行工具并注入 shell 上下文
+// 对于 ShellAware 的工具，自动在 args 中注入 _cwd 和 _env
+func (r *Registry) CallWithShellContext(name string, args map[string]any, sc *ShellContext) (string, error) {
+	r.mu.RLock()
+	t, ok := r.tools[name]
+	r.mu.RUnlock()
+
+	if !ok {
+		return "", ErrToolNotFound{name: name}
+	}
+	if !t.Enabled {
+		return "", ErrToolDisabled{name: name}
+	}
+
+	// 检查权限覆盖
+	perm := t.Permission
+	if override, has := r.permConf[name]; has {
+		perm = override
+	}
+	if perm == PermDeny {
+		return "", ErrToolDenied{name: name}
+	}
+
+	// 注入 shell 上下文
+	if t.ShellAware && sc != nil {
+		if args == nil {
+			args = make(map[string]any)
+		}
+		args["_cwd"] = sc.Cwd
+		args["_env"] = sc.Env
 	}
 
 	return t.Handler(args)

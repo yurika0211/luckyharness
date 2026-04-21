@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +14,13 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
+)
+
+// shell 上下文解析正则
+var (
+	cdPattern     = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)cd\s+(.+?)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
+	exportPattern = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)export\s+([A-Za-z_][A-Za-z0-9_]*)=(.+?)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
+	unsetPattern  = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)unset\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
 )
 
 // LoopState 代表 Agent Loop 的状态
@@ -148,7 +158,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			for _, tc := range resp.ToolCalls {
 				start := time.Now()
 
-				toolResult, err := a.executeTool(tc.Name, tc.Arguments, loopCfg.AutoApprove)
+				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess)
 				duration := time.Since(start)
 
 				tcLog := toolCallLog{
@@ -281,6 +291,11 @@ const (
 
 // executeTool 执行工具调用（通过 Gateway）
 func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, error) {
+	return a.executeToolWithSession(name, arguments, autoApprove, nil)
+}
+
+// executeToolWithSession 执行工具调用（带 session，支持 shell 上下文持久化）
+func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool, sess *session.Session) (string, error) {
 	// 解析参数
 	var args map[string]any
 	if arguments != "" {
@@ -289,13 +304,77 @@ func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, e
 		}
 	}
 
-	// 通过 Gateway 执行（统一入口：路由 → 权限 → 配额 → 计量 → 执行）
-	result, err := a.gateway.Execute(name, args, "")
+	// 构建 shell 上下文
+	var sc *tool.ShellContext
+	if sess != nil {
+		cwd := sess.GetCwd()
+		env := sess.GetEnv()
+		if cwd != "" || len(env) > 0 {
+			sc = &tool.ShellContext{
+				Cwd: cwd,
+				Env: env,
+			}
+		}
+	}
+
+	// 通过 Gateway 执行
+	var result *tool.GatewayResult
+	var err error
+	if sc != nil {
+		result, err = a.gateway.ExecuteWithShellContext(name, args, "", sc)
+	} else {
+		result, err = a.gateway.Execute(name, args, "")
+	}
 	if err != nil {
 		return "", err
 	}
 
+	// shell 执行后更新 session 的 cwd/env
+	if sess != nil && name == "shell" {
+		a.updateShellContext(sess, arguments, result.Output)
+	}
+
 	return result.Output, nil
+}
+
+// updateShellContext 从 shell 执行结果中提取 cwd 和 env 变更
+func (a *Agent) updateShellContext(sess *session.Session, command, output string) {
+	// 检测 cd 命令：提取目标目录并验证
+	cdMatch := cdPattern.FindStringSubmatch(command)
+	if len(cdMatch) >= 2 {
+		target := strings.TrimSpace(cdMatch[1])
+		if target != "" {
+			// 验证目录是否存在
+			if abs, err := filepath.Abs(target); err == nil {
+				if info, err := os.Stat(abs); err == nil && info.IsDir() {
+					sess.SetCwd(abs)
+				}
+			}
+		}
+	}
+
+	// 检测 export 命令
+	exportMatches := exportPattern.FindAllStringSubmatch(command, -1)
+	for _, m := range exportMatches {
+		if len(m) >= 3 {
+			key := strings.TrimSpace(m[1])
+			val := strings.TrimSpace(m[2])
+			if key != "" {
+				sess.SetEnv(key, val)
+			}
+		}
+	}
+
+	// 检测 unset 命令
+	unsetMatches := unsetPattern.FindAllStringSubmatch(command, -1)
+	for _, m := range unsetMatches {
+		if len(m) >= 2 {
+			key := strings.TrimSpace(m[1])
+			if key != "" {
+				sess.UnsetEnv(key)
+			}
+		}
+	}
 }
 
 // buildMessages 构建消息列表

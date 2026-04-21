@@ -22,6 +22,67 @@ type Session struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 	dir       string
+	// ShellContext 持久化 shell 环境（跨工具调用保持）
+	ShellContext ShellContext
+}
+
+// ShellContext 保存 shell 会话的环境状态
+type ShellContext struct {
+	Cwd string            `json:"cwd"` // 当前工作目录
+	Env map[string]string `json:"env"` // 自定义环境变量
+}
+
+// GetCwd 返回当前工作目录
+func (s *Session) GetCwd() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ShellContext.Cwd == "" {
+		return ""
+	}
+	return s.ShellContext.Cwd
+}
+
+// SetCwd 设置当前工作目录
+func (s *Session) SetCwd(cwd string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ShellContext.Cwd = cwd
+	s.UpdatedAt = time.Now()
+}
+
+// GetEnv 获取所有自定义环境变量
+func (s *Session) GetEnv() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.ShellContext.Env == nil {
+		return map[string]string{}
+	}
+	cp := make(map[string]string, len(s.ShellContext.Env))
+	for k, v := range s.ShellContext.Env {
+		cp[k] = v
+	}
+	return cp
+}
+
+// SetEnv 设置一个环境变量
+func (s *Session) SetEnv(key, value string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ShellContext.Env == nil {
+		s.ShellContext.Env = make(map[string]string)
+	}
+	s.ShellContext.Env[key] = value
+	s.UpdatedAt = time.Now()
+}
+
+// UnsetEnv 删除一个环境变量
+func (s *Session) UnsetEnv(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ShellContext.Env != nil {
+		delete(s.ShellContext.Env, key)
+	}
+	s.UpdatedAt = time.Now()
 }
 
 // NewSession 创建新会话
@@ -103,11 +164,12 @@ func (s *Session) Save() error {
 	}
 
 	data := sessionData{
-		ID:        s.ID,
-		Title:     s.Title,
-		Messages:  s.Messages,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.UpdatedAt,
+		ID:           s.ID,
+		Title:        s.Title,
+		Messages:     s.Messages,
+		CreatedAt:    s.CreatedAt,
+		UpdatedAt:    s.UpdatedAt,
+		ShellContext: s.ShellContext,
 	}
 
 	jsonData, err := json.MarshalIndent(data, "", "  ")
@@ -121,11 +183,12 @@ func (s *Session) Save() error {
 
 // sessionData 是 JSON 序列化格式
 type sessionData struct {
-	ID        string            `json:"id"`
-	Title     string            `json:"title"`
-	Messages  []provider.Message `json:"messages"`
-	CreatedAt time.Time         `json:"created_at"`
-	UpdatedAt time.Time         `json:"updated_at"`
+	ID           string            `json:"id"`
+	Title        string            `json:"title"`
+	Messages     []provider.Message `json:"messages"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
+	ShellContext ShellContext      `json:"shell_context"`
 }
 
 // SessionInfo 是会话的摘要信息（用于列表展示）
@@ -191,12 +254,13 @@ func (m *Manager) loadFromDisk() error {
 		}
 
 		s := &Session{
-			ID:        sd.ID,
-			Title:     sd.Title,
-			Messages:  sd.Messages,
-			CreatedAt: sd.CreatedAt,
-			UpdatedAt: sd.UpdatedAt,
-			dir:       m.dir,
+			ID:           sd.ID,
+			Title:        sd.Title,
+			Messages:     sd.Messages,
+			CreatedAt:    sd.CreatedAt,
+			UpdatedAt:    sd.UpdatedAt,
+			dir:          m.dir,
+			ShellContext: sd.ShellContext,
 		}
 		m.sessions[s.ID] = s
 	}
