@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -228,7 +229,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.23.0: 创建流式索引器
 	streamIndexer := rag.NewStreamIndexer(ragManager, rag.DefaultStreamConfig())
 
-	return &Agent{
+	a := &Agent{
 		cfg:        cfg,
 		soul:       s,
 		tmplMgr:    tmplMgr,
@@ -250,7 +251,17 @@ func New(cfg *config.Manager) (*Agent, error) {
 		embedderReg: embedderReg,
 		collabReg:   collabReg,
 		collabMgr:   collabMgr,
-	}, nil
+	}
+
+	// v0.35.0: 自动加载 skills 目录
+	skillsDir := cfg.HomeDir() + "/skills"
+	if info, err := os.Stat(skillsDir); err == nil && info.IsDir() {
+		if count, err := a.LoadSkills(skillsDir); err == nil && count > 0 {
+			fmt.Printf("[agent] loaded %d skills from %s\n", count, skillsDir)
+		}
+	}
+
+	return a, nil
 }
 
 // Chat 执行一次对话
