@@ -21,7 +21,19 @@ type Config struct {
 	Extra       map[string]string `yaml:"extra,omitempty"`
 
 	// v0.3.0: 降级链配置
-	Fallbacks   []FallbackEntry   `yaml:"fallbacks,omitempty"`
+	Fallbacks []FallbackEntry `yaml:"fallbacks,omitempty"`
+
+	// v0.37.0: Web 搜索配置
+	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
+}
+
+// WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）
+type WebSearchConfig struct {
+	Provider    string `yaml:"provider,omitempty"`    // brave, ddgs, searxng（默认 brave）
+	APIKey      string `yaml:"api_key,omitempty"`     // Brave / Tavily / Jina API key
+	BaseURL     string `yaml:"base_url,omitempty"`    // SearXNG 自部署地址
+	MaxResults  int    `yaml:"max_results,omitempty"` // 最大结果数（默认 5）
+	Proxy       string `yaml:"proxy,omitempty"`       // HTTP/SOCKS5 代理
 }
 
 // FallbackEntry 是降级链中的一个节点配置
@@ -147,6 +159,19 @@ func (m *Manager) Set(key, value string) error {
 		var f float64
 		fmt.Sscanf(value, "%f", &f)
 		m.config.Temperature = f
+	// v0.37.0: web_search 子配置
+	case "web_search.provider":
+		m.config.WebSearch.Provider = value
+	case "web_search.api_key":
+		m.config.WebSearch.APIKey = value
+	case "web_search.base_url":
+		m.config.WebSearch.BaseURL = value
+	case "web_search.max_results":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.WebSearch.MaxResults = n
+	case "web_search.proxy":
+		m.config.WebSearch.Proxy = value
 	default:
 		if m.config.Extra == nil {
 			m.config.Extra = make(map[string]string)

@@ -54,6 +54,9 @@ type Agent struct {
 
 // New 创建 Agent
 func New(cfg *config.Manager) (*Agent, error) {
+	// v0.37.0: 从环境变量覆盖 web_search 配置
+	applyWebSearchEnv(cfg)
+
 	c := cfg.Get()
 
 	// 加载 SOUL
@@ -139,9 +142,16 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return nil, fmt.Errorf("init sessions: %w", err)
 	}
 
-	// 创建工具注册表并注册内置工具
+	// 创建工具注册表并注册内置工具（带搜索配置）
 	tools := tool.NewRegistry()
-	tool.RegisterBuiltinTools(tools)
+	searchCfg := &tool.WebSearchConfig{
+		Provider:   c.WebSearch.Provider,
+		APIKey:     c.WebSearch.APIKey,
+		BaseURL:    c.WebSearch.BaseURL,
+		MaxResults: c.WebSearch.MaxResults,
+		Proxy:      c.WebSearch.Proxy,
+	}
+	tool.RegisterBuiltinToolsWithConfig(tools, searchCfg)
 
 	// 创建子代理委派管理器
 	delegateMgr := tool.NewDelegateManager(tool.DefaultDelegateConfig())
@@ -884,4 +894,22 @@ func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Mess
 		}
 	}
 	return result
+}
+
+// applyWebSearchEnv 从环境变量覆盖 web_search 配置
+func applyWebSearchEnv(cfg *config.Manager) {
+	envMap := map[string]string{
+		"LH_WEB_SEARCH_PROVIDER":    "web_search.provider",
+		"LH_WEB_SEARCH_API_KEY":     "web_search.api_key",
+		"LH_WEB_SEARCH_BASE_URL":    "web_search.base_url",
+		"LH_WEB_SEARCH_MAX_RESULTS": "web_search.max_results",
+		"LH_WEB_SEARCH_PROXY":       "web_search.proxy",
+		"BRAVE_API_KEY":             "web_search.api_key",
+		"SEARXNG_BASE_URL":          "web_search.base_url",
+	}
+	for envKey, cfgKey := range envMap {
+		if v := os.Getenv(envKey); v != "" {
+			cfg.Set(cfgKey, v)
+		}
+	}
 }
