@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/backup"
@@ -18,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
+	"github.com/yurika0211/luckyharness/internal/eval"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/logger"
@@ -34,6 +37,10 @@ var (
 	provider_ string
 	model_   string
 	yolo     bool
+	// eval command flags
+	evalFormat    string
+	evalThreshold float64
+	evalOutput    string
 )
 
 func main() {
@@ -579,9 +586,38 @@ func main() {
 		pluginUpdateCmd, pluginSearchCmd, pluginInfoCmd,
 		pluginEnableCmd, pluginDisableCmd)
 
+	// ---- eval command ----
+	evalCmd := &cobra.Command{
+		Use:   "eval",
+		Short: "Evaluation & benchmarking",
+	}
+	evalRunCmd := &cobra.Command{
+		Use:   "run <dir>",
+		Short: "Run benchmark against test cases in directory",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runEvalRun,
+	}
+	evalListCmd := &cobra.Command{
+		Use:   "list <dir>",
+		Short: "List test cases in directory",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runEvalList,
+	}
+	evalReportCmd := &cobra.Command{
+		Use:   "report <result-file>",
+		Short: "Display a saved benchmark report",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runEvalReport,
+	}
+	evalRunCmd.Flags().StringVarP(&evalFormat, "format", "f", "text", "Report format: text, json, yaml")
+	evalRunCmd.Flags().Float64VarP(&evalThreshold, "threshold", "t", 0.7, "Pass threshold (0.0-1.0)")
+	evalRunCmd.Flags().StringVarP(&evalOutput, "output", "o", "", "Output file (default: stdout)")
+	evalReportCmd.Flags().StringVarP(&evalFormat, "format", "f", "text", "Report format: text, json, yaml")
+	evalCmd.AddCommand(evalRunCmd, evalListCmd, evalReportCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd)
+		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -2242,4 +2278,132 @@ func runAgentCancel(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("✅ 任务 %s 已取消\n", taskID)
 	return nil
+}
+
+// ---- eval command implementations ----
+
+func runEvalRun(cmd *cobra.Command, args []string) error {
+	dir := args[0]
+
+	cases, err := eval.LoadTestCasesFromDir(dir)
+	if err != nil {
+		return fmt.Errorf("加载测试用例失败: %w", err)
+	}
+	if len(cases) == 0 {
+		return fmt.Errorf("目录 %s 中没有找到测试用例", dir)
+	}
+
+	fmt.Printf("📋 加载了 %d 个测试用例\n", len(cases))
+
+	// Use a simple agent runner that delegates to the configured agent
+	runner := &cliAgentRunner{agent: nil} // will be initialized on first call
+	br := eval.NewBenchmarkRunner(runner, evalThreshold)
+
+	result := br.Run(context.Background(), cases)
+
+	format := eval.ReportFormat(evalFormat)
+	report, err := eval.GenerateReport(result, format)
+	if err != nil {
+		return fmt.Errorf("生成报告失败: %w", err)
+	}
+
+	if evalOutput != "" {
+		if err := os.WriteFile(evalOutput, []byte(report), 0644); err != nil {
+			return fmt.Errorf("写入报告失败: %w", err)
+		}
+		fmt.Printf("📊 报告已保存到 %s\n", evalOutput)
+	} else {
+		fmt.Println(report)
+	}
+
+	return nil
+}
+
+func runEvalList(cmd *cobra.Command, args []string) error {
+	dir := args[0]
+
+	cases, err := eval.LoadTestCasesFromDir(dir)
+	if err != nil {
+		return fmt.Errorf("加载测试用例失败: %w", err)
+	}
+
+	if len(cases) == 0 {
+		fmt.Println("没有找到测试用例")
+		return nil
+	}
+
+	fmt.Printf("📋 共 %d 个测试用例:\n\n", len(cases))
+	for _, tc := range cases {
+		tags := ""
+		if len(tc.Tags) > 0 {
+			tags = " [" + strings.Join(tc.Tags, ", ") + "]"
+		}
+		fmt.Printf("  • %s: %s%s\n", tc.ID, tc.Name, tags)
+		if tc.Description != "" {
+			fmt.Printf("    %s\n", tc.Description)
+		}
+	}
+
+	return nil
+}
+
+func runEvalReport(cmd *cobra.Command, args []string) error {
+	path := args[0]
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("读取报告失败: %w", err)
+	}
+
+	var result eval.BenchmarkResult
+	ext := filepath.Ext(path)
+	if ext == ".json" {
+		if err := json.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("解析 JSON 报告失败: %w", err)
+		}
+	} else {
+		if err := yaml.Unmarshal(data, &result); err != nil {
+			return fmt.Errorf("解析 YAML 报告失败: %w", err)
+		}
+	}
+
+	format := eval.ReportFormat(evalFormat)
+	report, err := eval.GenerateReport(&result, format)
+	if err != nil {
+		return fmt.Errorf("生成报告失败: %w", err)
+	}
+
+	fmt.Println(report)
+	return nil
+}
+
+// cliAgentRunner is a simple AgentRunner that uses the LuckyHarness agent.
+type cliAgentRunner struct {
+	agent *agent.Agent
+}
+
+func (r *cliAgentRunner) Run(ctx context.Context, input eval.EvalInput) (eval.EvalOutput, error) {
+	// Lazy init
+	if r.agent == nil {
+		a, err := getAgent()
+		if err != nil {
+			return eval.EvalOutput{}, fmt.Errorf("初始化 agent 失败: %w", err)
+		}
+		r.agent = a
+	}
+
+	start := time.Now()
+	resp, err := r.agent.Chat(ctx, input.Query)
+	elapsed := time.Since(start)
+
+	if err != nil {
+		return eval.EvalOutput{}, err
+	}
+
+	output := eval.EvalOutput{
+		Response: resp,
+		Latency:  elapsed,
+	}
+
+	return output, nil
 }

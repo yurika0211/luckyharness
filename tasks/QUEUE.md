@@ -19,34 +19,48 @@
 | v0.13.0 | Context Window | ✅ Done | Token 估算 + 4 种裁剪策略 + 优先级 |
 | v0.14.0 | RAG 知识库 | ✅ Done | 向量索引 + 语义检索 + 持久化 + API 端点 |
 | v0.15.0 | Plugin Marketplace | ✅ Done | Manifest + Registry + Installer + Sandbox + CLI + API + 测试 |
-| v0.16.0 | Multi-turn RAG | 🔴 Ready | 对话式检索 + 追问 + 上下文感知检索 |
+| v0.16.0 | Multi-turn RAG | ✅ Done | ConversationContext + QueryRewriter + FollowUpDetector + ContextAwareRetriever + FeedbackStore |
+| v0.32.0 | Evaluation & Benchmark | 🟡 In Progress | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
 
 ---
 
-## 🔴 Ready — v0.15.0 Plugin Marketplace
+## ✅ Done — v0.15.0 Plugin Marketplace
 
 ### 子任务
 
-- [ ] **PM-1**: Plugin Manifest 规范 — 定义 plugin.yaml 格式（name, version, author, entry, permissions, dependencies）
-- [ ] **PM-2**: Plugin Registry — 插件注册中心，支持本地 + 远程仓库
-- [ ] **PM-3**: Plugin Installer — 下载/安装/卸载/更新插件
-- [ ] **PM-4**: Plugin Sandbox — 插件运行时隔离（权限控制 + 资源限制）
-- [ ] **PM-5**: Plugin CLI — `lh plugin install/list/update/remove/search`
-- [ ] **PM-6**: Plugin API — `/api/v1/plugins` 端点
-- [ ] **PM-7**: 测试 — 每个子模块单元测试
+- [x] **PM-1**: Plugin Manifest 规范 — 定义 plugin.yaml 格式（name, version, author, entry, permissions, dependencies）
+- [x] **PM-2**: Plugin Registry — 插件注册中心，支持本地 + 远程仓库
+- [x] **PM-3**: Plugin Installer — 下载/安装/卸载/更新插件
+- [x] **PM-4**: Plugin Sandbox — 插件运行时隔离（权限控制 + 资源限制）
+- [x] **PM-5**: Plugin CLI — `lh plugin install/list/update/remove/search`
+- [x] **PM-6**: Plugin API — `/api/v1/plugins` 端点
+- [x] **PM-7**: 测试 — 每个子模块单元测试
 
 ---
 
-## 🟡 In Progress — v0.16.0 Multi-turn RAG
+## ✅ Done — v0.16.0 Multi-turn RAG
 
 ### 子任务
 
-- [ ] **MR-1**: ConversationContext — 跟踪对话历史用于检索优化
-- [ ] **MR-2**: QueryRewriter — 基于上下文重写用户查询
-- [ ] **MR-3**: FollowUpDetector — 检测追问/澄清需求
-- [ ] **MR-4**: ContextAwareRetriever — 结合对话上下文的检索器
-- [ ] **MR-5**: RAG Feedback Loop — 检索结果反馈到对话策略
-- [ ] **MR-6**: 测试 — 每个子模块单元测试
+- [x] **MR-1**: ConversationContext — 跟踪对话历史用于检索优化
+- [x] **MR-2**: QueryRewriter — 基于上下文重写用户查询
+- [x] **MR-3**: FollowUpDetector — 检测追问/澄清需求
+- [x] **MR-4**: ContextAwareRetriever — 结合对话上下文的检索器
+- [x] **MR-5**: RAG Feedback Loop — 检索结果反馈到对话策略
+- [x] **MR-6**: 测试 — 每个子模块单元测试
+
+---
+
+## 🟡 In Progress — v0.32.0 Evaluation & Benchmark
+
+### 子任务
+
+- [ ] **EB-1**: Evaluator 接口 — 定义评估器抽象（输入/输出/期望/评分）
+- [ ] **EB-2**: 指标采集 — Accuracy / Relevance / Latency / TokenUsage / ToolCallAccuracy
+- [ ] **EB-3**: BenchmarkRunner — 批量运行评估用例，收集指标，生成报告
+- [ ] **EB-4**: 评估用例格式 — YAML 定义测试用例（input/expected_output/tools/context）
+- [ ] **EB-5**: CLI — `lh eval run/list/report`
+- [ ] **EB-6**: 测试 — 每个子模块单元测试
 
 ---
 
