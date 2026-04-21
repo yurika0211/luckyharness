@@ -67,14 +67,13 @@ type Backend interface {
 
 // Center is the configuration center that manages backends and dispatches events
 type Center struct {
-	mu          sync.RWMutex
-	backends    []Backend
-	primary     Backend
-	watchers    map[string][]WatchCallback
-	entries     map[string]*Entry
-	notifiedVer map[string]int64 // keys already notified by Set, to dedupe watchLoop
-	closed      bool
-	cancel      context.CancelFunc
+	mu       sync.RWMutex
+	backends []Backend
+	primary  Backend
+	watchers map[string][]WatchCallback
+	entries  map[string]*Entry
+	closed   bool
+	cancel   context.CancelFunc
 }
 
 // New creates a new configuration center with the given backends
@@ -86,12 +85,11 @@ func New(backends ...Backend) (*Center, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Center{
-		backends:    backends,
-		primary:     backends[0],
-		watchers:    make(map[string][]WatchCallback),
-		entries:     make(map[string]*Entry),
-		notifiedVer: make(map[string]int64),
-		cancel:      cancel,
+		backends: backends,
+		primary:  backends[0],
+		watchers: make(map[string][]WatchCallback),
+		entries:  make(map[string]*Entry),
+		cancel:   cancel,
 	}
 
 	// Load initial entries from primary backend
@@ -159,27 +157,10 @@ func (c *Center) Set(ctx context.Context, key, value string, valType ValueType) 
 		return nil, fmt.Errorf("set %q: %w", key, err)
 	}
 
-	// Update local cache
+	// Update local cache (watchLoop will also update, but we need it here for Get)
 	c.mu.Lock()
-	oldEntry := c.entries[key]
 	c.entries[key] = entry
-	c.notifiedVer[key] = entry.Version // mark as already notified
-	callbacks := c.matchCallbacks(key)
 	c.mu.Unlock()
-
-	// Notify watchers
-	if len(callbacks) > 0 {
-		event := ChangeEvent{
-			Key:     key,
-			NewVal:  value,
-			Type:    valType,
-			Version: entry.Version,
-		}
-		if oldEntry != nil {
-			event.OldVal = oldEntry.Value
-		}
-		c.notifyWatchers(callbacks, event)
-	}
 
 	return entry, nil
 }
@@ -304,13 +285,6 @@ func (c *Center) watchLoop(ctx context.Context) {
 // handleWatchEvent processes a change event from the backend
 func (c *Center) handleWatchEvent(event ChangeEvent) {
 	c.mu.Lock()
-	// Skip events already notified by Center.Set (dedupe)
-	if notifiedVer, ok := c.notifiedVer[event.Key]; ok && event.Version == notifiedVer {
-		c.mu.Unlock()
-		return
-	}
-	delete(c.notifiedVer, event.Key)
-
 	// Update local cache
 	if event.NewVal != "" {
 		c.entries[event.Key] = &Entry{
