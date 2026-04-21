@@ -205,6 +205,9 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
 	}
 
+	// 收到消息后给用户点赞 👍
+	go h.adapter.ReactToMessage(msg.Chat.ID, msg.ID, "👍")
+
 	sessionID := h.getSessionID(msg.Chat.ID)
 
 	// 尝试流式输出（Adapter 已实现 StreamGateway）
@@ -220,6 +223,11 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 
 // handleChatStream 流式对话处理（Telegram 专用）
 func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, text, sessionID string) error {
+	// 启动 typing indicator（每 5 秒刷新一次，直到完成）
+	typingCtx, typingCancel := context.WithCancel(context.Background())
+	defer typingCancel()
+	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
+
 	// 启动流式对话
 	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
 	if err != nil {
@@ -290,6 +298,11 @@ func truncateString(s string, maxLen int) string {
 
 // handleChatSync 非流式对话处理（回退方案）
 func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
+	// 启动 typing indicator
+	typingCtx, typingCancel := context.WithCancel(context.Background())
+	defer typingCancel()
+	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
+
 	response, err := h.agent.ChatWithSession(ctx, sessionID, text)
 	if err != nil {
 		// If session is broken, try with a fresh session

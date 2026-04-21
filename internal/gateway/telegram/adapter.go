@@ -3,6 +3,8 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,6 +156,94 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 // IsRunning returns whether the adapter is currently connected.
 func (a *Adapter) IsRunning() bool {
 	return a.running
+}
+
+// SendTypingLoop 持续发送 typing indicator，直到 ctx 被取消。
+// Telegram 的 typing 状态持续 5 秒，所以每 4.5 秒刷新一次。
+func (a *Adapter) SendTypingLoop(ctx context.Context, chatID string) {
+	if a.bot == nil {
+		return
+	}
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return
+	}
+
+	ticker := time.NewTicker(4500 * time.Millisecond)
+	defer ticker.Stop()
+
+	// 立即发一次
+	a.sendTypingOnce(chatIDInt)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.sendTypingOnce(chatIDInt)
+		}
+	}
+}
+
+// sendTypingOnce 发送一次 typing action
+func (a *Adapter) sendTypingOnce(chatID int64) {
+	action := tgbotapi.NewChatAction(chatID, tgbotapi.ChatTyping)
+	a.bot.Request(action) // 忽略错误，typing 是 best-effort
+}
+
+// ReactToMessage 给消息添加 emoji reaction（👍 等）
+// 使用 Telegram Bot API setMessageReaction（v5.5.1 不支持，直接 HTTP 调用）
+func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) {
+	if a.bot == nil {
+		return
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return
+	}
+	msgIDInt, err := strconv.Atoi(messageID)
+	if err != nil {
+		return
+	}
+
+	// 直接调 Telegram Bot API setMessageReaction
+	go a.callSetMessageReaction(chatIDInt, msgIDInt, emoji)
+}
+
+// callSetMessageReaction 调用 Telegram setMessageReaction API
+func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/setMessageReaction", a.bot.Token)
+
+	payload := strings.NewReader(fmt.Sprintf(
+		`{"chat_id":%d,"message_id":%d,"reaction":[{"type":"emoji","emoji":"%s"}]}`,
+		chatID, messageID, emoji,
+	))
+
+	resp, err := http.Post(apiURL, "application/json", payload)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	// best-effort，不处理响应
+	_ = resp
+}
+
+// callTelegramAPI 调用 Telegram Bot API 的通用方法
+func (a *Adapter) callTelegramAPI(method string, params url.Values) ([]byte, error) {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/%s", a.bot.Token, method)
+	resp, err := http.PostForm(apiURL, params)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var body []byte
+	if _, err := resp.Body.Read(body); err != nil {
+		return nil, err
+	}
+	return body, nil
 }
 
 // SendStream implements gateway.StreamGateway.
