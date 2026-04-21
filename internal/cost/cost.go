@@ -316,7 +316,7 @@ func (s *CostStore) Save(path string) error {
 		return fmt.Errorf("mkdir: %w", err)
 	}
 
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 // persistLocked saves to the configured file path (must hold lock).
@@ -328,7 +328,7 @@ func (s *CostStore) persistLocked() {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(s.filePath, data, 0644)
+	_ = os.WriteFile(s.filePath, data, 0600)
 }
 
 // SummaryOptions defines filters for cost summary queries.

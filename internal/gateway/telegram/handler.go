@@ -199,7 +199,7 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 }
 
 // handleChat sends a message to the agent and returns the response.
-// Uses per-chat session management for multi-turn context.
+// Uses streaming output with thinking/tool-call visualization when available.
 func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text string) error {
 	if strings.TrimSpace(text) == "" {
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
@@ -207,6 +207,89 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 
 	sessionID := h.getSessionID(msg.Chat.ID)
 
+	// 尝试流式输出（Adapter 已实现 StreamGateway）
+	sender, err := h.adapter.SendStream(ctx, msg.Chat.ID, msg.ID)
+	if err == nil {
+		return h.handleChatStream(ctx, sender, msg, text, sessionID)
+	}
+	// SendStream 失败，回退到非流式
+
+	// 回退到非流式
+	return h.handleChatSync(ctx, msg, text, sessionID)
+}
+
+// handleChatStream 流式对话处理（Telegram 专用）
+func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, text, sessionID string) error {
+	// 启动流式对话
+	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
+	if err != nil {
+		// session 可能坏了，重试
+		if strings.Contains(err.Error(), "session not found") {
+			h.resetSession(msg.Chat.ID)
+			sessionID = h.getSessionID(msg.Chat.ID)
+			events, err = h.agent.ChatWithSessionStream(ctx, sessionID, text)
+		}
+		if err != nil {
+			sender.SetResult(fmt.Sprintf("❌ Error: %s", truncateString(err.Error(), 200)))
+			sender.Finish()
+			return nil
+		}
+	}
+
+	var finalContent strings.Builder
+	toolCallCount := 0
+
+	for evt := range events {
+		switch evt.Type {
+		case agent.ChatEventThinking:
+			// 思考状态作为消息前缀展示，不清空已有内容
+			sender.SetThinking(evt.Content)
+
+		case agent.ChatEventToolCall:
+			toolCallCount++
+			// 工具调用作为消息前缀展示
+			sender.SetToolCall(evt.Name, evt.Args)
+
+		case agent.ChatEventToolResult:
+			// 工具结果展示后切回思考状态
+			sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
+
+		case agent.ChatEventContent:
+			// 内容流式追加
+			finalContent.WriteString(evt.Content)
+			sender.Append(evt.Content)
+
+		case agent.ChatEventDone:
+			if finalContent.Len() == 0 {
+				finalContent.WriteString(evt.Content)
+			}
+			// 最终结果替换整个消息
+			sender.SetResult(finalContent.String())
+			sender.Finish()
+
+		case agent.ChatEventError:
+			errMsg := evt.Err.Error()
+			if len(errMsg) > 200 {
+				errMsg = errMsg[:197] + "..."
+			}
+			sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
+			sender.Finish()
+		}
+	}
+
+	return nil
+}
+
+// truncateString 截断字符串
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-3] + "..."
+}
+
+// handleChatSync 非流式对话处理（回退方案）
+func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
 	response, err := h.agent.ChatWithSession(ctx, sessionID, text)
 	if err != nil {
 		// If session is broken, try with a fresh session

@@ -64,6 +64,25 @@ func DefaultLoopConfig() LoopConfig {
 	}
 }
 
+// maxAllowedIterations 是 MaxIterations 的硬上限
+const maxAllowedIterations = 100
+
+// sanitizeLoopConfig 校验并修正 LoopConfig 的安全边界
+func sanitizeLoopConfig(cfg *LoopConfig) {
+	if cfg.MaxIterations <= 0 {
+		cfg.MaxIterations = 10
+	}
+	if cfg.MaxIterations > maxAllowedIterations {
+		cfg.MaxIterations = maxAllowedIterations
+	}
+	if cfg.Timeout <= 0 {
+		cfg.Timeout = 60 * time.Second
+	}
+	if cfg.Timeout > 10*time.Minute {
+		cfg.Timeout = 10 * time.Minute
+	}
+}
+
 // LoopResult 是 Agent Loop 的执行结果
 type LoopResult struct {
 	Response    string        // 最终回复
@@ -87,6 +106,9 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 
 // RunLoopWithSession 执行 Agent Loop（带会话上下文）
 func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
+	// 安全边界校验
+	sanitizeLoopConfig(&loopCfg)
+
 	result := &LoopResult{
 		State: StateReason,
 	}
@@ -248,6 +270,9 @@ func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 
 // RunLoopStream 执行流式 Agent Loop
 func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg LoopConfig) (<-chan StreamEvent, error) {
+	// 安全边界校验
+	sanitizeLoopConfig(&loopCfg)
+
 	events := make(chan StreamEvent, 128)
 
 	go func() {

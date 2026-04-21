@@ -42,7 +42,7 @@ func (p *Persistence) Save(m *RAGManager) error {
 		return fmt.Errorf("rag manager is nil")
 	}
 
-	if err := os.MkdirAll(p.dir, 0755); err != nil {
+	if err := os.MkdirAll(p.dir, 0700); err != nil {
 		return fmt.Errorf("create persistence dir: %w", err)
 	}
 
@@ -134,7 +134,7 @@ func (p *Persistence) Save(m *RAGManager) error {
 		"vectors":  len(vectors),
 	}
 	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
-	os.WriteFile(metaPath, metaBytes, 0644)
+	os.WriteFile(metaPath, metaBytes, 0600)
 
 	return nil
 }

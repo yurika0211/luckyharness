@@ -14,6 +14,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
+	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
@@ -396,8 +397,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 			prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
 		}
 		loopCfg := DefaultLoopConfig()
-		loopCfg.AutoApprove = true
-		loopCfg.MaxIterations = 10
+		loopCfg.AutoApprove = false // 子代理不自动批准危险工具
+		loopCfg.MaxIterations = 5   // 子代理限制更严格
 		result, err := a.RunLoopWithSession(ctx, sess, prompt, loopCfg)
 		if err != nil {
 			return "", err
@@ -561,6 +562,379 @@ func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provid
 	}
 
 	return a.provider.ChatStream(ctx, messages)
+}
+
+// ChatEvent 是流式对话事件，包含思考过程和内容
+type ChatEvent struct {
+	Type    ChatEventType
+	Content string
+	Name    string // 工具名（Type=EventToolCall 时）
+	Args    string // 工具参数
+	Result  string // 工具结果
+	Err     error
+}
+
+// ChatEventType 事件类型
+type ChatEventType int
+
+const (
+	ChatEventThinking  ChatEventType = iota // 🧠 思考中
+	ChatEventToolCall                       // 🔧 工具调用
+	ChatEventToolResult                     // 📋 工具结果
+	ChatEventContent                        // 📝 内容片段
+	ChatEventDone                           // ✅ 完成
+	ChatEventError                          // ❌ 错误
+)
+
+// StreamMode 流式输出模式
+type StreamMode string
+
+const (
+	// StreamModeNative 真流式：直接使用 provider 的 ChatStream，逐 chunk 推送
+	StreamModeNative StreamMode = "native"
+	// StreamModeSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
+	StreamModeSimulated StreamMode = "simulated"
+)
+
+// DefaultStreamMode 默认流式模式
+const DefaultStreamMode = StreamModeNative
+
+// getStreamMode 获取当前流式模式配置
+func (a *Agent) getStreamMode() StreamMode {
+	if a.cfg == nil {
+		return DefaultStreamMode
+	}
+	cfg := a.cfg.Get()
+	mode := StreamMode(cfg.StreamMode)
+	if mode != StreamModeNative && mode != StreamModeSimulated {
+		return DefaultStreamMode
+	}
+	return mode
+}
+
+func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	events := make(chan ChatEvent, 64)
+
+	go func() {
+		defer close(events)
+
+		// 构建消息
+		messages := a.buildMessages(userInput)
+
+		// 注入会话历史
+		existingMsgs := sess.GetMessages()
+		if len(existingMsgs) > 0 {
+			base := messages[:len(messages)-1]
+			messages = append(base, existingMsgs...)
+			messages = append(messages, provider.Message{Role: "user", Content: userInput})
+		}
+
+		// 上下文窗口裁剪
+		messages = a.fitContextWindow(messages)
+
+		// 构建 function calling 工具定义
+		fcMgr := function.NewManager(a.tools)
+		callOpts := provider.CallOptions{
+			Tools:      fcMgr.BuildTools(),
+			ToolChoice: "auto",
+		}
+
+		loopCfg := DefaultLoopConfig()
+		loopCfg.AutoApprove = true
+
+		for i := 0; i < loopCfg.MaxIterations; i++ {
+			// 🧠 思考阶段
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", i+1)}
+
+			mode := a.getStreamMode()
+
+			if mode == StreamModeNative {
+				// === 真流式路径 ===
+				a.streamNative(ctx, events, messages, callOpts, sess, userInput, i)
+				return
+			}
+
+			// === 模拟流式路径 ===
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+			return
+		}
+
+		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+	}()
+
+	return events, nil
+}
+
+// streamNative 真流式：直接使用 provider 的 ChatStream，逐 chunk 推送
+// tool_calls 通过流式增量拼接处理
+func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int) {
+	// 尝试流式调用
+	var ch <-chan provider.StreamChunk
+	var err error
+	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+		ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
+	} else {
+		ch, err = a.provider.ChatStream(ctx, messages)
+	}
+	if err != nil {
+		events <- ChatEvent{Type: ChatEventError, Err: err}
+		return
+	}
+
+	var content strings.Builder
+	// 流式 tool_calls 增量拼接
+	var toolCallsAcc []streamToolCallAcc // 按 index 累积
+
+	for chunk := range ch {
+		if chunk.Content != "" {
+			content.WriteString(chunk.Content)
+			events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
+		}
+		// 处理流式 tool_calls 增量
+		if len(chunk.ToolCallDeltas) > 0 {
+			for _, dtc := range chunk.ToolCallDeltas {
+				// 确保 slice 足够长
+				for len(toolCallsAcc) <= dtc.Index {
+					toolCallsAcc = append(toolCallsAcc, streamToolCallAcc{})
+				}
+				acc := &toolCallsAcc[dtc.Index]
+				if dtc.ID != "" {
+					acc.id = dtc.ID
+				}
+				if dtc.Name != "" {
+					acc.name = dtc.Name
+				}
+				if dtc.Arguments != "" {
+					acc.arguments += dtc.Arguments
+				}
+			}
+		}
+		if chunk.Done {
+			break
+		}
+	}
+
+	// 如果有累积的 tool_calls，处理它们
+	if len(toolCallsAcc) > 0 {
+		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
+		for _, acc := range toolCallsAcc {
+			if acc.name != "" {
+				toolCalls = append(toolCalls, provider.ToolCall{
+					ID:        acc.id,
+					Name:      acc.name,
+					Arguments: acc.arguments,
+				})
+			}
+		}
+
+		if len(toolCalls) > 0 {
+			// 将 assistant 消息加入历史
+			messages = append(messages, provider.Message{
+				Role:      "assistant",
+				Content:   content.String(),
+				ToolCalls: toolCalls,
+			})
+
+			for _, tc := range toolCalls {
+				shortArgs := tc.Arguments
+				if len(shortArgs) > 100 {
+					shortArgs = shortArgs[:97] + "..."
+				}
+				events <- ChatEvent{
+					Type:    ChatEventToolCall,
+					Name:    tc.Name,
+					Args:    shortArgs,
+					Content: fmt.Sprintf("🔧 %s", tc.Name),
+				}
+
+				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+				if err != nil {
+					toolResult = fmt.Sprintf("Error: %v", err)
+				}
+
+				shortResult := toolResult
+				if len(shortResult) > 200 {
+					shortResult = shortResult[:197] + "..."
+				}
+				events <- ChatEvent{
+					Type:    ChatEventToolResult,
+					Name:    tc.Name,
+					Result:  shortResult,
+					Content: fmt.Sprintf("📋 %s → %s", tc.Name, shortResult),
+				}
+
+				messages = append(messages, provider.Message{
+					Role:       "tool",
+					Content:    toolResult,
+					ToolCallID: tc.ID,
+					Name:       tc.Name,
+				})
+			}
+
+			// 裁剪上下文，继续下一轮
+			messages = a.fitContextWindow(messages)
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", round+2)}
+
+			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+			return
+		}
+	}
+
+	// 没有工具调用，纯文本回复（已在流式中逐 chunk 推送了）
+	response := content.String()
+
+	// 如果流式没产出内容，回退到非流式
+	if response == "" {
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+		return
+	}
+
+	a.finalizeStream(events, sess, userInput, response)
+}
+
+// streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
+func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string) {
+	var resp *provider.Response
+	var err error
+	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+		resp, err = fcProvider.ChatWithOptions(ctx, messages, callOpts)
+	} else {
+		resp, err = a.provider.Chat(ctx, messages)
+	}
+	if err != nil {
+		events <- ChatEvent{Type: ChatEventError, Err: err}
+		return
+	}
+
+	// 有工具调用 → 展示过程 → 执行 → 继续循环
+	if len(resp.ToolCalls) > 0 {
+		messages = append(messages, provider.Message{
+			Role:      "assistant",
+			Content:   resp.Content,
+			ToolCalls: resp.ToolCalls,
+		})
+
+		for _, tc := range resp.ToolCalls {
+			shortArgs := tc.Arguments
+			if len(shortArgs) > 100 {
+				shortArgs = shortArgs[:97] + "..."
+			}
+			events <- ChatEvent{
+				Type:    ChatEventToolCall,
+				Name:    tc.Name,
+				Args:    shortArgs,
+				Content: fmt.Sprintf("🔧 %s", tc.Name),
+			}
+
+			toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+			if err != nil {
+				toolResult = fmt.Sprintf("Error: %v", err)
+			}
+
+			shortResult := toolResult
+			if len(shortResult) > 200 {
+				shortResult = shortResult[:197] + "..."
+			}
+			events <- ChatEvent{
+				Type:    ChatEventToolResult,
+				Name:    tc.Name,
+				Result:  shortResult,
+				Content: fmt.Sprintf("📋 %s → %s", tc.Name, shortResult),
+			}
+
+			messages = append(messages, provider.Message{
+				Role:       "tool",
+				Content:    toolResult,
+				ToolCallID: tc.ID,
+				Name:       tc.Name,
+			})
+		}
+
+		// 裁剪上下文，递归继续
+		messages = a.fitContextWindow(messages)
+		events <- ChatEvent{Type: ChatEventThinking, Content: "Continuing..."}
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+		return
+	}
+
+	// 纯文本回复，模拟流式推送
+	response := resp.Content
+	chunks := splitIntoChunks(response, 60)
+	for _, chunk := range chunks {
+		events <- ChatEvent{Type: ChatEventContent, Content: chunk}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	a.finalizeStream(events, sess, userInput, response)
+}
+
+// finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引
+func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, userInput, response string) {
+	sess.AddMessage("user", userInput)
+	sess.AddMessage("assistant", response)
+	_ = sess.Save()
+
+	a.chatCount++
+	a.memory.SaveShortTerm("User: "+userInput, "conversation")
+	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+	if a.chatCount%10 == 0 {
+		a.memory.Decay(0.05)
+	}
+	if a.chatCount%20 == 0 {
+		a.autoSummarize()
+	}
+
+	if a.ragManager != nil {
+		a.indexConversationTurn(userInput, response)
+	}
+
+	a.metrics.RecordChatRequest()
+	events <- ChatEvent{Type: ChatEventDone, Content: response}
+}
+
+// streamToolCallAcc 流式 tool_calls 增量累积器
+type streamToolCallAcc struct {
+	id        string
+	name      string
+	arguments string
+}
+
+// splitIntoChunks 将文本按指定长度分割成块，优先在句子边界分割
+func splitIntoChunks(text string, chunkSize int) []string {
+	if len(text) <= chunkSize {
+		return []string{text}
+	}
+
+	var chunks []string
+	runes := []rune(text)
+
+	for len(runes) > 0 {
+		if len(runes) <= chunkSize {
+			chunks = append(chunks, string(runes))
+			break
+		}
+
+		// 在 chunkSize 附近找句子边界
+		splitAt := chunkSize
+		for i := chunkSize; i > chunkSize/2 && i < len(runes); i-- {
+			r := runes[i]
+			if r == '\n' || r == '。' || r == '.' || r == '！' || r == '?' || r == '；' || r == ';' {
+				splitAt = i + 1
+				break
+			}
+		}
+
+		chunks = append(chunks, string(runes[:splitAt]))
+		runes = runes[splitAt:]
+	}
+
+	return chunks
 }
 
 // buildMemoryContext 构建分层记忆上下文

@@ -25,6 +25,9 @@ type Config struct {
 
 	// v0.37.0: Web 搜索配置
 	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
+
+	// v0.40.0: 流式输出模式 (native=真流式, simulated=非流式获取+模拟推送)
+	StreamMode string `yaml:"stream_mode,omitempty"`
 }
 
 // WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）
@@ -172,6 +175,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.WebSearch.MaxResults = n
 	case "web_search.proxy":
 		m.config.WebSearch.Proxy = value
+	case "stream_mode":
+		m.config.StreamMode = value
 	default:
 		if m.config.Extra == nil {
 			m.config.Extra = make(map[string]string)

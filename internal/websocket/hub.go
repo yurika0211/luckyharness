@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,7 +87,16 @@ func NewHub(handler MessageHandler, cfg HubConfig) *Hub {
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  cfg.ReadBufferSize,
 			WriteBufferSize: cfg.WriteBufferSize,
-			CheckOrigin:     func(r *http.Request) bool { return true }, // 允许所有来源
+			CheckOrigin: func(r *http.Request) bool {
+				// 仅允许同源 WebSocket 连接
+				origin := r.Header.Get("Origin")
+				if origin == "" {
+					return true // 非浏览器客户端无 Origin
+				}
+				// 检查 Origin 是否与 Host 同源
+				host := r.Host
+				return strings.HasPrefix(origin, "http://"+host) || strings.HasPrefix(origin, "https://"+host)
+			},
 		},
 		ctx:    ctx,
 		cancel: cancel,

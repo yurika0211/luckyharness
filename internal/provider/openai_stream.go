@@ -282,17 +282,20 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				}
 			}
 
-			// 处理工具调用（流式增量）
+			// 处理工具调用（流式增量）— v0.40.0: 结构化传递
 			if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+				deltas := make([]StreamToolCallDelta, 0, len(choice.Delta.ToolCalls))
 				for _, dtc := range choice.Delta.ToolCalls {
-					// 发送工具调用增量
-					// 使用特殊前缀标记，让 loop 层可以识别
-					if dtc.Function.Name != "" {
-						ch <- StreamChunk{
-							Content: fmt.Sprintf("\n🔧 Calling: %s", dtc.Function.Name),
-							Model:   cfg.Model,
-						}
-					}
+					deltas = append(deltas, StreamToolCallDelta{
+						Index:    dtc.Index,
+						ID:       dtc.ID,
+						Name:     dtc.Function.Name,
+						Arguments: dtc.Function.Arguments,
+					})
+				}
+				ch <- StreamChunk{
+					ToolCallDeltas: deltas,
+					Model:          cfg.Model,
 				}
 			}
 

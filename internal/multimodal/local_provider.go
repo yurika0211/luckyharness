@@ -147,11 +147,11 @@ func DetectModality(mimeType string) Modality {
 	switch {
 	case mimeType == "text/plain" || mimeType == "text/markdown" || mimeType == "text/html":
 		return ModalityText
-	case mimeType[:5] == "image":
+	case len(mimeType) >= 5 && mimeType[:5] == "image":
 		return ModalityImage
-	case mimeType[:5] == "audio":
+	case len(mimeType) >= 5 && mimeType[:5] == "audio":
 		return ModalityAudio
-	case mimeType[:5] == "video":
+	case len(mimeType) >= 5 && mimeType[:5] == "video":
 		return ModalityVideo
 	default:
 		return ModalityText

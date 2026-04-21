@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -75,6 +76,13 @@ func handleShell(args map[string]any) (string, error) {
 			timeout = v
 		}
 	}
+	// 硬上限 300 秒
+	if timeout <= 0 {
+		timeout = 30
+	}
+	if timeout > 300 {
+		timeout = 300
+	}
 
 	// 从 shell context 注入的值
 	cwd, _ := args["_cwd"].(string)
@@ -90,7 +98,13 @@ func handleShell(args map[string]any) (string, error) {
 	// 构建 shell 前缀：注入环境变量
 	prefix := ""
 	if len(env) > 0 {
+		// 合法环境变量名正则：字母/下划线开头，后跟字母/数字/下划线
+		validEnvKey := regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 		for k, v := range env {
+			// 校验 key 防止 shell 注入
+			if !validEnvKey.MatchString(k) {
+				continue
+			}
 			// 转义单引号
 			escaped := strings.ReplaceAll(v, "'", "'\\''")
 			prefix += fmt.Sprintf("export %s='%s'; ", k, escaped)
@@ -720,7 +734,7 @@ func searchWithDDGSEntries(query string, count int) ([]searchEntry, error) {
 func searchWithDDGLite(query string, count int) (string, error) {
 	cmd := exec.Command("curl", "-s", "-L",
 		"https://lite.duckduckgo.com/lite/",
-		"-d", "q="+query,
+		"-d", "q="+urlEncode(query),
 		"-d", "kl=cn-zh",
 		"--max-time", "10",
 	)
@@ -882,6 +896,64 @@ func urlEncode(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
+// validateFetchURL 校验 URL 是否安全（SSRF 防护）
+// 仅允许 http/https scheme，禁止私有 IP 和云元数据地址
+func validateFetchURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+
+	// 仅允许 http/https
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("scheme %q not allowed (only http/https)", u.Scheme)
+	}
+
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("empty host")
+	}
+
+	// 禁止私有 IP / 回环 / 链路本地 / 云元数据
+	privateRanges := []struct {
+		prefix string
+		name   string
+	}{
+		{"127.", "loopback"},
+		{"10.", "private"},
+		{"192.168.", "private"},
+		{"169.254.", "link-local/metadata"},
+		{"0.", "unspecified"},
+		{"::1", "loopback"},
+		{"fc", "unique-local"},  // IPv6 fc00::/7
+		{"fd", "unique-local"},  // IPv6 fd00::/8
+		{"fe80", "link-local"},  // IPv6 fe80::/10
+	}
+	lowerHost := strings.ToLower(host)
+	for _, r := range privateRanges {
+		if strings.HasPrefix(lowerHost, r.prefix) {
+			return fmt.Errorf("host %q is %s address (not allowed)", host, r.name)
+		}
+	}
+
+	// 172.16.0.0/12 范围检查
+	if strings.HasPrefix(host, "172.") {
+		parts := strings.SplitN(host, ".", 3)
+		if len(parts) >= 2 {
+			if second, err := strconv.Atoi(parts[1]); err == nil && second >= 16 && second <= 31 {
+				return fmt.Errorf("host %q is private address (not allowed)", host)
+			}
+		}
+	}
+
+	// 禁止 localhost
+	if lowerHost == "localhost" {
+		return fmt.Errorf("localhost not allowed")
+	}
+
+	return nil
+}
+
 // ── WebFetchTool ─────────────────────────────────────────────────────────────
 
 // WebFetchTool 抓取 URL 内容（照 SKILL.md 设计：Defuddle → Jina → curl 降级）
@@ -918,6 +990,11 @@ func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
 	fetchURL, ok := args["url"].(string)
 	if !ok {
 		return "", fmt.Errorf("url is required")
+	}
+
+	// SSRF 防护：校验 URL scheme
+	if err := validateFetchURL(fetchURL); err != nil {
+		return "", fmt.Errorf("url validation failed: %w", err)
 	}
 
 	maxChars := 50000

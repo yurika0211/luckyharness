@@ -36,8 +36,8 @@ func TestNew(t *testing.T) {
 	if s == nil {
 		t.Fatal("server should not be nil")
 	}
-	if s.config.Addr != ":9090" {
-		t.Errorf("expected addr :9090, got %s", s.config.Addr)
+	if s.config.Addr != "127.0.0.1:9090" {
+		t.Errorf("expected addr 127.0.0.1:9090, got %s", s.config.Addr)
 	}
 	if s.config.RateLimit != 60 {
 		t.Errorf("expected rate limit 60, got %d", s.config.RateLimit)
@@ -49,11 +49,11 @@ func TestNew(t *testing.T) {
 
 func TestDefaultServerConfig(t *testing.T) {
 	cfg := DefaultServerConfig()
-	if cfg.Addr != ":9090" {
-		t.Errorf("expected :9090, got %s", cfg.Addr)
+	if cfg.Addr != "127.0.0.1:9090" {
+		t.Errorf("expected 127.0.0.1:9090, got %s", cfg.Addr)
 	}
-	if !cfg.EnableCORS {
-		t.Error("CORS should be enabled by default")
+	if cfg.EnableCORS {
+		t.Error("CORS should be disabled by default (secure default)")
 	}
 	if cfg.RateLimit != 60 {
 		t.Errorf("expected 60, got %d", cfg.RateLimit)
@@ -317,6 +317,7 @@ func TestCORSMiddleware(t *testing.T) {
 	a := createTestAgent(t)
 	cfg := DefaultServerConfig()
 	cfg.EnableCORS = true
+	cfg.CORSOrigins = []string{"http://localhost:3000"} // 显式配置允许的源
 	s := New(a, cfg)
 
 	handler := s.corsMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -377,12 +378,28 @@ func TestAuthMiddlewareNoKeys(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
+	// 来自 localhost 的请求应被允许
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
 	if !called {
-		t.Error("handler should be called when no API keys configured")
+		t.Error("handler should be called for localhost when no API keys configured")
+	}
+
+	// 来自外部 IP 的请求应被拒绝
+	called = false
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/stats", nil)
+	req.RemoteAddr = "192.168.1.100:12345"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if called {
+		t.Error("handler should NOT be called for external IP when no API keys configured")
+	}
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for external IP, got %d", w.Code)
 	}
 }
 
@@ -431,12 +448,12 @@ func TestAuthMiddlewareWithKeys(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 
-	// 正确 API Key (Query)
+	// Query string API Key 不再支持（安全原因）
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/stats?api_key=test-key-123", nil)
 	w = httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Errorf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 for query string api_key (no longer supported), got %d", w.Code)
 	}
 }
 

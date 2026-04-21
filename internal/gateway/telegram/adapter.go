@@ -156,6 +156,212 @@ func (a *Adapter) IsRunning() bool {
 	return a.running
 }
 
+// SendStream implements gateway.StreamGateway.
+// Creates a streaming message that can be updated in real-time.
+func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID string) (gateway.StreamSender, error) {
+	if !a.running || a.bot == nil {
+		return nil, fmt.Errorf("telegram: adapter not running")
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	replyToID := 0
+	if replyToMsgID != "" {
+		replyToID, _ = strconv.Atoi(replyToMsgID)
+	}
+
+	// 发送初始 "思考中" 消息
+	initialText := "🧠 Thinking..."
+	msg := tgbotapi.NewMessage(chatIDInt, initialText)
+	if replyToID > 0 {
+		msg.ReplyToMessageID = replyToID
+	}
+
+	sent, err := a.bot.Send(msg)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: send stream initial: %w", err)
+	}
+
+	return &telegramStreamSender{
+		adapter:    a,
+		chatID:     chatIDInt,
+		messageID:  sent.MessageID,
+		chatIDStr:  chatID,
+		content:    "",
+		thinking:   "🧠 Thinking...",
+		editCount:  0,
+		lastEdit:   time.Now(),
+	}, nil
+}
+
+// telegramStreamSender implements gateway.StreamSender for Telegram.
+type telegramStreamSender struct {
+	adapter   *Adapter
+	chatID    int64
+	messageID int
+	chatIDStr string
+
+	mu        sync.Mutex
+	content   string       // 已生成的正文内容
+	thinking  string       // 当前思考/工具调用标签
+	editCount int
+	lastEdit  time.Time
+	finished  bool
+}
+
+// minEditInterval 是两次消息编辑之间的最小间隔（避免触发 Telegram 限流）
+const minEditInterval = 800 * time.Millisecond
+
+// maxEdits 是单条消息最大编辑次数（超过后不再编辑，等 Finish 一次性更新）
+const maxEdits = 40
+
+func (s *telegramStreamSender) Append(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return fmt.Errorf("stream sender already finished")
+	}
+
+	s.content += content
+	// 追加内容时清除思考标签
+	s.thinking = ""
+	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) SetThinking(label string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+
+	s.thinking = fmt.Sprintf("🧠 %s", label)
+	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) SetToolCall(name, args string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+
+	// 截断过长的参数
+	shortArgs := args
+	if len(shortArgs) > 80 {
+		shortArgs = shortArgs[:77] + "..."
+	}
+	s.thinking = fmt.Sprintf("🔧 %s(%s)", name, shortArgs)
+	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) SetResult(content string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+
+	s.content = content
+	s.thinking = ""
+	return s.throttledEdit()
+}
+
+func (s *telegramStreamSender) Finish() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.finished {
+		return nil
+	}
+	s.finished = true
+	s.thinking = ""
+
+	// 最终编辑：显示完整内容
+	display := s.renderContent()
+	return s.editMessage(display)
+}
+
+func (s *telegramStreamSender) MessageID() string {
+	return strconv.Itoa(s.messageID)
+}
+
+// throttledEdit 限流编辑：避免过于频繁调用 Telegram API
+func (s *telegramStreamSender) throttledEdit() error {
+	// 超过最大编辑次数，跳过中间编辑
+	if s.editCount >= maxEdits {
+		return nil
+	}
+
+	// 距离上次编辑太近，跳过
+	if time.Since(s.lastEdit) < minEditInterval {
+		return nil
+	}
+
+	display := s.renderContent()
+	return s.editMessage(display)
+}
+
+// renderContent 渲染当前消息内容：思考标签 + 正文
+func (s *telegramStreamSender) renderContent() string {
+	var sb strings.Builder
+
+	// 思考/工具调用标签（作为前缀）
+	if s.thinking != "" {
+		sb.WriteString(s.thinking)
+		sb.WriteString("\n\n")
+	}
+
+	// 正文内容
+	if s.content != "" {
+		content := s.content
+		// 预留思考标签的空间
+		maxLen := 3900
+		if s.thinking != "" {
+			maxLen -= len(s.thinking) + 2
+		}
+		if len(content) > maxLen {
+			content = content[:maxLen-3] + "..."
+		}
+		sb.WriteString(content)
+	}
+
+	// 如果两者都为空，显示默认思考状态
+	if s.thinking == "" && s.content == "" {
+		return "🧠 Thinking..."
+	}
+
+	return sb.String()
+}
+
+// editMessage 调用 Telegram API 编辑消息
+func (s *telegramStreamSender) editMessage(text string) error {
+	if s.adapter.bot == nil {
+		return fmt.Errorf("bot not available")
+	}
+
+	edit := tgbotapi.NewEditMessageText(s.chatID, s.messageID, text)
+	// 不使用 MarkdownV2，避免转义地狱——流式内容格式不可控
+	edit.ParseMode = ""
+
+	_, err := s.adapter.bot.Send(edit)
+	if err != nil {
+		// 编辑失败不中断流，静默忽略
+		return nil
+	}
+
+	s.editCount++
+	s.lastEdit = time.Now()
+	return nil
+}
+
 // poll runs the long-polling loop.
 func (a *Adapter) poll(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
@@ -393,18 +599,29 @@ func (a *Adapter) isMentioned(tgMsg *tgbotapi.Message) bool {
 	return false
 }
 
+// escapeMarkdownV2 转义 Telegram MarkdownV2 特殊字符
+func escapeMarkdownV2(text string) string {
+	special := []string{"_", "*", "[", "]", "(", ")", "~", "`", ">", "#", "+", "-", "=", "|", "{", "}", ".", "!"}
+	for _, ch := range special {
+		text = strings.ReplaceAll(text, ch, "\\"+ch)
+	}
+	return text
+}
+
 // sendChunk sends a single message chunk to Telegram.
 func (a *Adapter) sendChunk(_ context.Context, chatID int64, replyTo int, text string) error {
 	msg := tgbotapi.NewMessage(chatID, text)
 	if replyTo > 0 {
 		msg.ReplyToMessageID = replyTo
 	}
-	msg.ParseMode = tgbotapi.ModeMarkdown
+	msg.ParseMode = tgbotapi.ModeMarkdownV2
+	msg.Text = escapeMarkdownV2(text)
 
 	_, err := a.bot.Send(msg)
 	if err != nil {
-		// If Markdown fails, try plain text
+		// If MarkdownV2 fails, try plain text
 		msg.ParseMode = ""
+		msg.Text = text
 		_, err = a.bot.Send(msg)
 		if err != nil {
 			return fmt.Errorf("telegram: send message: %w", err)

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,9 +69,9 @@ type ServerConfig struct {
 // DefaultServerConfig 返回默认配置
 func DefaultServerConfig() ServerConfig {
 	return ServerConfig{
-		Addr:        ":9090",
-		EnableCORS:  true,
-		CORSOrigins: []string{"*"},
+		Addr:        "127.0.0.1:9090", // 默认仅本地访问
+		EnableCORS:  false,            // 默认关闭 CORS
+		CORSOrigins: []string{},       // 空白名单 = 不允许跨域
 		RateLimit:   60,
 		LogLevel:    "info",
 		LogFormat:   "text",
@@ -871,7 +872,8 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		allowed := false
 
 		if len(s.config.CORSOrigins) == 0 {
-			allowed = true
+			// 无配置 = 不允许任何跨域（安全默认值）
+			allowed = false
 		} else {
 			for _, o := range s.config.CORSOrigins {
 				if o == "*" || o == origin {
@@ -893,7 +895,11 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 		}
 
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			if allowed {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				w.WriteHeader(http.StatusForbidden)
+			}
 			return
 		}
 
@@ -904,19 +910,28 @@ func (s *Server) corsMiddleware(next http.Handler) http.Handler {
 // authMiddleware API Key 认证中间件
 func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 无配置 API Key 则跳过认证
-		if len(s.config.APIKeys) == 0 {
-			next.ServeHTTP(w, r)
-			return
-		}
-
 		// 健康检查不需要认证
 		if r.URL.Path == "/api/v1/health" || r.URL.Path == "/" {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// 从 Header 或 Query 获取 API Key
+		// 无配置 API Key 则仅允许本地访问
+		if len(s.config.APIKeys) == 0 {
+			ip := r.RemoteAddr
+			if idx := strings.LastIndex(ip, ":"); idx != -1 {
+				ip = ip[:idx]
+			}
+			if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
+				s.sendError(w, "api key required (no keys configured, localhost only)", http.StatusUnauthorized,
+					"configure api_keys in server config or access from localhost")
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		// 从 Header 获取 API Key（不再支持 query string，防止日志泄露）
 		apiKey := r.Header.Get("X-API-Key")
 		if apiKey == "" {
 			apiKey = r.Header.Get("Authorization")
@@ -924,18 +939,16 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				apiKey = strings.TrimPrefix(apiKey, "Bearer ")
 			}
 		}
-		if apiKey == "" {
-			apiKey = r.URL.Query().Get("api_key")
-		}
 
 		if apiKey == "" {
-			s.sendError(w, "api key required", http.StatusUnauthorized, "provide X-API-Key header or api_key query param")
+			s.sendError(w, "api key required", http.StatusUnauthorized, "provide X-API-Key header or Authorization: Bearer <key>")
 			return
 		}
 
+		// 常量时间比较，防止 timing attack
 		valid := false
 		for _, k := range s.config.APIKeys {
-			if k == apiKey {
+			if subtle.ConstantTimeCompare([]byte(k), []byte(apiKey)) == 1 {
 				valid = true
 				break
 			}
@@ -980,8 +993,9 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 				s.stats.mu.Lock()
 				s.stats.ErrorReqs++
 				s.stats.mu.Unlock()
-				s.sendError(w, "internal server error", http.StatusInternalServerError,
-					fmt.Sprintf("%v", err))
+				// 内部错误详情只写日志，不返回给客户端
+				fmt.Printf("[RECOVERY] panic: %v\n", err)
+				s.sendError(w, "internal server error", http.StatusInternalServerError, "")
 			}
 		}()
 		next.ServeHTTP(w, r)

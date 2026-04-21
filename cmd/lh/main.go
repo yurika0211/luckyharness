@@ -319,7 +319,7 @@ func main() {
 	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, discord)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
-	msgGatewayStartCmd.Flags().String("api-addr", ":9090", "HTTP API 监听地址")
+	msgGatewayStartCmd.Flags().String("api-addr", "127.0.0.1:9090", "HTTP API 监听地址")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",
 		Short: "停止消息网关",
@@ -406,7 +406,7 @@ func main() {
 		Long:  "启动 LuckyHarness HTTP API Server，暴露 RESTful API 供外部调用。\n\n端点:\n  POST /api/v1/chat       — 流式聊天 (SSE)\n  POST /api/v1/chat/sync  — 同步聊天\n  GET  /api/v1/sessions   — 会话列表\n  GET  /api/v1/memory     — 记忆统计\n  POST /api/v1/memory     — 保存记忆\n  GET  /api/v1/memory/recall?q= — 搜索记忆\n  GET  /api/v1/tools      — 工具列表\n  GET  /api/v1/stats      — 服务器统计\n  GET  /api/v1/health     — 健康检查",
 		RunE:  runServe,
 	}
-	serveCmd.Flags().StringP("addr", "a", ":9090", "监听地址")
+	serveCmd.Flags().StringP("addr", "a", "127.0.0.1:9090", "监听地址")
 	serveCmd.Flags().StringSlice("api-keys", nil, "API Key 白名单 (逗号分隔，空=不鉴权)")
 	serveCmd.Flags().Bool("no-cors", false, "禁用 CORS")
 	serveCmd.Flags().Int("rate-limit", 60, "每分钟请求限制")
@@ -1319,11 +1319,11 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	// v0.36.0: 同时启动 HTTP API Server
 	apiAddr, _ := cmd.Flags().GetString("api-addr")
 	if apiAddr == "" {
-		apiAddr = ":9090"
+		apiAddr = "127.0.0.1:9090"
 	}
 	srv := server.New(a, server.ServerConfig{
 		Addr:       apiAddr,
-		EnableCORS: true,
+		EnableCORS: false,
 		RateLimit:  60,
 	})
 	go func() {

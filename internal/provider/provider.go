@@ -25,9 +25,18 @@ type Response struct {
 
 // StreamChunk 代表流式响应的一个片段
 type StreamChunk struct {
-	Content string
-	Done    bool
-	Model   string
+	Content        string
+	Done           bool
+	Model          string
+	ToolCallDeltas []StreamToolCallDelta // v0.40.0: 流式 tool_calls 增量
+}
+
+// StreamToolCallDelta 流式 tool_calls 的增量片段
+type StreamToolCallDelta struct {
+	Index    int    // tool_call 的索引
+	ID       string // tool_call ID（仅首个 chunk 携带）
+	Name     string // 函数名（仅首个 chunk 携带）
+	Arguments string // 参数增量（逐 chunk 拼接）
 }
 
 // ToolCall 代表一次工具调用
