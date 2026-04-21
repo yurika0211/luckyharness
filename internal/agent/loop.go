@@ -95,6 +95,9 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		}
 	}
 
+	// 上下文窗口裁剪
+	messages = a.fitContextWindow(messages)
+
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)
 	callOpts := provider.CallOptions{
@@ -129,12 +132,17 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		if len(resp.ToolCalls) > 0 {
 			result.State = StateAct
 
-			// v0.16.0: 将 assistant 消息（含 tool_calls）加入历史
+			// 将 assistant 消息（含 tool_calls）加入历史
 			messages = append(messages, provider.Message{
 				Role:      "assistant",
 				Content:   resp.Content,
 				ToolCalls: resp.ToolCalls,
 			})
+
+			// 写入 session：assistant 的 tool_calls
+			if sess != nil {
+				sess.AddMessage("assistant", resp.Content)
+			}
 
 			// Act: 执行每个工具调用
 			for _, tc := range resp.ToolCalls {
@@ -143,7 +151,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				toolResult, err := a.executeTool(tc.Name, tc.Arguments, loopCfg.AutoApprove)
 				duration := time.Since(start)
 
-				log := toolCallLog{
+				tcLog := toolCallLog{
 					Name:      tc.Name,
 					Arguments: tc.Arguments,
 					Duration:  duration,
@@ -151,21 +159,29 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 				if err != nil {
 					toolResult = fmt.Sprintf("Error: %v", err)
-					log.Result = toolResult
+					tcLog.Result = toolResult
 				} else {
-					log.Result = toolResult
+					tcLog.Result = toolResult
 				}
 
-				result.ToolCalls = append(result.ToolCalls, log)
+				result.ToolCalls = append(result.ToolCalls, tcLog)
 
-				// v0.16.0: 将工具结果加入消息（含 tool_call_id）
+				// 将工具结果加入消息（含 tool_call_id）
 				messages = append(messages, provider.Message{
 					Role:       "tool",
 					Content:    toolResult,
 					ToolCallID: tc.ID,
 					Name:       tc.Name,
 				})
+
+				// 写入 session：工具调用结果
+				if sess != nil {
+					sess.AddToolMessage(tc.Name, toolResult)
+				}
 			}
+
+			// 每轮工具调用后裁剪上下文窗口
+			messages = a.fitContextWindow(messages)
 
 			result.State = StateObserve
 			continue // 继续循环，让 LLM 处理工具结果
@@ -181,6 +197,16 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	result.Response = "Max iterations reached, last response may be incomplete"
 	result.State = StateDone
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
+}
+
+// fitContextWindow 裁剪消息列表到上下文窗口内
+func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message {
+	contextMessages := a.toContextMessages(messages)
+	fitted, trimResult := a.contextWin.Fit(contextMessages)
+	if trimResult.Trimmed {
+		messages = a.fromContextMessages(fitted)
+	}
+	return messages
 }
 
 // RunLoopStream 执行流式 Agent Loop

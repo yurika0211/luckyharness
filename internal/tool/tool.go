@@ -82,7 +82,11 @@ func (t *Tool) ToOpenAIFormat() map[string]any {
 		}
 	}
 	params["properties"] = props
-	params["required"] = required
+	if len(required) > 0 {
+		params["required"] = required
+	} else {
+		params["required"] = []string{}
+	}
 
 	return map[string]any{
 		"type": "function",
