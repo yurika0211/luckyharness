@@ -25,7 +25,7 @@
 | v0.34.0 | Cost Tracker | ✅ Done | 成本追踪 + 预算告警 + 报表 + CLI |
 | v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
 | v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
-| v0.37.0 | Search & Fetch Rewrite | 🟡 In Progress | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
+| v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
 
 ---
 
@@ -115,15 +115,15 @@
 
 ---
 
-## 🟡 In Progress — v0.37.0 Search & Fetch Rewrite
+## ✅ Done — v0.37.0 Search & Fetch Rewrite
 
 ### 子任务
 
-- [ ] **SF-1**: SearchEngine 接口 + 多源实现 — Brave / DDGS / DDG Lite / SearXNG / Exa
-- [ ] **SF-2**: FetchEngine 接口 + 降级链 — Defuddle / Jina / curl+strip
-- [ ] **SF-3**: SearchCache + 并发搜索 — TTL 缓存 + 并发多源 + 合并去重
-- [ ] **SF-4**: SearchConfig + 环境变量覆盖 — 统一配置 + LH_SEARCH_* 环境变量
-- [ ] **SF-5**: 测试 — 每个子模块单元测试
+- [x] **SF-1**: SearchEngine 接口 + 5 实现 — Brave / DDGS / DDG Lite / SearXNG / Exa
+- [x] **SF-2**: FetchEngine 接口 + 3 实现 — Defuddle / Jina / curl+strip
+- [x] **SF-3**: SearchCache + 并发搜索 — TTL 缓存 + 并发多源 + 合并去重 + 多源标注
+- [x] **SF-4**: SearchConfig + 环境变量覆盖 — LH_SEARCH_* + BuildEngines/BuildFetchEngines + Manager
+- [x] **SF-5**: 测试 — 35 个单元测试（含 race detection + 并发安全）
 
 ---
 
