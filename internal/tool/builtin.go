@@ -28,6 +28,8 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 	r.Register(WebSearchTool(searchCfg))
 	r.Register(WebFetchTool(searchCfg))
 	r.Register(CurrentTimeTool())
+	r.Register(RememberTool())
+	r.Register(RecallTool())
 }
 
 // ShellTool 执行 shell 命令
@@ -1187,4 +1189,60 @@ func validatePath(path string) error {
 	}
 
 	return nil
+}
+
+// RememberTool 保存记忆工具
+func RememberTool() *Tool {
+	return &Tool{
+		Name:        "remember",
+		Description: "Save important information to long-term or medium-term memory. Use when the user shares preferences, personal info, project context, or anything worth remembering for future conversations.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermAuto, // 记忆操作自动批准
+		Parameters: map[string]Param{
+			"content": {
+				Type:        "string",
+				Description: "The information to remember. Be concise and specific.",
+				Required:    true,
+			},
+			"category": {
+				Type:        "string",
+				Description: "Category: identity, preference, project, knowledge, or conversation",
+				Required:    false,
+				Default:     "conversation",
+			},
+			"long_term": {
+				Type:        "boolean",
+				Description: "Save as long-term memory (core identity/preferences). Default: false (medium-term)",
+				Required:    false,
+				Default:     false,
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			// 实际处理在 agent.handleMemoryTool 中
+			return "", nil
+		},
+	}
+}
+
+// RecallTool 搜索记忆工具
+func RecallTool() *Tool {
+	return &Tool{
+		Name:        "recall",
+		Description: "Search your memory for previously saved information. Use when you need to recall user preferences, past conversations, or any stored knowledge.",
+		Category:    CatBuiltin,
+		Source:      "builtin",
+		Permission:  PermAuto,
+		Parameters: map[string]Param{
+			"query": {
+				Type:        "string",
+				Description: "Search query to find relevant memories. Leave empty to see recent memories.",
+				Required:    false,
+			},
+		},
+		Handler: func(args map[string]any) (string, error) {
+			// 实际处理在 agent.handleMemoryTool 中
+			return "", nil
+		},
+	}
 }

@@ -348,6 +348,11 @@ func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, e
 
 // executeToolWithSession 执行工具调用（带 session，支持 shell 上下文持久化）
 func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool, sess *session.Session) (string, error) {
+	// 记忆工具：直接由 agent 处理，不走 gateway
+	if name == "remember" || name == "recall" {
+		return a.handleMemoryTool(name, arguments)
+	}
+
 	// 解析参数
 	var args map[string]any
 	if arguments != "" {

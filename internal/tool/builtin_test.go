@@ -10,7 +10,7 @@ func TestBuiltinToolsRegistration(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
 
-	expected := []string{"shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time"}
+	expected := []string{"shell", "file_read", "file_write", "file_list", "web_search", "web_fetch", "current_time", "remember", "recall"}
 	for _, name := range expected {
 		tool, ok := r.Get(name)
 		if !ok {

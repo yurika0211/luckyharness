@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -1116,6 +1117,73 @@ func (a *Agent) DecayMemory(threshold float64) int {
 // PromoteMemory 提升记忆层级
 func (a *Agent) PromoteMemory(id string) error {
 	return a.memory.Promote(id)
+}
+
+// handleMemoryTool 处理 LLM 主动调用的记忆工具
+func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
+	var args map[string]any
+	if arguments != "" {
+		if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+			args = map[string]any{"raw": arguments}
+		}
+	}
+
+	switch name {
+	case "remember":
+		content, _ := args["content"].(string)
+		category, _ := args["category"].(string)
+		if content == "" {
+			return "", fmt.Errorf("content is required")
+		}
+		if category == "" {
+			category = inferCategory(content)
+		}
+		longTerm, _ := args["long_term"].(bool)
+		if longTerm {
+			if err := a.memory.SaveLongTerm(content, category); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("✅ 已保存为长期记忆 [%s]: %s", category, truncate(content, 80)), nil
+		}
+		if err := a.memory.Save(content, category); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("✅ 已保存为中期记忆 [%s]: %s", category, truncate(content, 80)), nil
+
+	case "recall":
+		query, _ := args["query"].(string)
+		if query == "" {
+			// 无查询词：返回最近记忆
+			recent := a.memory.Recent(5)
+			if len(recent) == 0 {
+				return "没有找到记忆", nil
+			}
+			var sb strings.Builder
+			sb.WriteString("最近的记忆：\n")
+			for _, e := range recent {
+				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), truncate(e.Content, 80)))
+			}
+			return sb.String(), nil
+		}
+		results := a.memory.Search(query)
+		if len(results) == 0 {
+			return fmt.Sprintf("没有找到关于「%s」的记忆", query), nil
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("找到 %d 条关于「%s」的记忆：\n", len(results), query))
+		limit := 10
+		if len(results) < limit {
+			limit = len(results)
+		}
+		for i := 0; i < limit; i++ {
+			e := results[i]
+			sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), truncate(e.Content, 80)))
+		}
+		return sb.String(), nil
+
+	default:
+		return "", fmt.Errorf("unknown memory tool: %s", name)
+	}
 }
 
 // Soul 返回当前 SOUL
