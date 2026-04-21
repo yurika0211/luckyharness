@@ -256,8 +256,22 @@ func New(cfg *config.Manager) (*Agent, error) {
 // Chat 执行一次对话
 func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 	sess := a.sessions.New()
+	return a.chatWithSession(ctx, sess, userInput)
+}
 
-	// 构建消息列表
+// ChatWithSession 在已有会话中继续对话，实现多轮上下文。
+func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput string) (string, error) {
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	return a.chatWithSession(ctx, sess, userInput)
+}
+
+// chatWithSession 是 Chat/ChatWithSession 的共享实现。
+func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
+
+	// 构建消息列表：system + 记忆 + RAG + 会话历史 + 新消息
 	messages := []provider.Message{
 		{Role: "system", Content: a.soul.SystemPrompt()},
 	}
@@ -267,6 +281,12 @@ func (a *Agent) Chat(ctx context.Context, userInput string) (string, error) {
 
 	// 加入 RAG 检索上下文
 	messages = a.buildRAGContext(ctx, messages, userInput)
+
+	// 加入已有会话历史（多轮对话上下文）
+	existingMsgs := sess.GetMessages()
+	if len(existingMsgs) > 0 {
+		messages = append(messages, existingMsgs...)
+	}
 
 	// 加入用户消息
 	sess.AddMessage("user", userInput)
