@@ -18,7 +18,7 @@
 | v0.12.0 | API Server | ✅ Done | HTTP RESTful + SSE + 认证限流 |
 | v0.13.0 | Context Window | ✅ Done | Token 估算 + 4 种裁剪策略 + 优先级 |
 | v0.14.0 | RAG 知识库 | ✅ Done | 向量索引 + 语义检索 + 持久化 + API 端点 |
-| v0.15.0 | Plugin Marketplace | 🔴 Ready | 插件注册中心 + 发现 + 安装 + 版本管理 |
+| v0.15.0 | Plugin Marketplace | ✅ Done | Manifest + Registry + Installer + Sandbox + CLI + API + 测试 |
 | v0.16.0 | Multi-turn RAG | 🔴 Ready | 对话式检索 + 追问 + 上下文感知检索 |
 
 ---
@@ -37,7 +37,7 @@
 
 ---
 
-## 🔴 Ready — v0.16.0 Multi-turn RAG
+## 🟡 In Progress — v0.16.0 Multi-turn RAG
 
 ### 子任务
 
@@ -62,4 +62,4 @@
 
 ---
 
-*Last updated: 2026-04-20*
+*Last updated: 2026-04-21*
