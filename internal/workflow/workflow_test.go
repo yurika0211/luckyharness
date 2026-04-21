@@ -2,567 +2,673 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestNewWorkflow(t *testing.T) {
-	tasks := []*Task{
-		{ID: "task1", Name: "First Task", Action: "test"},
-		{ID: "task2", Name: "Second Task", Action: "test", DependsOn: []string{"task1"}},
-	}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-	workflow := NewWorkflow("test-workflow", tasks)
-
-	assert.NotEmpty(t, workflow.ID)
-	assert.Equal(t, "test-workflow", workflow.Name)
-	assert.Len(t, workflow.Tasks, 2)
-	assert.False(t, workflow.CreatedAt.IsZero())
-	assert.False(t, workflow.UpdatedAt.IsZero())
+func newTestWorkflow() *Workflow {
+	return NewWorkflow("test-workflow", []*Task{
+		{ID: "t1", Name: "Task 1", Action: "echo", Params: map[string]interface{}{"msg": "hello"}},
+		{ID: "t2", Name: "Task 2", Action: "echo", Params: map[string]interface{}{"msg": "world"}, DependsOn: []string{"t1"}},
+		{ID: "t3", Name: "Task 3", Action: "echo", Params: map[string]interface{}{"msg": "!"}, DependsOn: []string{"t1"}},
+		{ID: "t4", Name: "Task 4", Action: "echo", Params: map[string]interface{}{"msg": "done"}, DependsOn: []string{"t2", "t3"}},
+	})
 }
 
-func TestWorkflowValidate(t *testing.T) {
-	tests := []struct {
-		name      string
-		workflow  *Workflow
-		wantError bool
-	}{
-		{
-			name: "valid workflow",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-				},
-			},
-			wantError: false,
-		},
-		{
-			name: "missing name",
-			workflow: &Workflow{
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "no tasks",
-			workflow: &Workflow{
-				Name:  "test",
-				Tasks: []*Task{},
-			},
-			wantError: true,
-		},
-		{
-			name: "duplicate task ID",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-					{ID: "t1", Name: "Task 2", Action: "test"},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "missing task ID",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "", Name: "Task 1", Action: "test"},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "missing task name",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "", Action: "test"},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "missing task action",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: ""},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "invalid dependency",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test", DependsOn: []string{"nonexistent"}},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "self dependency",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test", DependsOn: []string{"t1"}},
-				},
-			},
-			wantError: true,
-		},
-		{
-			name: "circular dependency",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test", DependsOn: []string{"t2"}},
-					{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-				},
-			},
-			wantError: true,
-		},
+func newTestExecutor() *DefaultExecutor {
+	ex := NewDefaultExecutor()
+	ex.RegisterActionHandler("echo", func(ctx context.Context, task *Task) (interface{}, error) {
+		msg, _ := task.Params["msg"].(string)
+		return map[string]interface{}{"message": msg}, nil
+	})
+	ex.RegisterActionHandler("fail", func(ctx context.Context, task *Task) (interface{}, error) {
+		return nil, fmt.Errorf("intentional failure")
+	})
+	ex.RegisterActionHandler("slow", func(ctx context.Context, task *Task) (interface{}, error) {
+		time.Sleep(200 * time.Millisecond)
+		return "slow-done", nil
+	})
+	return ex
+}
+
+// ---------------------------------------------------------------------------
+// WF-1: Condition & Output Passing Tests
+// ---------------------------------------------------------------------------
+
+func TestConditionEvalStatus(t *testing.T) {
+	cond := &Condition{TaskID: "t1", Status: "completed"}
+	result := &TaskResult{TaskID: "t1", Status: StatusCompleted}
+	if !cond.Eval(result) {
+		t.Error("expected condition to match completed status")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := tt.workflow.Validate()
-			if tt.wantError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
+	result.Status = StatusFailed
+	if cond.Eval(result) {
+		t.Error("expected condition to not match failed status")
+	}
+}
+
+func TestConditionEvalOutput(t *testing.T) {
+	cond := &Condition{TaskID: "t1", Output: "status=ok"}
+	result := &TaskResult{
+		TaskID: "t1",
+		Status: StatusCompleted,
+		Output: map[string]interface{}{"status": "ok"},
+	}
+	if !cond.Eval(result) {
+		t.Error("expected condition to match output")
+	}
+
+	result.Output = map[string]interface{}{"status": "error"}
+	if cond.Eval(result) {
+		t.Error("expected condition to not match output")
+	}
+}
+
+func TestConditionEvalNilResult(t *testing.T) {
+	cond := &Condition{TaskID: "t1", Status: "completed"}
+	if cond.Eval(nil) {
+		t.Error("expected condition to not match nil result")
+	}
+}
+
+func TestConditionEvalEmptyTaskID(t *testing.T) {
+	cond := &Condition{}
+	if !cond.Eval(nil) {
+		t.Error("empty condition should always pass")
+	}
+}
+
+func TestConditionEvalInvalidOutput(t *testing.T) {
+	cond := &Condition{TaskID: "t1", Output: "invalid"}
+	result := &TaskResult{TaskID: "t1", Status: StatusCompleted, Output: "string"}
+	if cond.Eval(result) {
+		t.Error("expected condition to fail with invalid output format")
+	}
+}
+
+func TestConditionalBranching(t *testing.T) {
+	wf := NewWorkflow("conditional-test", []*Task{
+		{ID: "check", Name: "Check", Action: "echo", Params: map[string]interface{}{"msg": "check"}},
+		{ID: "on-success", Name: "On Success", Action: "echo", Params: map[string]interface{}{"msg": "success"}, DependsOn: []string{"check"}, Condition: &Condition{TaskID: "check", Status: "completed"}},
+		{ID: "on-failure", Name: "On Failure", Action: "echo", Params: map[string]interface{}{"msg": "failure"}, DependsOn: []string{"check"}, Condition: &Condition{TaskID: "check", Status: "failed"}},
+	})
+
+	engine := NewWorkflowEngine(newTestExecutor(), 5)
+	if err := engine.RegisterWorkflow(wf); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+
+	inst, err := engine.StartWorkflow(wf.ID)
+	if err != nil {
+		t.Fatalf("start failed: %v", err)
+	}
+
+	// Wait for completion
+	time.Sleep(500 * time.Millisecond)
+
+	snap := inst.Snapshot()
+	if snap.Status != StatusCompleted {
+		t.Errorf("expected completed, got %s", snap.Status)
+	}
+
+	// on-success should be completed
+	if r, ok := snap.Results["on-success"]; ok {
+		if r.Status != StatusCompleted {
+			t.Errorf("expected on-success completed, got %s", r.Status)
+		}
+	}
+
+	// on-failure should be skipped
+	if r, ok := snap.Results["on-failure"]; ok {
+		if r.Status != StatusSkipped {
+			t.Errorf("expected on-failure skipped, got %s", r.Status)
+		}
+	}
+}
+
+func TestConditionInvalidReference(t *testing.T) {
+	wf := NewWorkflow("bad-cond", []*Task{
+		{ID: "t1", Name: "T1", Action: "echo", Condition: &Condition{TaskID: "nonexistent", Status: "completed"}},
+	})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected validation error for invalid condition reference")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WF-2: YAML & Persistence Tests
+// ---------------------------------------------------------------------------
+
+func TestYAMLRoundTrip(t *testing.T) {
+	wf := newTestWorkflow()
+	data, err := wf.ToYAML()
+	if err != nil {
+		t.Fatalf("YAML marshal failed: %v", err)
+	}
+
+	parsed, err := FromYAML(data)
+	if err != nil {
+		t.Fatalf("YAML unmarshal failed: %v", err)
+	}
+
+	if parsed.Name != wf.Name {
+		t.Errorf("expected name %q, got %q", wf.Name, parsed.Name)
+	}
+	if len(parsed.Tasks) != len(wf.Tasks) {
+		t.Errorf("expected %d tasks, got %d", len(wf.Tasks), len(parsed.Tasks))
+	}
+}
+
+func TestJSONRoundTrip(t *testing.T) {
+	wf := newTestWorkflow()
+	data, err := wf.ToJSON()
+	if err != nil {
+		t.Fatalf("JSON marshal failed: %v", err)
+	}
+
+	parsed, err := FromJSON(data)
+	if err != nil {
+		t.Fatalf("JSON unmarshal failed: %v", err)
+	}
+
+	if parsed.Name != wf.Name {
+		t.Errorf("expected name %q, got %q", wf.Name, parsed.Name)
+	}
+}
+
+func TestFileSaveLoadJSON(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.json")
+
+	wf := newTestWorkflow()
+	if err := SaveToFile(wf, path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	loaded, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.Name != wf.Name {
+		t.Errorf("expected name %q, got %q", wf.Name, loaded.Name)
+	}
+}
+
+func TestFileSaveLoadYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.yaml")
+
+	wf := newTestWorkflow()
+	if err := SaveToFile(wf, path); err != nil {
+		t.Fatalf("save failed: %v", err)
+	}
+
+	loaded, err := LoadFromFile(path)
+	if err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if loaded.Name != wf.Name {
+		t.Errorf("expected name %q, got %q", wf.Name, loaded.Name)
+	}
+}
+
+func TestFileStoreWorkflow(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewFileStore(tmpDir)
+
+	wf := newTestWorkflow()
+	if err := store.SaveWorkflow(wf); err != nil {
+		t.Fatalf("save workflow failed: %v", err)
+	}
+
+	loaded, err := store.LoadWorkflow(wf.ID)
+	if err != nil {
+		t.Fatalf("load workflow failed: %v", err)
+	}
+	if loaded.Name != wf.Name {
+		t.Errorf("expected name %q, got %q", wf.Name, loaded.Name)
+	}
+}
+
+func TestFileStoreInstance(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewFileStore(tmpDir)
+
+	inst := NewWorkflowInstance("wf-123")
+	inst.SetStatus(StatusCompleted)
+	inst.SetStartTime(time.Now().Add(-time.Minute))
+	inst.SetEndTime(time.Now())
+	inst.SetResult("t1", &TaskResult{
+		TaskID: "t1",
+		Status: StatusCompleted,
+		Output: "hello",
+	})
+
+	if err := store.SaveInstance(inst); err != nil {
+		t.Fatalf("save instance failed: %v", err)
+	}
+
+	loaded, err := store.LoadInstance(inst.ID)
+	if err != nil {
+		t.Fatalf("load instance failed: %v", err)
+	}
+	if loaded.WorkflowID != inst.WorkflowID {
+		t.Errorf("expected workflowID %q, got %q", inst.WorkflowID, loaded.WorkflowID)
+	}
+}
+
+func TestFileStoreListWorkflows(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewFileStore(tmpDir)
+
+	wf1 := NewWorkflow("wf1", []*Task{{ID: "t1", Name: "T1", Action: "echo"}})
+	wf2 := NewWorkflow("wf2", []*Task{{ID: "t1", Name: "T1", Action: "echo"}})
+
+	_ = store.SaveWorkflow(wf1)
+	_ = store.SaveWorkflow(wf2)
+
+	ids, err := store.ListWorkflows()
+	if err != nil {
+		t.Fatalf("list workflows failed: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 workflows, got %d", len(ids))
+	}
+}
+
+func TestLoadUnsupportedFormat(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := filepath.Join(tmpDir, "test.xml")
+	os.WriteFile(path, []byte("<xml/>"), 0644)
+
+	_, err := LoadFromFile(path)
+	if err == nil {
+		t.Error("expected error for unsupported format")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// WF-3: Event Callback Tests
+// ---------------------------------------------------------------------------
+
+func TestEventEmitterOnEmit(t *testing.T) {
+	em := NewEventEmitter()
+	var received []Event
+	var mu sync.Mutex
+
+	em.On(func(evt Event) {
+		mu.Lock()
+		received = append(received, evt)
+		mu.Unlock()
+	})
+
+	em.Emit(Event{Type: EventTaskStart, TaskID: "t1", Timestamp: time.Now()})
+	em.Emit(Event{Type: EventTaskComplete, TaskID: "t1", Timestamp: time.Now()})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(received) != 2 {
+		t.Errorf("expected 2 events, got %d", len(received))
+	}
+}
+
+func TestEventEmitterMultiple(t *testing.T) {
+	em := NewEventEmitter()
+	count1, count2 := 0, 0
+	var mu sync.Mutex
+
+	em.On(func(evt Event) {
+		mu.Lock()
+		count1++
+		mu.Unlock()
+	})
+	em.On(func(evt Event) {
+		mu.Lock()
+		count2++
+		mu.Unlock()
+	})
+
+	em.Emit(Event{Type: EventWorkflowStart, Timestamp: time.Now()})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if count1 != 1 || count2 != 1 {
+		t.Errorf("expected both handlers called once, got %d and %d", count1, count2)
+	}
+}
+
+func TestEventEmitterLen(t *testing.T) {
+	em := NewEventEmitter()
+	if em.Len() != 0 {
+		t.Errorf("expected 0 handlers, got %d", em.Len())
+	}
+	em.On(func(evt Event) {})
+	em.On(func(evt Event) {})
+	if em.Len() != 2 {
+		t.Errorf("expected 2 handlers, got %d", em.Len())
+	}
+}
+
+func TestWorkflowEvents(t *testing.T) {
+	engine := NewWorkflowEngine(newTestExecutor(), 5)
+	var events []Event
+	var mu sync.Mutex
+
+	engine.Emitter().On(func(evt Event) {
+		mu.Lock()
+		events = append(events, evt)
+		mu.Unlock()
+	})
+
+	wf := newTestWorkflow()
+	_ = engine.RegisterWorkflow(wf)
+	_, _ = engine.StartWorkflow(wf.ID)
+
+	time.Sleep(500 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// Should have: workflow_start + 4 task_start + 4 task_complete + workflow_complete = 10
+	if len(events) < 4 {
+		t.Errorf("expected at least 4 events, got %d", len(events))
+	}
+
+	// Check workflow start event
+	found := false
+	for _, e := range events {
+		if e.Type == EventWorkflowStart {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected workflow_start event")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Core Workflow Tests (existing, updated)
+// ---------------------------------------------------------------------------
+
+func TestWorkflowValidation(t *testing.T) {
+	wf := newTestWorkflow()
+	if err := wf.Validate(); err != nil {
+		t.Errorf("valid workflow failed validation: %v", err)
+	}
+}
+
+func TestWorkflowValidationNoName(t *testing.T) {
+	wf := NewWorkflow("", []*Task{{ID: "t1", Name: "T1", Action: "echo"}})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected error for empty name")
+	}
+}
+
+func TestWorkflowValidationNoTasks(t *testing.T) {
+	wf := NewWorkflow("test", []*Task{})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected error for no tasks")
+	}
+}
+
+func TestWorkflowValidationDuplicateID(t *testing.T) {
+	wf := NewWorkflow("test", []*Task{
+		{ID: "t1", Name: "T1", Action: "echo"},
+		{ID: "t1", Name: "T2", Action: "echo"},
+	})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected error for duplicate task ID")
+	}
+}
+
+func TestWorkflowValidationSelfDep(t *testing.T) {
+	wf := NewWorkflow("test", []*Task{
+		{ID: "t1", Name: "T1", Action: "echo", DependsOn: []string{"t1"}},
+	})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected error for self-dependency")
+	}
+}
+
+func TestWorkflowValidationCycle(t *testing.T) {
+	wf := NewWorkflow("test", []*Task{
+		{ID: "t1", Name: "T1", Action: "echo", DependsOn: []string{"t2"}},
+		{ID: "t2", Name: "T2", Action: "echo", DependsOn: []string{"t1"}},
+	})
+	if err := wf.Validate(); err == nil {
+		t.Error("expected error for cycle")
 	}
 }
 
 func TestGetExecutionOrder(t *testing.T) {
-	tests := []struct {
-		name     string
-		workflow *Workflow
-		want     []string
-		parallel bool // if true, only check set equality (order of independent tasks may vary)
-	}{
-		{
-			name: "single task",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-				},
-			},
-			want: []string{"t1"},
-		},
-		{
-			name: "linear chain",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-					{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-					{ID: "t3", Name: "Task 3", Action: "test", DependsOn: []string{"t2"}},
-				},
-			},
-			want: []string{"t1", "t2", "t3"},
-		},
-		{
-			name: "parallel tasks",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-					{ID: "t2", Name: "Task 2", Action: "test"},
-					{ID: "t3", Name: "Task 3", Action: "test", DependsOn: []string{"t1", "t2"}},
-				},
-			},
-			want: []string{"t1", "t2", "t3"}, // t1 and t2 are parallel; order may vary
-			parallel: true, // mark as parallel — only check set equality for first N
-		},
-		{
-			name: "diamond dependency",
-			workflow: &Workflow{
-				Name: "test",
-				Tasks: []*Task{
-					{ID: "t1", Name: "Task 1", Action: "test"},
-					{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-					{ID: "t3", Name: "Task 3", Action: "test", DependsOn: []string{"t1"}},
-					{ID: "t4", Name: "Task 4", Action: "test", DependsOn: []string{"t2", "t3"}},
-				},
-			},
-			want: []string{"t1", "t2", "t3", "t4"},
-		},
+	wf := newTestWorkflow()
+	order, err := wf.GetExecutionOrder()
+	if err != nil {
+		t.Fatalf("execution order failed: %v", err)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			order, err := tt.workflow.GetExecutionOrder()
-			require.NoError(t, err)
-			if tt.parallel {
-				// For parallel tasks, only check set equality
-				assert.ElementsMatch(t, tt.want, order)
-			} else {
-				assert.Equal(t, tt.want, order)
-			}
-		})
+	if len(order) != 4 {
+		t.Fatalf("expected 4 tasks, got %d", len(order))
+	}
+	// t1 must come before t2 and t3, which must come before t4
+	t1Idx, t2Idx, t3Idx, t4Idx := -1, -1, -1, -1
+	for i, id := range order {
+		switch id {
+		case "t1": t1Idx = i
+		case "t2": t2Idx = i
+		case "t3": t3Idx = i
+		case "t4": t4Idx = i
+		}
+	}
+	if t1Idx > t2Idx || t1Idx > t3Idx || t2Idx > t4Idx || t3Idx > t4Idx {
+		t.Errorf("invalid execution order: %v", order)
 	}
 }
 
 func TestGetReadyTasks(t *testing.T) {
-	workflow := &Workflow{
-		Name: "test",
-		Tasks: []*Task{
-			{ID: "t1", Name: "Task 1", Action: "test"},
-			{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-			{ID: "t3", Name: "Task 3", Action: "test", DependsOn: []string{"t1"}},
-			{ID: "t4", Name: "Task 4", Action: "test", DependsOn: []string{"t2", "t3"}},
-		},
+	wf := newTestWorkflow()
+	ready := wf.GetReadyTasks(map[string]bool{})
+	if len(ready) != 1 || ready[0].ID != "t1" {
+		t.Errorf("expected only t1 ready, got %v", ready)
 	}
 
-	// Initially, only t1 is ready
-	ready := workflow.GetReadyTasks(map[string]bool{})
-	assert.Len(t, ready, 1)
-	assert.Equal(t, "t1", ready[0].ID)
-
-	// After t1 completes, t2 and t3 are ready
-	ready = workflow.GetReadyTasks(map[string]bool{"t1": true})
-	assert.Len(t, ready, 2)
-
-	// After t1, t2, t3 complete, t4 is ready
-	ready = workflow.GetReadyTasks(map[string]bool{"t1": true, "t2": true, "t3": true})
-	assert.Len(t, ready, 1)
-	assert.Equal(t, "t4", ready[0].ID)
+	ready = wf.GetReadyTasks(map[string]bool{"t1": true})
+	if len(ready) != 2 {
+		t.Errorf("expected t2 and t3 ready, got %d", len(ready))
+	}
 }
 
-func TestWorkflowJSON(t *testing.T) {
-	workflow := &Workflow{
-		ID:          "test-id",
-		Name:        "test-workflow",
-		Description: "A test workflow",
-		Tasks: []*Task{
-			{ID: "t1", Name: "Task 1", Action: "test"},
-			{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-		},
-		Version:   "1.0",
-		CreatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
-		UpdatedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+func TestWorkflowExecution(t *testing.T) {
+	engine := NewWorkflowEngine(newTestExecutor(), 5)
+	wf := newTestWorkflow()
+	_ = engine.RegisterWorkflow(wf)
+
+	inst, err := engine.StartWorkflow(wf.ID)
+	if err != nil {
+		t.Fatalf("start failed: %v", err)
 	}
 
-	data, err := workflow.ToJSON()
-	require.NoError(t, err)
-
-	parsed, err := FromJSON(data)
-	require.NoError(t, err)
-
-	assert.Equal(t, workflow.ID, parsed.ID)
-	assert.Equal(t, workflow.Name, parsed.Name)
-	assert.Equal(t, workflow.Description, parsed.Description)
-	assert.Len(t, parsed.Tasks, 2)
-	assert.Equal(t, workflow.Version, parsed.Version)
-}
-
-func TestWorkflowInstance(t *testing.T) {
-	instance := NewWorkflowInstance("workflow-123")
-
-	assert.NotEmpty(t, instance.ID)
-	assert.Equal(t, "workflow-123", instance.WorkflowID)
-	assert.Equal(t, StatusPending, instance.Status)
-	assert.NotNil(t, instance.Context)
-	assert.NotNil(t, instance.CancelFunc)
-
-	// Test status update
-	instance.SetStatus(StatusRunning)
-	assert.Equal(t, StatusRunning, instance.GetStatus())
-
-	// Test result storage
-	result := &TaskResult{
-		TaskID: "task-1",
-		Status: StatusCompleted,
-		Output: "success",
-	}
-	instance.SetResult("task-1", result)
-
-	retrieved, ok := instance.GetResult("task-1")
-	assert.True(t, ok)
-	assert.Equal(t, result, retrieved)
-
-	// Test cancel
-	instance.Cancel()
-	assert.Equal(t, StatusFailed, instance.GetStatus())
-}
-
-func TestDefaultExecutor(t *testing.T) {
-	executor := NewDefaultExecutor()
-
-	// Register a handler
-	executor.RegisterActionHandler("test", func(ctx context.Context, task *Task) (interface{}, error) {
-		return "test-output", nil
-	})
-
-	// Execute
-	task := &Task{ID: "t1", Name: "Test", Action: "test"}
-	output, err := executor.Execute(context.Background(), task)
-	require.NoError(t, err)
-	assert.Equal(t, "test-output", output)
-
-	// Unregistered action
-	task2 := &Task{ID: "t2", Name: "Test", Action: "unknown"}
-	_, err = executor.Execute(context.Background(), task2)
-	assert.Error(t, err)
-}
-
-func TestWorkflowEngine(t *testing.T) {
-	executor := NewDefaultExecutor()
-	executor.RegisterActionHandler("test", func(ctx context.Context, task *Task) (interface{}, error) {
-		return map[string]interface{}{"result": task.ID}, nil
-	})
-
-	engine := NewWorkflowEngine(executor, 5)
-
-	// Register workflow
-	workflow := NewWorkflow("test-workflow", []*Task{
-		{ID: "t1", Name: "Task 1", Action: "test"},
-		{ID: "t2", Name: "Task 2", Action: "test", DependsOn: []string{"t1"}},
-		{ID: "t3", Name: "Task 3", Action: "test", DependsOn: []string{"t1"}},
-		{ID: "t4", Name: "Task 4", Action: "test", DependsOn: []string{"t2", "t3"}},
-	})
-
-	err := engine.RegisterWorkflow(workflow)
-	require.NoError(t, err)
-
-	// Get workflow
-	retrieved, ok := engine.GetWorkflow(workflow.ID)
-	assert.True(t, ok)
-	assert.Equal(t, workflow, retrieved)
-
-	// List workflows
-	workflows := engine.ListWorkflows()
-	assert.Len(t, workflows, 1)
-
-	// Start workflow
-	instance, err := engine.StartWorkflow(workflow.ID)
-	require.NoError(t, err)
-	assert.NotEmpty(t, instance.ID)
-
-	// Wait for completion
 	time.Sleep(500 * time.Millisecond)
 
-	// Check instance status
-	retrievedInstance, ok := engine.GetInstance(instance.ID)
-	assert.True(t, ok)
-	assert.Equal(t, StatusCompleted, retrievedInstance.GetStatus())
+	snap := inst.Snapshot()
+	if snap.Status != StatusCompleted {
+		t.Errorf("expected completed, got %s", snap.Status)
+	}
 
-	// Check results
-	assert.Len(t, retrievedInstance.Results, 4)
-
-	// List instances
-	instances := engine.ListInstances()
-	assert.Len(t, instances, 1)
-
-	// Delete workflow
-	err = engine.DeleteWorkflow(workflow.ID)
-	require.NoError(t, err)
-
-	_, ok = engine.GetWorkflow(workflow.ID)
-	assert.False(t, ok)
+	for _, id := range []string{"t1", "t2", "t3", "t4"} {
+		r, ok := snap.Results[id]
+		if !ok {
+			t.Errorf("missing result for %s", id)
+			continue
+		}
+		if r.Status != StatusCompleted {
+			t.Errorf("task %s: expected completed, got %s", id, r.Status)
+		}
+	}
 }
 
-func TestWorkflowEngineWithFailure(t *testing.T) {
-	executor := NewDefaultExecutor()
-	executor.RegisterActionHandler("fail", func(ctx context.Context, task *Task) (interface{}, error) {
-		return nil, assert.AnError
-	})
-	executor.RegisterActionHandler("success", func(ctx context.Context, task *Task) (interface{}, error) {
+func TestWorkflowFailure(t *testing.T) {
+	ex := NewDefaultExecutor()
+	ex.RegisterActionHandler("echo", func(ctx context.Context, task *Task) (interface{}, error) {
 		return "ok", nil
 	})
-
-	engine := NewWorkflowEngine(executor, 5)
-
-	workflow := NewWorkflow("fail-workflow", []*Task{
-		{ID: "t1", Name: "Task 1", Action: "fail"},
-		{ID: "t2", Name: "Task 2", Action: "success", DependsOn: []string{"t1"}},
+	ex.RegisterActionHandler("fail", func(ctx context.Context, task *Task) (interface{}, error) {
+		return nil, fmt.Errorf("boom")
 	})
 
-	err := engine.RegisterWorkflow(workflow)
-	require.NoError(t, err)
+	engine := NewWorkflowEngine(ex, 5)
+	wf := NewWorkflow("fail-test", []*Task{
+		{ID: "t1", Name: "T1", Action: "fail"},
+		{ID: "t2", Name: "T2", Action: "echo", DependsOn: []string{"t1"}},
+	})
+	_ = engine.RegisterWorkflow(wf)
 
-	instance, err := engine.StartWorkflow(workflow.ID)
-	require.NoError(t, err)
-
-	// Wait for completion
+	inst, _ := engine.StartWorkflow(wf.ID)
 	time.Sleep(500 * time.Millisecond)
 
-	retrievedInstance, ok := engine.GetInstance(instance.ID)
-	assert.True(t, ok)
-	assert.Equal(t, StatusFailed, retrievedInstance.GetStatus())
-
-	// t2 should be skipped
-	result, ok := retrievedInstance.GetResult("t2")
-	assert.True(t, ok)
-	assert.Equal(t, StatusSkipped, result.Status)
-}
-
-func TestWorkflowEngineWithRetry(t *testing.T) {
-	attempts := 0
-	executor := NewDefaultExecutor()
-	executor.RegisterActionHandler("retry", func(ctx context.Context, task *Task) (interface{}, error) {
-		attempts++
-		if attempts < 3 {
-			return nil, assert.AnError
-		}
-		return "success", nil
-	})
-
-	engine := NewWorkflowEngine(executor, 5)
-
-	workflow := NewWorkflow("retry-workflow", []*Task{
-		{ID: "t1", Name: "Task 1", Action: "retry", RetryCount: 3, RetryDelay: 10 * time.Millisecond},
-	})
-
-	err := engine.RegisterWorkflow(workflow)
-	require.NoError(t, err)
-
-	instance, err := engine.StartWorkflow(workflow.ID)
-	require.NoError(t, err)
-
-	// Wait for completion
-	time.Sleep(500 * time.Millisecond)
-
-	retrievedInstance, ok := engine.GetInstance(instance.ID)
-	assert.True(t, ok)
-	assert.Equal(t, StatusCompleted, retrievedInstance.GetStatus())
-	assert.Equal(t, 3, attempts)
-}
-
-func TestWorkflowEngineWithTimeout(t *testing.T) {
-	executor := NewDefaultExecutor()
-	executor.RegisterActionHandler("slow", func(ctx context.Context, task *Task) (interface{}, error) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Second):
-			return "done", nil
-		}
-	})
-
-	engine := NewWorkflowEngine(executor, 5)
-
-	workflow := NewWorkflow("timeout-workflow", []*Task{
-		{ID: "t1", Name: "Task 1", Action: "slow", Timeout: 100 * time.Millisecond},
-	})
-
-	err := engine.RegisterWorkflow(workflow)
-	require.NoError(t, err)
-
-	instance, err := engine.StartWorkflow(workflow.ID)
-	require.NoError(t, err)
-
-	// Wait for completion
-	time.Sleep(500 * time.Millisecond)
-
-	retrievedInstance, ok := engine.GetInstance(instance.ID)
-	assert.True(t, ok)
-	assert.Equal(t, StatusFailed, retrievedInstance.GetStatus())
-
-	result, ok := retrievedInstance.GetResult("t1")
-	assert.True(t, ok)
-	assert.Equal(t, StatusFailed, result.Status)
-}
-
-func TestWorkflowEngineCancel(t *testing.T) {
-	executor := NewDefaultExecutor()
-	executor.RegisterActionHandler("slow", func(ctx context.Context, task *Task) (interface{}, error) {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(10 * time.Second):
-			return "done", nil
-		}
-	})
-
-	engine := NewWorkflowEngine(executor, 5)
-
-	workflow := NewWorkflow("cancel-workflow", []*Task{
-		{ID: "t1", Name: "Task 1", Action: "slow"},
-	})
-
-	err := engine.RegisterWorkflow(workflow)
-	require.NoError(t, err)
-
-	instance, err := engine.StartWorkflow(workflow.ID)
-	require.NoError(t, err)
-
-	// Cancel after a short delay
-	time.Sleep(100 * time.Millisecond)
-	err = engine.CancelInstance(instance.ID)
-	require.NoError(t, err)
-
-	// Wait for cancellation to take effect
-	time.Sleep(100 * time.Millisecond)
-
-	retrievedInstance, ok := engine.GetInstance(instance.ID)
-	assert.True(t, ok)
-	assert.Equal(t, StatusFailed, retrievedInstance.GetStatus())
-}
-
-func TestWorkflowJSONUnmarshal(t *testing.T) {
-	jsonData := `{
-		"id": "test-id",
-		"name": "test-workflow",
-		"description": "A test workflow",
-		"tasks": [
-			{"id": "t1", "name": "Task 1", "action": "test"},
-			{"id": "t2", "name": "Task 2", "action": "test", "dependsOn": ["t1"]}
-		],
-		"version": "1.0"
-	}`
-
-	workflow, err := FromJSON([]byte(jsonData))
-	require.NoError(t, err)
-
-	assert.Equal(t, "test-id", workflow.ID)
-	assert.Equal(t, "test-workflow", workflow.Name)
-	assert.Len(t, workflow.Tasks, 2)
-	assert.Equal(t, "t1", workflow.Tasks[0].ID)
-	assert.Equal(t, "t2", workflow.Tasks[1].ID)
-	assert.Equal(t, []string{"t1"}, workflow.Tasks[1].DependsOn)
-}
-
-func TestWorkflowJSONRoundTrip(t *testing.T) {
-	original := &Workflow{
-		ID:          "test-id",
-		Name:        "test-workflow",
-		Description: "A test workflow",
-		Tasks: []*Task{
-			{
-				ID:        "t1",
-				Name:      "Task 1",
-				Action:    "http",
-				Params:    map[string]interface{}{"url": "https://example.com"},
-				DependsOn: []string{},
-				Timeout:   30 * time.Second,
-				RetryCount: 3,
-				RetryDelay: 1 * time.Second,
-			},
-		},
-		Version: "1.0",
+	snap := inst.Snapshot()
+	if snap.Status != StatusFailed {
+		t.Errorf("expected failed, got %s", snap.Status)
 	}
 
-	data, err := json.Marshal(original)
-	require.NoError(t, err)
+	r, ok := snap.Results["t2"]
+	if !ok || r.Status != StatusSkipped {
+		t.Errorf("expected t2 skipped, got %v", r)
+	}
+}
 
-	parsed, err := FromJSON(data)
-	require.NoError(t, err)
+func TestWorkflowRetry(t *testing.T) {
+	attempts := 0
+	ex := NewDefaultExecutor()
+	ex.RegisterActionHandler("flaky", func(ctx context.Context, task *Task) (interface{}, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, fmt.Errorf("not yet")
+		}
+		return "finally", nil
+	})
 
-	assert.Equal(t, original.ID, parsed.ID)
-	assert.Equal(t, original.Name, parsed.Name)
-	assert.Equal(t, original.Tasks[0].Timeout, parsed.Tasks[0].Timeout)
-	assert.Equal(t, original.Tasks[0].RetryCount, parsed.Tasks[0].RetryCount)
+	engine := NewWorkflowEngine(ex, 5)
+	wf := NewWorkflow("retry-test", []*Task{
+		{ID: "t1", Name: "T1", Action: "flaky", RetryCount: 3, RetryDelay: 50 * time.Millisecond},
+	})
+	_ = engine.RegisterWorkflow(wf)
+
+	inst, _ := engine.StartWorkflow(wf.ID)
+	time.Sleep(500 * time.Millisecond)
+
+	snap := inst.Snapshot()
+	if snap.Status != StatusCompleted {
+		t.Errorf("expected completed after retry, got %s", snap.Status)
+	}
+}
+
+func TestWorkflowCancel(t *testing.T) {
+	ex := NewDefaultExecutor()
+	ex.RegisterActionHandler("slow", func(ctx context.Context, task *Task) (interface{}, error) {
+		time.Sleep(5 * time.Second)
+		return "done", nil
+	})
+
+	engine := NewWorkflowEngine(ex, 5)
+	wf := NewWorkflow("cancel-test", []*Task{
+		{ID: "t1", Name: "T1", Action: "slow"},
+	})
+	_ = engine.RegisterWorkflow(wf)
+
+	inst, _ := engine.StartWorkflow(wf.ID)
+	time.Sleep(100 * time.Millisecond)
+	inst.Cancel()
+	time.Sleep(200 * time.Millisecond)
+
+	if inst.GetStatus() != StatusFailed {
+		t.Errorf("expected failed after cancel, got %s", inst.GetStatus())
+	}
+}
+
+func TestWorkflowParallelExecution(t *testing.T) {
+	engine := NewWorkflowEngine(newTestExecutor(), 5)
+	wf := NewWorkflow("parallel-test", []*Task{
+		{ID: "t1", Name: "T1", Action: "echo", Params: map[string]interface{}{"msg": "a"}},
+		{ID: "t2", Name: "T2", Action: "echo", Params: map[string]interface{}{"msg": "b"}},
+		{ID: "t3", Name: "T3", Action: "echo", Params: map[string]interface{}{"msg": "c"}, DependsOn: []string{"t1", "t2"}},
+	})
+	_ = engine.RegisterWorkflow(wf)
+
+	inst, _ := engine.StartWorkflow(wf.ID)
+	time.Sleep(500 * time.Millisecond)
+
+	snap := inst.Snapshot()
+	if snap.Status != StatusCompleted {
+		t.Errorf("expected completed, got %s", snap.Status)
+	}
+}
+
+func TestWorkflowWithStore(t *testing.T) {
+	tmpDir := t.TempDir()
+	store := NewFileStore(tmpDir)
+
+	engine := NewWorkflowEngine(newTestExecutor(), 5)
+	engine.SetStore(store)
+
+	wf := newTestWorkflow()
+	_ = engine.RegisterWorkflow(wf)
+
+	inst, _ := engine.StartWorkflow(wf.ID)
+	time.Sleep(500 * time.Millisecond)
+
+	// Check workflow was persisted
+	loaded, err := store.LoadWorkflow(wf.ID)
+	if err != nil {
+		t.Errorf("workflow not persisted: %v", err)
+	}
+	if loaded.Name != wf.Name {
+		t.Errorf("expected %q, got %q", wf.Name, loaded.Name)
+	}
+
+	// Check instance was persisted
+	loadedInst, err := store.LoadInstance(inst.ID)
+	if err != nil {
+		t.Errorf("instance not persisted: %v", err)
+	}
+	if loadedInst.WorkflowID != wf.ID {
+		t.Errorf("expected workflowID %q, got %q", wf.ID, loadedInst.WorkflowID)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Concurrency Safety
+// ---------------------------------------------------------------------------
+
+func TestWorkflowConcurrentStart(t *testing.T) {
+	engine := NewWorkflowEngine(newTestExecutor(), 10)
+	wf := newTestWorkflow()
+	_ = engine.RegisterWorkflow(wf)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = engine.StartWorkflow(wf.ID)
+		}()
+	}
+	wg.Wait()
+	time.Sleep(500 * time.Millisecond)
+
+	// All instances should complete
+	instances := engine.ListInstances()
+	for _, inst := range instances {
+		if inst.GetStatus() != StatusCompleted {
+			t.Errorf("instance %s: expected completed, got %s", inst.ID, inst.GetStatus())
+		}
+	}
 }

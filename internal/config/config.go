@@ -28,6 +28,18 @@ type Config struct {
 
 	// v0.40.0: 流式输出模式 (native=真流式, simulated=非流式获取+模拟推送)
 	StreamMode string `yaml:"stream_mode,omitempty"`
+
+	// v0.41.0: Embedding 配置
+	Embedding EmbeddingConfig `yaml:"embedding,omitempty"`
+}
+
+// EmbeddingConfig 配置嵌入模型
+type EmbeddingConfig struct {
+	Provider  string `yaml:"provider,omitempty"`  // openai, ollama, mock（默认 mock）
+	APIKey    string `yaml:"api_key,omitempty"`   // OpenAI-compatible API key
+	BaseURL   string `yaml:"base_url,omitempty"`  // API base URL
+	Model     string `yaml:"model,omitempty"`     // 模型名（默认 text-embedding-3-small）
+	Dimension int    `yaml:"dimension,omitempty"` // 向量维度（0=自动检测）
 }
 
 // WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）

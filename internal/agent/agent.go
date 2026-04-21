@@ -185,13 +185,32 @@ func New(cfg *config.Manager) (*Agent, error) {
 	mockEmb := embedder.NewMockEmbedder(128)
 	embedderReg.Register("mock-128", mockEmb)
 
-	// 注册 OpenAI embedder (如果配置了 API key)
-	if c.APIKey != "" {
+	// v0.41.0: 根据 embedding 配置注册 embedder
+	embProvider := c.Embedding.Provider
+	if embProvider == "" {
+		embProvider = "mock" // 默认 mock
+	}
+
+	switch embProvider {
+	case "openai":
 		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
-			APIKey:  c.APIKey,
-			BaseURL: c.APIBase,
+			APIKey:    c.Embedding.APIKey,
+			BaseURL:   c.Embedding.BaseURL,
+			Model:     c.Embedding.Model,
+			Dimension: c.Embedding.Dimension,
 		})
-		embedderReg.Register("openai-default", openaiEmb)
+		embedderReg.Register("openai-embedding", openaiEmb)
+		embedderReg.Switch("openai-embedding")
+	case "ollama":
+		ollamaEmb := embedder.NewOllamaEmbedder(embedder.OllamaEmbedderConfig{
+			BaseURL:   c.Embedding.BaseURL,
+			Model:     c.Embedding.Model,
+			Dimension: c.Embedding.Dimension,
+		})
+		embedderReg.Register("ollama-embedding", ollamaEmb)
+		embedderReg.Switch("ollama-embedding")
+	default:
+		// mock: 已注册为默认
 	}
 
 	// 使用 active embedder (带缓存)
@@ -469,6 +488,11 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 		}
 	}
 
+	// v0.41.0: 将对话索引进 RAG
+	if a.ragManager != nil {
+		a.indexConversationTurn(userInput, response)
+	}
+
 	return response, nil
 }
 
@@ -594,6 +618,8 @@ const (
 	StreamModeNative StreamMode = "native"
 	// StreamModeSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
 	StreamModeSimulated StreamMode = "simulated"
+	// StreamModeQuiet 安静模式：真流式输出正文，但不显示思考/工具调用过程
+	StreamModeQuiet StreamMode = "quiet"
 )
 
 // DefaultStreamMode 默认流式模式
@@ -606,10 +632,15 @@ func (a *Agent) getStreamMode() StreamMode {
 	}
 	cfg := a.cfg.Get()
 	mode := StreamMode(cfg.StreamMode)
-	if mode != StreamModeNative && mode != StreamModeSimulated {
+	if mode != StreamModeNative && mode != StreamModeSimulated && mode != StreamModeQuiet {
 		return DefaultStreamMode
 	}
 	return mode
+}
+
+// GetStreamMode 公开获取当前流式模式
+func (a *Agent) GetStreamMode() StreamMode {
+	return a.getStreamMode()
 }
 
 func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
@@ -648,10 +679,16 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		loopCfg.AutoApprove = true
 
 		for i := 0; i < loopCfg.MaxIterations; i++ {
-			// 🧠 思考阶段
-			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", i+1)}
-
 			mode := a.getStreamMode()
+
+			if mode == StreamModeQuiet {
+				// === 安静模式：真流式，不显示思考/工具过程 ===
+				a.streamQuiet(ctx, events, messages, callOpts, sess, userInput)
+				return
+			}
+
+			// 🧠 思考阶段（native 和 simulated 都显示）
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", i+1)}
 
 			if mode == StreamModeNative {
 				// === 真流式路径 ===
@@ -798,7 +835,150 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	a.finalizeStream(events, sess, userInput, response)
 }
 
-// streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
+// streamQuiet 安静模式：真流式输出正文，不发送思考/工具调用事件
+// 工具调用在后台静默执行，用户只看到最终流式输出的正文
+func (a *Agent) streamQuiet(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string) {
+	loopCfg := DefaultLoopConfig()
+	loopCfg.AutoApprove = true
+
+	for i := 0; i < loopCfg.MaxIterations; i++ {
+		// 真流式调用
+		var ch <-chan provider.StreamChunk
+		var err error
+		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+			ch, err = fcProvider.ChatStreamWithOptions(ctx, messages, callOpts)
+		} else {
+			ch, err = a.provider.ChatStream(ctx, messages)
+		}
+		if err != nil {
+			// 流式失败，回退非流式
+			var resp *provider.Response
+			if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+				resp, err = fcProvider.ChatWithOptions(ctx, messages, callOpts)
+			} else {
+				resp, err = a.provider.Chat(ctx, messages)
+			}
+			if err != nil {
+				events <- ChatEvent{Type: ChatEventError, Err: err}
+				return
+			}
+			// 处理非流式响应
+			if len(resp.ToolCalls) > 0 {
+				messages = a.processToolCallsQuiet(messages, resp.ToolCalls, callOpts, sess)
+				continue
+			}
+			events <- ChatEvent{Type: ChatEventContent, Content: resp.Content}
+			a.finalizeStream(events, sess, userInput, resp.Content)
+			return
+		}
+
+		var content strings.Builder
+		var toolCallsAcc []streamToolCallAcc
+
+		for chunk := range ch {
+			if chunk.Content != "" {
+				content.WriteString(chunk.Content)
+				events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
+			}
+			if len(chunk.ToolCallDeltas) > 0 {
+				for _, dtc := range chunk.ToolCallDeltas {
+					for len(toolCallsAcc) <= dtc.Index {
+						toolCallsAcc = append(toolCallsAcc, streamToolCallAcc{})
+					}
+					acc := &toolCallsAcc[dtc.Index]
+					if dtc.ID != "" {
+						acc.id = dtc.ID
+					}
+					if dtc.Name != "" {
+						acc.name = dtc.Name
+					}
+					if dtc.Arguments != "" {
+						acc.arguments += dtc.Arguments
+					}
+				}
+			}
+			if chunk.Done {
+				break
+			}
+		}
+
+		// 有工具调用 → 静默执行 → 继续循环
+		if len(toolCallsAcc) > 0 {
+			toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
+			for _, acc := range toolCallsAcc {
+				if acc.name != "" {
+					toolCalls = append(toolCalls, provider.ToolCall{
+						ID:        acc.id,
+						Name:      acc.name,
+						Arguments: acc.arguments,
+					})
+				}
+			}
+			if len(toolCalls) > 0 {
+				messages = a.processToolCallsQuiet(messages, toolCalls, callOpts, sess)
+				continue
+			}
+		}
+
+		// 纯文本回复
+		response := content.String()
+		if response == "" {
+			// 流式没产出，回退非流式
+			var resp *provider.Response
+			if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
+				resp, err = fcProvider.ChatWithOptions(ctx, messages, callOpts)
+			} else {
+				resp, err = a.provider.Chat(ctx, messages)
+			}
+			if err != nil {
+				events <- ChatEvent{Type: ChatEventError, Err: err}
+				return
+			}
+			if len(resp.ToolCalls) > 0 {
+				messages = a.processToolCallsQuiet(messages, resp.ToolCalls, callOpts, sess)
+				continue
+			}
+			response = resp.Content
+			events <- ChatEvent{Type: ChatEventContent, Content: response}
+		}
+
+		a.finalizeStream(events, sess, userInput, response)
+		return
+	}
+
+	events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+}
+
+// processToolCallsQuiet 静默处理工具调用（不发送事件），返回更新后的消息列表
+func (a *Agent) processToolCallsQuiet(messages []provider.Message, toolCalls []provider.ToolCall, callOpts provider.CallOptions, sess *session.Session) []provider.Message {
+	var contentBuf strings.Builder
+	for _, tc := range toolCalls {
+		contentBuf.WriteString(tc.Name)
+		contentBuf.WriteString(" ")
+	}
+
+	messages = append(messages, provider.Message{
+		Role:      "assistant",
+		Content:   contentBuf.String(),
+		ToolCalls: toolCalls,
+	})
+
+	for _, tc := range toolCalls {
+		toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+		if err != nil {
+			toolResult = fmt.Sprintf("Error: %v", err)
+		}
+
+		messages = append(messages, provider.Message{
+			Role:       "tool",
+			Content:    toolResult,
+			ToolCallID: tc.ID,
+			Name:       tc.Name,
+		})
+	}
+
+	return a.fitContextWindow(messages)
+}
 func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string) {
 	var resp *provider.Response
 	var err error

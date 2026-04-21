@@ -2,7 +2,10 @@ package embedder
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 )
@@ -78,7 +81,41 @@ func TestMockEmbedderWithModel(t *testing.T) {
 }
 
 func TestOpenAIEmbedder(t *testing.T) {
-	e := NewOpenAIEmbedder(OpenAIEmbedderConfig{})
+	// Start a mock embedding server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		dim := 1536
+		data := make([]map[string]interface{}, len(req.Input))
+		for i := range req.Input {
+			vec := make([]float64, dim)
+			for j := range vec {
+				vec[j] = float64(j%100) / 100.0
+			}
+			data[i] = map[string]interface{}{
+				"object":    "embedding",
+				"index":     i,
+				"embedding": vec,
+			}
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data":   data,
+			"model":  "text-embedding-3-small",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	e := NewOpenAIEmbedder(OpenAIEmbedderConfig{BaseURL: server.URL + "/v1"})
 	if e.Name() != "openai" {
 		t.Errorf("Name() = %q, want %q", e.Name(), "openai")
 	}

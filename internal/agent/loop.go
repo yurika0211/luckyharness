@@ -248,6 +248,7 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 }
 
 // indexConversationTurn 将一轮对话索引进 RAG（异步执行）
+// v0.41.0: 每轮对话使用唯一 source ID，避免覆盖历史对话
 func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 	go func() {
 		// 组合对话内容作为索引文本
@@ -256,14 +257,19 @@ func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
 		if len(title) > 80 {
 			title = title[:80] + "..."
 		}
-		source := "conversation"
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// v0.41.0: 使用时间戳生成唯一 source，每轮对话独立存储
+		source := "conv:" + time.Now().Format("20060102-150405.000")
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		_ = ctx // context used by IndexText internally via embedder
 
-		if _, err := a.ragManager.IndexText(source, title, content); err != nil {
-			// 索引失败不影响主流程，静默忽略
-			_ = ctx.Err()
+		if _, err := a.ragManager.IndexTextWithContext(ctx, source, title, content); err != nil {
+			// v0.41.0: 记录索引错误，方便排查
+			fmt.Printf("[rag] indexConversationTurn error: %v\n", err)
+		} else {
+			fmt.Printf("[rag] indexed conversation turn: %s\n", source)
 		}
 	}()
 }
@@ -315,6 +321,12 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 			}
 
 			events <- StreamEvent{Type: EventDone, Content: content.String()}
+
+			// v0.41.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
+			if a.ragManager != nil {
+				a.indexConversationTurn(userInput, content.String())
+			}
+
 			return
 		}
 	}()

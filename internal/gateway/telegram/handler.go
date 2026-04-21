@@ -218,7 +218,7 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	return h.handleChatSync(ctx, msg, text, sessionID)
 }
 
-// handleChatStream 流式对话处理（Telegram 专用）
+// handleChatStream 流式对话处理，通过中间件控制渲染方式
 func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, text, sessionID string) error {
 	// 启动流式对话
 	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
@@ -236,48 +236,54 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		}
 	}
 
+	// 根据配置选择中间件
+	mw := h.createMiddleware(sender, msg.Chat.ID)
+	defer mw.Close()
+
 	var finalContent strings.Builder
-	toolCallCount := 0
 
 	for evt := range events {
-		switch evt.Type {
-		case agent.ChatEventThinking:
-			// 思考状态作为消息前缀展示，不清空已有内容
-			sender.SetThinking(evt.Content)
+		data := gateway.ChatEventData{
+			Content: evt.Content,
+			Name:    evt.Name,
+			Args:    evt.Args,
+			Result:  evt.Result,
+			Err:     evt.Err,
+		}
 
-		case agent.ChatEventToolCall:
-			toolCallCount++
-			// 工具调用作为消息前缀展示
-			sender.SetToolCall(evt.Name, evt.Args)
-
-		case agent.ChatEventToolResult:
-			// 工具结果展示后切回思考状态
-			sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
-
-		case agent.ChatEventContent:
-			// 内容流式追加
+		// 累积最终内容
+		if evt.Type == agent.ChatEventContent {
 			finalContent.WriteString(evt.Content)
-			sender.Append(evt.Content)
+		}
+		if evt.Type == agent.ChatEventDone && finalContent.Len() == 0 {
+			finalContent.WriteString(evt.Content)
+			data.Content = finalContent.String()
+		}
 
-		case agent.ChatEventDone:
-			if finalContent.Len() == 0 {
-				finalContent.WriteString(evt.Content)
-			}
-			// 最终结果替换整个消息
-			sender.SetResult(finalContent.String())
-			sender.Finish()
-
-		case agent.ChatEventError:
-			errMsg := evt.Err.Error()
-			if len(errMsg) > 200 {
-				errMsg = errMsg[:197] + "..."
-			}
-			sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
-			sender.Finish()
+		if !mw.Process(int(evt.Type), data) {
+			break
 		}
 	}
 
 	return nil
+}
+
+// createMiddleware 根据配置创建流式中间件
+func (h *Handler) createMiddleware(sender gateway.StreamSender, chatID string) gateway.StreamMiddleware {
+	mode := h.agent.GetStreamMode()
+
+	switch mode {
+	case agent.StreamModeQuiet:
+		return gateway.NewQuietMiddleware(sender)
+	case agent.StreamModeSimulated:
+		// simulated 也用 inline，只是 agent 层面是分段推送
+		return gateway.NewInlineMiddleware(sender)
+	case agent.StreamModeNative:
+		// native 默认用 separate：思考/工具调用单独发消息
+		return gateway.NewSeparateMiddleware(sender, h.adapter, chatID)
+	default:
+		return gateway.NewInlineMiddleware(sender)
+	}
 }
 
 // truncateString 截断字符串

@@ -26,6 +26,7 @@
 | v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
 | v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
+| v0.38.0 | Workflow Engine v2 | 🟡 In Progress | 条件分支 + 输出传递 + YAML 定义 + 持久化 + 事件回调 |
 
 ---
 
@@ -124,6 +125,17 @@
 - [x] **SF-3**: SearchCache + 并发搜索 — TTL 缓存 + 并发多源 + 合并去重 + 多源标注
 - [x] **SF-4**: SearchConfig + 环境变量覆盖 — LH_SEARCH_* + BuildEngines/BuildFetchEngines + Manager
 - [x] **SF-5**: 测试 — 35 个单元测试（含 race detection + 并发安全）
+
+---
+
+## 🟡 In Progress — v0.38.0 Workflow Engine v2
+
+### 子任务
+
+- [ ] **WF-1**: 条件分支 + 输出传递 — Condition 字段 + 上游输出引用 + 表达式求值
+- [ ] **WF-2**: YAML 定义 + 持久化 — YAML 加载/保存 + JSON 文件存储 + 实例恢复
+- [ ] **WF-3**: 事件回调 + Hooks — OnTaskStart/OnTaskComplete/OnWorkflowComplete + 回调链
+- [ ] **WF-4**: 测试 — 每个子模块单元测试
 
 ---
 

@@ -59,6 +59,17 @@ func NewSQLiteStore(dim int, dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("init schema: %w", err)
 	}
 
+	// v0.41.0: 检测维度变化，自动重建向量数据
+	if err := s.migrateDimensionIfNeeded(dim); err != nil {
+		// 维度迁移失败不阻止启动，但记录错误
+		_ = err
+	}
+
+	// Store dimension after migration check
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO store_meta (key, value) VALUES ('dimension', ?)`, fmt.Sprintf("%d", s.dim)); err != nil {
+		return nil, fmt.Errorf("store dimension: %w", err)
+	}
+
 	return s, nil
 }
 
@@ -102,17 +113,43 @@ func (s *SQLiteStore) initSchema() error {
 		}
 	}
 
-	// Store dimension
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO store_meta (key, value) VALUES ('dimension', ?)`, fmt.Sprintf("%d", s.dim))
-	if err != nil {
-		return fmt.Errorf("store dimension: %w", err)
-	}
+	// Store dimension — moved after migrateDimensionIfNeeded in NewSQLiteStore
+	// (dimension is stored in migrateDimensionIfNeeded to handle migration correctly)
 
 	return nil
 }
 
 // Dimension returns the expected vector dimension.
 func (s *SQLiteStore) Dimension() int { return s.dim }
+
+// migrateDimensionIfNeeded 检测向量维度变化，清除不兼容的旧向量数据
+// v0.41.0: 当 embedder 维度变化时（如 mock-128 → real-384），旧向量无法与新向量做余弦相似度
+func (s *SQLiteStore) migrateDimensionIfNeeded(newDim int) error {
+	var storedDim string
+	err := s.db.QueryRow(`SELECT value FROM store_meta WHERE key = 'dimension'`).Scan(&storedDim)
+	if err != nil {
+		// 没有记录，说明是新建的，无需迁移
+		return nil
+	}
+
+	if storedDim == fmt.Sprintf("%d", newDim) {
+		return nil // 维度一致，无需迁移
+	}
+
+	// 维度变化，清除所有向量数据（保留 documents/chunks 元数据，后续可重新索引）
+	_, err = s.db.Exec(`DELETE FROM vectors`)
+	if err != nil {
+		return fmt.Errorf("clear vectors on dimension change: %w", err)
+	}
+
+	// 更新维度记录
+	_, err = s.db.Exec(`INSERT OR REPLACE INTO store_meta (key, value) VALUES ('dimension', ?)`, fmt.Sprintf("%d", newDim))
+	if err != nil {
+		return fmt.Errorf("update dimension meta: %w", err)
+	}
+
+	return nil
+}
 
 // Len returns the number of stored vectors.
 func (s *SQLiteStore) Len() int {

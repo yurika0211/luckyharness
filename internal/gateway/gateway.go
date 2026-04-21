@@ -53,3 +53,22 @@ type StreamSender interface {
 	// MessageID returns the platform message ID (for reply chaining).
 	MessageID() string
 }
+
+// StreamMiddleware 接收 ChatEvent 流，决定如何渲染到平台。
+// 不同实现控制思考/工具调用的展示方式。
+type StreamMiddleware interface {
+	// Process 处理一个事件，返回 true 表示继续，false 表示流结束
+	Process(eventType int, event ChatEventData) bool
+
+	// Close 结束中间件，清理资源
+	Close()
+}
+
+// ChatEventData 是 ChatEvent 的中间件友好格式
+type ChatEventData struct {
+	Content string // 文本内容
+	Name    string // 工具名
+	Args    string // 工具参数
+	Result  string // 工具结果
+	Err     error  // 错误
+}

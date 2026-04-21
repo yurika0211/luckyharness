@@ -2,6 +2,9 @@ package rag
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -68,10 +71,40 @@ func TestMockEmbedderBatch(t *testing.T) {
 }
 
 func TestOpenAIEmbedder(t *testing.T) {
+	// Start a mock embedding server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		dim := 256
+		data := make([]map[string]interface{}, len(req.Input))
+		for i := range req.Input {
+			vec := make([]float64, dim)
+			for j := range vec {
+				vec[j] = float64(j%100) / 100.0
+			}
+			data[i] = map[string]interface{}{
+				"object":    "embedding",
+				"index":     i,
+				"embedding": vec,
+			}
+		}
+		resp := map[string]interface{}{
+			"object": "list",
+			"data":   data,
+			"model":  "text-embedding-3-small",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
 	cfg := embedder.OpenAIEmbedderConfig{
 		APIKey:    "test-key",
 		Model:     "text-embedding-3-small",
 		Dimension: 256,
+		BaseURL:   server.URL + "/v1",
 	}
 	e := NewOpenAIEmbedder(cfg)
 
@@ -82,7 +115,6 @@ func TestOpenAIEmbedder(t *testing.T) {
 		t.Errorf("expected dimension 256, got %d", e.Dimension())
 	}
 
-	// Without real API key, it falls back to mock
 	vec, err := e.Embed(context.Background(), "test")
 	if err != nil {
 		t.Fatal(err)

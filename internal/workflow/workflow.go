@@ -1,16 +1,25 @@
 // Package workflow provides DAG-based workflow orchestration for LuckyHarness.
-// It supports task dependencies, parallel execution, and state management.
+// It supports task dependencies, parallel execution, conditional branching,
+// output passing, YAML definitions, persistence, and event callbacks.
 package workflow
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"gopkg.in/yaml.v3"
 )
+
+// ---------------------------------------------------------------------------
+// Core Types
+// ---------------------------------------------------------------------------
 
 // TaskStatus represents the current state of a task.
 type TaskStatus string
@@ -23,14 +32,53 @@ const (
 	StatusSkipped   TaskStatus = "skipped"
 )
 
+// Condition defines when a task should execute based on upstream results.
+type Condition struct {
+	// TaskID is the upstream task to check.
+	TaskID string `json:"taskId,omitempty" yaml:"taskId,omitempty"`
+	// Status matches the task status (completed, failed, etc.)
+	Status string `json:"status,omitempty" yaml:"status,omitempty"`
+	// Output matches an output field value (simple key=value)
+	Output string `json:"output,omitempty" yaml:"output,omitempty"`
+}
+
+// Eval evaluates the condition against a task result.
+func (c *Condition) Eval(result *TaskResult) bool {
+	if c.TaskID == "" {
+		return true
+	}
+	if result == nil {
+		return false
+	}
+	if c.Status != "" && string(result.Status) != c.Status {
+		return false
+	}
+	if c.Output != "" {
+		parts := strings.SplitN(c.Output, "=", 2)
+		if len(parts) != 2 {
+			return false
+		}
+		key, expected := parts[0], parts[1]
+		// Check output map
+		if m, ok := result.Output.(map[string]interface{}); ok {
+			if val, found := m[key]; found {
+				return fmt.Sprintf("%v", val) == expected
+			}
+		}
+		return false
+	}
+	return true
+}
+
 // Task represents a single unit of work in a workflow.
 type Task struct {
 	ID          string                 `json:"id" yaml:"id"`
 	Name        string                 `json:"name" yaml:"name"`
 	Description string                 `json:"description,omitempty" yaml:"description,omitempty"`
-	Action      string                 `json:"action" yaml:"action"` // Action type: "http", "script", "tool", "agent"
+	Action      string                 `json:"action" yaml:"action"` // "http", "script", "tool", "agent"
 	Params      map[string]interface{} `json:"params,omitempty" yaml:"params,omitempty"`
 	DependsOn   []string               `json:"dependsOn,omitempty" yaml:"dependsOn,omitempty"`
+	Condition   *Condition             `json:"condition,omitempty" yaml:"condition,omitempty"`
 	Timeout     time.Duration          `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	RetryCount  int                    `json:"retryCount,omitempty" yaml:"retryCount,omitempty"`
 	RetryDelay  time.Duration          `json:"retryDelay,omitempty" yaml:"retryDelay,omitempty"`
@@ -38,38 +86,42 @@ type Task struct {
 
 // TaskResult contains the result of a task execution.
 type TaskResult struct {
-	TaskID    string      `json:"taskId"`
-	Status    TaskStatus  `json:"status"`
-	Output    interface{} `json:"output,omitempty"`
-	Error     string      `json:"error,omitempty"`
-	StartTime time.Time   `json:"startTime"`
-	EndTime   time.Time   `json:"endTime"`
-	Duration  time.Duration `json:"duration"`
+	TaskID    string         `json:"taskId"`
+	Status    TaskStatus     `json:"status"`
+	Output    interface{}    `json:"output,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	StartTime time.Time      `json:"startTime"`
+	EndTime   time.Time      `json:"endTime"`
+	Duration  time.Duration  `json:"duration"`
 }
 
 // Workflow represents a DAG-based workflow definition.
 type Workflow struct {
-	ID          string  `json:"id" yaml:"id"`
-	Name        string  `json:"name" yaml:"name"`
-	Description string  `json:"description,omitempty" yaml:"description,omitempty"`
-	Tasks       []*Task `json:"tasks" yaml:"tasks"`
-	Version     string  `json:"version,omitempty" yaml:"version,omitempty"`
+	ID          string    `json:"id" yaml:"id"`
+	Name        string    `json:"name" yaml:"name"`
+	Description string    `json:"description,omitempty" yaml:"description,omitempty"`
+	Tasks       []*Task   `json:"tasks" yaml:"tasks"`
+	Version     string    `json:"version,omitempty" yaml:"version,omitempty"`
 	CreatedAt   time.Time `json:"createdAt" yaml:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt" yaml:"updatedAt"`
 }
 
 // WorkflowInstance represents a running instance of a workflow.
 type WorkflowInstance struct {
-	ID          string                 `json:"id"`
-	WorkflowID  string                 `json:"workflowId"`
-	Status      TaskStatus             `json:"status"`
-	Results     map[string]*TaskResult `json:"results"`
-	StartTime   time.Time              `json:"startTime"`
-	EndTime     time.Time              `json:"endTime,omitempty"`
-	Context     context.Context        `json:"-"`
-	CancelFunc  context.CancelFunc     `json:"-"`
-	mu          sync.RWMutex
+	ID         string                 `json:"id"`
+	WorkflowID string                 `json:"workflowId"`
+	Status     TaskStatus             `json:"status"`
+	Results    map[string]*TaskResult `json:"results"`
+	StartTime  time.Time              `json:"startTime"`
+	EndTime    time.Time              `json:"endTime,omitempty"`
+	Context    context.Context        `json:"-"`
+	CancelFunc context.CancelFunc     `json:"-"`
+	mu         sync.RWMutex
 }
+
+// ---------------------------------------------------------------------------
+// Constructors
+// ---------------------------------------------------------------------------
 
 // NewWorkflow creates a new workflow with the given tasks.
 func NewWorkflow(name string, tasks []*Task) *Workflow {
@@ -96,17 +148,19 @@ func NewWorkflowInstance(workflowID string) *WorkflowInstance {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Validation & DAG
+// ---------------------------------------------------------------------------
+
 // Validate checks if the workflow is valid.
 func (w *Workflow) Validate() error {
 	if w.Name == "" {
 		return fmt.Errorf("workflow name is required")
 	}
-
 	if len(w.Tasks) == 0 {
 		return fmt.Errorf("workflow must have at least one task")
 	}
 
-	// Check for duplicate task IDs
 	taskIDs := make(map[string]bool)
 	for _, task := range w.Tasks {
 		if task.ID == "" {
@@ -116,16 +170,20 @@ func (w *Workflow) Validate() error {
 			return fmt.Errorf("duplicate task ID: %s", task.ID)
 		}
 		taskIDs[task.ID] = true
-
 		if task.Name == "" {
 			return fmt.Errorf("task %s: name is required", task.ID)
 		}
 		if task.Action == "" {
 			return fmt.Errorf("task %s: action is required", task.ID)
 		}
+		// Validate condition references
+		if task.Condition != nil && task.Condition.TaskID != "" {
+			if !taskIDs[task.Condition.TaskID] {
+				return fmt.Errorf("task %s: condition references non-existent task %s", task.ID, task.Condition.TaskID)
+			}
+		}
 	}
 
-	// Check for circular dependencies and invalid references
 	for _, task := range w.Tasks {
 		for _, dep := range task.DependsOn {
 			if !taskIDs[dep] {
@@ -137,11 +195,9 @@ func (w *Workflow) Validate() error {
 		}
 	}
 
-	// Check for cycles
 	if err := w.detectCycle(); err != nil {
 		return err
 	}
-
 	return nil
 }
 
@@ -149,7 +205,6 @@ func (w *Workflow) Validate() error {
 func (w *Workflow) detectCycle() error {
 	visited := make(map[string]bool)
 	recStack := make(map[string]bool)
-
 	taskMap := make(map[string]*Task)
 	for _, task := range w.Tasks {
 		taskMap[task.ID] = task
@@ -159,7 +214,6 @@ func (w *Workflow) detectCycle() error {
 	dfs = func(taskID string) error {
 		visited[taskID] = true
 		recStack[taskID] = true
-
 		task := taskMap[taskID]
 		for _, dep := range task.DependsOn {
 			if !visited[dep] {
@@ -170,7 +224,6 @@ func (w *Workflow) detectCycle() error {
 				return fmt.Errorf("cycle detected: task %s -> %s", taskID, dep)
 			}
 		}
-
 		recStack[taskID] = false
 		return nil
 	}
@@ -182,28 +235,21 @@ func (w *Workflow) detectCycle() error {
 			}
 		}
 	}
-
 	return nil
 }
 
 // GetExecutionOrder returns tasks in topological order.
 func (w *Workflow) GetExecutionOrder() ([]string, error) {
-	taskMap := make(map[string]*Task)
 	inDegree := make(map[string]int)
-
 	for _, task := range w.Tasks {
-		taskMap[task.ID] = task
 		inDegree[task.ID] = 0
 	}
-
-	// Calculate in-degrees
 	for _, task := range w.Tasks {
 		for range task.DependsOn {
 			inDegree[task.ID]++
 		}
 	}
 
-	// Kahn's algorithm
 	queue := make([]string, 0)
 	for taskID, degree := range inDegree {
 		if degree == 0 {
@@ -216,8 +262,6 @@ func (w *Workflow) GetExecutionOrder() ([]string, error) {
 		taskID := queue[0]
 		queue = queue[1:]
 		result = append(result, taskID)
-
-		// Find tasks that depend on this task
 		for _, task := range w.Tasks {
 			for _, dep := range task.DependsOn {
 				if dep == taskID {
@@ -233,7 +277,6 @@ func (w *Workflow) GetExecutionOrder() ([]string, error) {
 	if len(result) != len(w.Tasks) {
 		return nil, fmt.Errorf("cycle detected in workflow")
 	}
-
 	return result, nil
 }
 
@@ -244,7 +287,6 @@ func (w *Workflow) GetReadyTasks(completed map[string]bool) []*Task {
 		if completed[task.ID] {
 			continue
 		}
-
 		allDepsCompleted := true
 		for _, dep := range task.DependsOn {
 			if !completed[dep] {
@@ -252,13 +294,16 @@ func (w *Workflow) GetReadyTasks(completed map[string]bool) []*Task {
 				break
 			}
 		}
-
 		if allDepsCompleted {
 			ready = append(ready, task)
 		}
 	}
 	return ready
 }
+
+// ---------------------------------------------------------------------------
+// Serialization
+// ---------------------------------------------------------------------------
 
 // ToJSON serializes the workflow to JSON.
 func (w *Workflow) ToJSON() ([]byte, error) {
@@ -273,6 +318,64 @@ func FromJSON(data []byte) (*Workflow, error) {
 	}
 	return &workflow, nil
 }
+
+// ToYAML serializes the workflow to YAML.
+func (w *Workflow) ToYAML() ([]byte, error) {
+	return yaml.Marshal(w)
+}
+
+// FromYAML deserializes a workflow from YAML.
+func FromYAML(data []byte) (*Workflow, error) {
+	var workflow Workflow
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		return nil, fmt.Errorf("failed to parse workflow YAML: %w", err)
+	}
+	return &workflow, nil
+}
+
+// LoadFromFile loads a workflow from a JSON or YAML file.
+func LoadFromFile(path string) (*Workflow, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read workflow file: %w", err)
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".yaml", ".yml":
+		return FromYAML(data)
+	case ".json":
+		return FromJSON(data)
+	default:
+		return nil, fmt.Errorf("unsupported workflow file format: %s", ext)
+	}
+}
+
+// SaveToFile saves a workflow to a JSON or YAML file.
+func SaveToFile(w *Workflow, path string) error {
+	var data []byte
+	var err error
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".yaml", ".yml":
+		data, err = w.ToYAML()
+	case ".json":
+		data, err = w.ToJSON()
+	default:
+		return fmt.Errorf("unsupported workflow file format: %s", ext)
+	}
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// ---------------------------------------------------------------------------
+// Instance Helpers
+// ---------------------------------------------------------------------------
 
 // SetStatus updates the instance status safely.
 func (i *WorkflowInstance) SetStatus(status TaskStatus) {
@@ -307,13 +410,11 @@ func (i *WorkflowInstance) GetResult(taskID string) (*TaskResult, bool) {
 func (i *WorkflowInstance) Snapshot() *WorkflowInstance {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
-
 	results := make(map[string]*TaskResult, len(i.Results))
 	for k, v := range i.Results {
 		resultCopy := *v
 		results[k] = &resultCopy
 	}
-
 	return &WorkflowInstance{
 		ID:         i.ID,
 		WorkflowID: i.WorkflowID,
@@ -346,4 +447,159 @@ func (i *WorkflowInstance) Cancel() {
 		i.CancelFunc()
 	}
 	i.Status = StatusFailed
+}
+
+// ---------------------------------------------------------------------------
+// WF-2: Persistence
+// ---------------------------------------------------------------------------
+
+// FileStore persists workflow definitions and instances to disk.
+type FileStore struct {
+	baseDir string
+	mu      sync.RWMutex
+}
+
+// NewFileStore creates a file-based workflow store.
+func NewFileStore(baseDir string) *FileStore {
+	return &FileStore{baseDir: baseDir}
+}
+
+// SaveWorkflow persists a workflow definition.
+func (s *FileStore) SaveWorkflow(w *Workflow) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.baseDir, "workflows", w.ID+".json")
+	return SaveToFile(w, path)
+}
+
+// LoadWorkflow loads a workflow definition by ID.
+func (s *FileStore) LoadWorkflow(id string) (*Workflow, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	path := filepath.Join(s.baseDir, "workflows", id+".json")
+	return LoadFromFile(path)
+}
+
+// SaveInstance persists a workflow instance.
+func (s *FileStore) SaveInstance(inst *WorkflowInstance) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snap := inst.Snapshot()
+	data, err := json.MarshalIndent(snap, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(s.baseDir, "instances", inst.ID+".json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// LoadInstance loads a workflow instance by ID.
+func (s *FileStore) LoadInstance(id string) (*WorkflowInstance, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	path := filepath.Join(s.baseDir, "instances", id+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var inst WorkflowInstance
+	if err := json.Unmarshal(data, &inst); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	inst.Context = ctx
+	inst.CancelFunc = cancel
+	return &inst, nil
+}
+
+// ListWorkflows lists all persisted workflow IDs.
+func (s *FileStore) ListWorkflows() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	dir := filepath.Join(s.baseDir, "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	ids := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			ids = append(ids, strings.TrimSuffix(e.Name(), ".json"))
+		}
+	}
+	return ids, nil
+}
+
+// ---------------------------------------------------------------------------
+// WF-3: Event Callbacks
+// ---------------------------------------------------------------------------
+
+// EventType identifies a workflow event.
+type EventType string
+
+const (
+	EventWorkflowStart   EventType = "workflow_start"
+	EventWorkflowComplete EventType = "workflow_complete"
+	EventTaskStart       EventType = "task_start"
+	EventTaskComplete    EventType = "task_complete"
+	EventTaskFailed      EventType = "task_failed"
+	EventTaskSkipped     EventType = "task_skipped"
+)
+
+// Event represents a workflow lifecycle event.
+type Event struct {
+	Type       EventType     `json:"type"`
+	WorkflowID string        `json:"workflowId"`
+	InstanceID string        `json:"instanceId"`
+	TaskID     string        `json:"taskId,omitempty"`
+	TaskName   string        `json:"taskName,omitempty"`
+	Status     TaskStatus    `json:"status,omitempty"`
+	Result     *TaskResult   `json:"result,omitempty"`
+	Timestamp  time.Time     `json:"timestamp"`
+}
+
+// EventHandler processes workflow events.
+type EventHandler func(evt Event)
+
+// EventEmitter manages event handlers.
+type EventEmitter struct {
+	handlers []EventHandler
+	mu       sync.RWMutex
+}
+
+// NewEventEmitter creates a new event emitter.
+func NewEventEmitter() *EventEmitter {
+	return &EventEmitter{}
+}
+
+// On registers an event handler.
+func (em *EventEmitter) On(handler EventHandler) {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	em.handlers = append(em.handlers, handler)
+}
+
+// Emit sends an event to all registered handlers.
+func (em *EventEmitter) Emit(evt Event) {
+	em.mu.RLock()
+	handlers := make([]EventHandler, len(em.handlers))
+	copy(handlers, em.handlers)
+	em.mu.RUnlock()
+
+	for _, h := range handlers {
+		h(evt)
+	}
+}
+
+// Len returns the number of registered handlers.
+func (em *EventEmitter) Len() int {
+	em.mu.RLock()
+	defer em.mu.RUnlock()
+	return len(em.handlers)
 }

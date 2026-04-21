@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -85,6 +86,12 @@ func (idx *Indexer) IndexFile(path string) (*Document, error) {
 
 // IndexText indexes raw text content with a given source path and title.
 func (idx *Indexer) IndexText(source, title, content string) (*Document, error) {
+	return idx.IndexTextWithContext(context.Background(), source, title, content)
+}
+
+// IndexTextWithContext indexes raw text content with context support.
+// v0.41.0: Added context parameter for embedding API calls.
+func (idx *Indexer) IndexTextWithContext(ctx context.Context, source, title, content string) (*Document, error) {
 	docID := docID(source)
 
 	// Remove old chunks if re-indexing
@@ -116,7 +123,7 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	for i, chunkText := range rawChunks {
 		chunkID := fmt.Sprintf("%s#%d", docID, i)
 
-		vec, err := idx.embedder.Embed(nil, chunkText)
+		vec, err := idx.embedder.Embed(ctx, chunkText)
 		if err != nil {
 			return nil, fmt.Errorf("embed chunk %s: %w", chunkID, err)
 		}

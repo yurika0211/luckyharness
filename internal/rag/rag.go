@@ -131,7 +131,13 @@ func (m *RAGManager) IndexFile(path string) (*Document, error) {
 
 // IndexText indexes raw text content.
 func (m *RAGManager) IndexText(source, title, content string) (*Document, error) {
-	return m.indexer.IndexText(source, title, content)
+	return m.IndexTextWithContext(context.Background(), source, title, content)
+}
+
+// IndexTextWithContext indexes raw text content with context support.
+// v0.41.0: Added context parameter for embedding API calls.
+func (m *RAGManager) IndexTextWithContext(ctx context.Context, source, title, content string) (*Document, error) {
+	return m.indexer.IndexTextWithContext(ctx, source, title, content)
 }
 
 // IndexDirectory indexes all .md/.txt files in a directory.

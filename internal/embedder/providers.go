@@ -1,9 +1,15 @@
 package embedder
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"sort"
+	"strings"
 )
 
 // MockEmbedder is a deterministic hash-based embedder for testing.
@@ -136,11 +142,67 @@ func (o *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float64, err
 }
 
 func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
-	// TODO: implement real HTTP call to OpenAI embeddings API
-	// POST {baseURL}/embeddings with model + input array
-	// For now, fall back to mock vectors so the pipeline works without API keys.
-	mock := NewMockEmbedder(o.dimension)
-	return mock.EmbedBatch(ctx, texts)
+	// v0.41.0: Real HTTP call to OpenAI-compatible embeddings API
+	reqBody := struct {
+		Model string   `json:"model"`
+		Input []string `json:"input"`
+	}{
+		Model: o.model,
+		Input: texts,
+	}
+
+	jsonData, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("marshal embedding request: %w", err)
+	}
+
+	endpoint := strings.TrimRight(o.baseURL, "/") + "/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("create embedding request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if o.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+o.apiKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("embedding API call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("embedding API error %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode embedding response: %w", err)
+	}
+
+	if len(result.Data) == 0 {
+		return nil, fmt.Errorf("no embeddings returned")
+	}
+
+	// Sort by index to ensure order matches input
+	sort.Slice(result.Data, func(i, j int) bool {
+		return result.Data[i].Index < result.Data[j].Index
+	})
+
+	vectors := make([][]float64, len(result.Data))
+	for i, d := range result.Data {
+		vectors[i] = d.Embedding
+	}
+
+	return vectors, nil
 }
 
 // OllamaEmbedder calls Ollama's embedding API.
