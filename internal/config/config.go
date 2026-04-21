@@ -28,6 +28,16 @@ type Config struct {
 
 	// v0.40.0: 流式输出模式 (native=真流式, simulated=非流式获取+模拟推送)
 	StreamMode string `yaml:"stream_mode,omitempty"`
+
+	// v0.43.0: 记忆系统配置
+	Memory MemoryConfig `yaml:"memory,omitempty"`
+}
+
+// MemoryConfig 记忆系统配置
+type MemoryConfig struct {
+	ShortTermMaxTurns  int `yaml:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
+	MidTermExpireDays  int `yaml:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
+	MidTermMaxSummaries int `yaml:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
 }
 
 // WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）
@@ -57,6 +67,11 @@ func DefaultConfig() *Config {
 		MaxTokens:   4096,
 		Temperature: 0.7,
 		Extra:       make(map[string]string),
+		Memory: MemoryConfig{
+			ShortTermMaxTurns:   10,
+			MidTermExpireDays:   90,
+			MidTermMaxSummaries: 100,
+		},
 	}
 }
 

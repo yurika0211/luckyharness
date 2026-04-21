@@ -36,6 +36,8 @@ type Agent struct {
 	catalog      *provider.ModelCatalog  // 模型目录
 	tokenStore   *provider.TokenStore    // token 存储
 	memory       *memory.Store
+	shortTerm    *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
+	midTerm      *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
 	sessions     *session.Manager
 	tools        *tool.Registry
 	gateway      *tool.Gateway          // 统一工具网关
@@ -138,6 +140,23 @@ func New(cfg *config.Manager) (*Agent, error) {
 	mem, err := memory.NewStore(cfg.HomeDir() + "/memory")
 	if err != nil {
 		return nil, fmt.Errorf("init memory: %w", err)
+	}
+
+	// v0.43.0: 创建短期记忆滑动窗口
+	shortTermMaxTurns := c.Memory.ShortTermMaxTurns
+	if shortTermMaxTurns <= 0 {
+		shortTermMaxTurns = 10
+	}
+	shortTerm := memory.NewShortTermBuffer(shortTermMaxTurns)
+
+	// v0.43.0: 创建中期会话摘要存储
+	midTermMaxSummaries := c.Memory.MidTermMaxSummaries
+	if midTermMaxSummaries <= 0 {
+		midTermMaxSummaries = 100
+	}
+	midTerm, err := memory.NewMidTermStore(cfg.HomeDir()+"/memory/midterm", midTermMaxSummaries)
+	if err != nil {
+		return nil, fmt.Errorf("init midterm store: %w", err)
 	}
 
 	// 创建会话管理器
@@ -361,6 +380,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		catalog:    catalog,
 		tokenStore: tokenStore,
 		memory:     mem,
+		shortTerm:  shortTerm,
+		midTerm:    midTerm,
 		sessions:   sessions,
 		tools:      tools,
 		gateway:    toolGateway,
@@ -461,6 +482,14 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 	if a.chatCount%20 == 0 {
 		a.autoSummarize()
 	}
+	// v0.43.0: 每 50 轮清理过期中期记忆
+	if a.chatCount%50 == 0 && a.midTerm != nil {
+		expireDays := a.cfg.Get().Memory.MidTermExpireDays
+		if expireDays <= 0 {
+			expireDays = 90
+		}
+		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
+	}
 
 	// v0.36.0: 记录指标
 	a.metrics.RecordChatRequest()
@@ -537,6 +566,15 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 	// 每 20 轮对话触发自动摘要
 	if a.chatCount%20 == 0 {
 		a.autoSummarize()
+	}
+
+	// v0.43.0: 每 50 轮清理过期中期记忆
+	if a.chatCount%50 == 0 && a.midTerm != nil {
+		expireDays := a.cfg.Get().Memory.MidTermExpireDays
+		if expireDays <= 0 {
+			expireDays = 90
+		}
+		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
 	}
 
 	return response, nil
@@ -891,6 +929,15 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, u
 		a.autoSummarize()
 	}
 
+	// v0.43.0: 每 50 轮清理过期中期记忆
+	if a.chatCount%50 == 0 && a.midTerm != nil {
+		expireDays := a.cfg.Get().Memory.MidTermExpireDays
+		if expireDays <= 0 {
+			expireDays = 90
+		}
+		a.midTerm.ExpireOldSummaries(time.Duration(expireDays) * 24 * time.Hour)
+	}
+
 	if a.ragManager != nil {
 		a.indexConversationTurn(userInput, response)
 	}
@@ -952,30 +999,41 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 		memCtx.WriteString("\n")
 	}
 
-	// 中期记忆：按权重取 top 10
-	mediums := a.memory.ByTier(memory.TierMedium)
-	if len(mediums) > 0 {
-		memCtx.WriteString("[Working Memory — Medium-term]\n")
-		limit := 10
-		if len(mediums) < limit {
-			limit = len(mediums)
+	// v0.43.0: 中期记忆 — 从 MidTermStore 检索相关历史会话摘要
+	// 如果当前有用户输入，用它检索；否则取最近 3 条
+	if a.midTerm != nil {
+		recentSummaries := a.midTerm.ListAll()
+		limit := 3
+		if len(recentSummaries) < limit {
+			limit = len(recentSummaries)
 		}
-		for i := 0; i < limit; i++ {
-			memCtx.WriteString("- " + mediums[i].Content + "\n")
+		if limit > 0 {
+			memCtx.WriteString("[Session History — Mid-term]\n")
+			for i := 0; i < limit; i++ {
+				sm := recentSummaries[i]
+				memCtx.WriteString("- [" + sm.CreatedAt.Format("2006-01-02") + "] ")
+				if len(sm.Topics) > 0 {
+					memCtx.WriteString("[" + strings.Join(sm.Topics, ",") + "] ")
+				}
+				memCtx.WriteString(sm.RawSummary + "\n")
+			}
+			memCtx.WriteString("\n")
 		}
-		memCtx.WriteString("\n")
 	}
 
-	// 短期记忆：最近 5 条
-	shorts := a.memory.ByTier(memory.TierShort)
-	if len(shorts) > 0 {
-		memCtx.WriteString("[Recent Context — Short-term]\n")
-		limit := 5
-		if len(shorts) < limit {
-			limit = len(shorts)
-		}
-		for i := 0; i < limit; i++ {
-			memCtx.WriteString("- " + shorts[i].Content + "\n")
+	// v0.43.0: 短期记忆 — 使用 ShortTermBuffer 的滑动窗口 + 摘要
+	if a.shortTerm != nil {
+		shortCtx := a.shortTerm.GetContext()
+		if len(shortCtx) > 0 {
+			// ShortTermBuffer.GetContext() 已包含摘要 + 最近消息
+			// 只注入摘要部分（system role），对话消息由 session 管理
+			for _, msg := range shortCtx {
+				if msg.Role == "system" {
+					memCtx.WriteString("[Recent Conversation Summary — Short-term]\n")
+					memCtx.WriteString(msg.Content + "\n\n")
+					break
+				}
+			}
 		}
 	}
 
@@ -991,7 +1049,13 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 // - 助手回复：截断到 150 字，不存完整回复
 // - 重要性：根据内容长度和类型动态调整
 func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
-	// 用户消息：推断分类
+	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
+	if a.shortTerm != nil {
+		a.shortTerm.Add("user", userInput)
+		a.shortTerm.Add("assistant", truncate(assistantResponse, 300))
+	}
+
+	// 同时写入旧 Store（兼容，用于长期记忆提升）
 	userCategory := inferCategory(userInput)
 	userImportance := inferImportance(userInput)
 	a.memory.SaveWithTier("User: "+truncate(userInput, 150), userCategory, memory.TierShort, userImportance)
@@ -1062,6 +1126,7 @@ func inferImportance(input string) float64 {
 }
 
 // autoSummarize 自动摘要：将过多的短期记忆压缩为中期
+// v0.43.0: 同时生成 SessionSummary 存入 MidTermStore
 func (a *Agent) autoSummarize() {
 	shorts := a.memory.ByTier(memory.TierShort)
 	if len(shorts) <= 5 {
@@ -1087,6 +1152,22 @@ func (a *Agent) autoSummarize() {
 	}
 
 	a.memory.Summarize(ids, summary, "conversation")
+
+	// v0.43.0: 同时生成 SessionSummary 存入 MidTermStore
+	if a.midTerm != nil {
+		var turns []memory.ConversationTurn
+		for _, s := range shorts {
+			turns = append(turns, memory.ConversationTurn{Role: "user", Content: s.Content})
+		}
+		sessionSummary := memory.GenerateSessionSummary(
+			fmt.Sprintf("auto-%d", time.Now().UnixNano()),
+			"default",
+			turns,
+		)
+		if err := a.midTerm.SaveSessionSummary(sessionSummary); err != nil {
+			fmt.Printf("[agent] warning: failed to save session summary: %v\n", err)
+		}
+	}
 }
 
 // Remember 保存一条中期记忆
@@ -1104,6 +1185,14 @@ func (a *Agent) Recall(query string) []memory.Entry {
 	return a.memory.Search(query)
 }
 
+// RecallMidTerm 从中期记忆检索相关历史会话摘要
+func (a *Agent) RecallMidTerm(query string, topK int) []memory.SessionSummary {
+	if a.midTerm == nil {
+		return nil
+	}
+	return a.midTerm.SearchSummaries(query, topK)
+}
+
 // MemoryStats 返回记忆统计
 func (a *Agent) MemoryStats() map[memory.Tier]int {
 	return a.memory.Stats()
@@ -1117,6 +1206,14 @@ func (a *Agent) DecayMemory(threshold float64) int {
 // PromoteMemory 提升记忆层级
 func (a *Agent) PromoteMemory(id string) error {
 	return a.memory.Promote(id)
+}
+
+// ExpireMidTermMemory 过期清理中期记忆
+func (a *Agent) ExpireMidTermMemory(olderThan time.Duration) int {
+	if a.midTerm == nil {
+		return 0
+	}
+	return a.midTerm.ExpireOldSummaries(olderThan)
 }
 
 // handleMemoryTool 处理 LLM 主动调用的记忆工具
