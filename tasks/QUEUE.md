@@ -20,7 +20,7 @@
 | v0.14.0 | RAG 知识库 | ✅ Done | 向量索引 + 语义检索 + 持久化 + API 端点 |
 | v0.15.0 | Plugin Marketplace | ✅ Done | Manifest + Registry + Installer + Sandbox + CLI + API + 测试 |
 | v0.16.0 | Multi-turn RAG | ✅ Done | ConversationContext + QueryRewriter + FollowUpDetector + ContextAwareRetriever + FeedbackStore |
-| v0.32.0 | Evaluation & Benchmark | 🟡 In Progress | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
+| v0.32.0 | Evaluation & Benchmark | ✅ Done | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
 
 ---
 
@@ -51,16 +51,16 @@
 
 ---
 
-## 🟡 In Progress — v0.32.0 Evaluation & Benchmark
+## ✅ Done — v0.32.0 Evaluation & Benchmark
 
 ### 子任务
 
-- [ ] **EB-1**: Evaluator 接口 — 定义评估器抽象（输入/输出/期望/评分）
-- [ ] **EB-2**: 指标采集 — Accuracy / Relevance / Latency / TokenUsage / ToolCallAccuracy
-- [ ] **EB-3**: BenchmarkRunner — 批量运行评估用例，收集指标，生成报告
-- [ ] **EB-4**: 评估用例格式 — YAML 定义测试用例（input/expected_output/tools/context）
-- [ ] **EB-5**: CLI — `lh eval run/list/report`
-- [ ] **EB-6**: 测试 — 每个子模块单元测试
+- [x] **EB-1**: Evaluator 接口 — 定义评估器抽象（输入/输出/期望/评分）
+- [x] **EB-2**: 指标采集 — Accuracy / Relevance / Latency / TokenUsage / ToolCallAccuracy
+- [x] **EB-3**: BenchmarkRunner — 批量运行评估用例，收集指标，生成报告
+- [x] **EB-4**: 评估用例格式 — YAML 定义测试用例（input/expected_output/tools/context）
+- [x] **EB-5**: CLI — `lh eval run/list/report`
+- [x] **EB-6**: 测试 — 每个子模块单元测试
 
 ---
 
