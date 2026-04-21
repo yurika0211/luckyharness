@@ -200,6 +200,12 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		// 没有工具调用，LLM 直接给出最终回复
 		result.Response = resp.Content
 		result.State = StateDone
+
+		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
+		if a.ragManager != nil {
+			a.indexConversationTurn(userInput, resp.Content)
+		}
+
 		return result, nil
 	}
 
@@ -217,6 +223,27 @@ func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message
 		messages = a.fromContextMessages(fitted)
 	}
 	return messages
+}
+
+// indexConversationTurn 将一轮对话索引进 RAG（异步执行）
+func (a *Agent) indexConversationTurn(userInput, assistantResponse string) {
+	go func() {
+		// 组合对话内容作为索引文本
+		content := "User: " + userInput + "\nAssistant: " + assistantResponse
+		title := userInput
+		if len(title) > 80 {
+			title = title[:80] + "..."
+		}
+		source := "conversation"
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if _, err := a.ragManager.IndexText(source, title, content); err != nil {
+			// 索引失败不影响主流程，静默忽略
+			_ = ctx.Err()
+		}
+	}()
 }
 
 // RunLoopStream 执行流式 Agent Loop
@@ -392,6 +419,16 @@ func (a *Agent) buildMessages(userInput string) []provider.Message {
 			memCtx.WriteString("- " + e.Content + "\n")
 		}
 		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
+	}
+
+	// v0.35.0: RAG 检索相关上下文
+	if a.ragManager != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ragContext, results, err := a.ragManager.SearchWithContext(ctx, userInput)
+		cancel()
+		if err == nil && ragContext != "" && len(results) > 0 {
+			messages = append(messages, provider.Message{Role: "system", Content: ragContext})
+		}
 	}
 
 	// v0.16.0: 工具描述不再放在 system prompt 中
