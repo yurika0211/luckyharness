@@ -168,6 +168,7 @@ func (a *Adapter) poll(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case update := <-updates:
+			// v0.36.0: 处理所有消息类型（文本、图片、语音、视频、文件）
 			if update.Message == nil {
 				continue
 			}
@@ -246,6 +247,27 @@ func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
 		Timestamp: time.Unix(int64(tgMsg.Date), 0),
 	}
 
+	// v0.36.0: 提取多媒体附件
+	a.extractAttachments(tgMsg, msg)
+
+	// 如果没有文本但有附件，构造描述文本
+	if msg.Text == "" && len(msg.Attachments) > 0 {
+		var parts []string
+		for _, att := range msg.Attachments {
+			switch att.Type {
+			case gateway.AttachmentImage:
+				parts = append(parts, "[用户发送了一张图片]")
+			case gateway.AttachmentAudio:
+				parts = append(parts, "[用户发送了一段语音]")
+			case gateway.AttachmentVideo:
+				parts = append(parts, "[用户发送了一段视频]")
+			case gateway.AttachmentDocument:
+				parts = append(parts, fmt.Sprintf("[用户发送了文件: %s]", att.FileName))
+			}
+		}
+		msg.Text = strings.Join(parts, " ")
+	}
+
 	// Parse command
 	if tgMsg.IsCommand() {
 		msg.IsCommand = true
@@ -260,6 +282,91 @@ func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
 	}
 
 	return msg
+}
+
+// extractAttachments 从 Telegram 消息中提取多媒体附件
+func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Message) {
+	if a.bot == nil {
+		return
+	}
+
+	// 图片
+	if tgMsg.Photo != nil && len(tgMsg.Photo) > 0 {
+		// 取最大尺寸的图片
+		photo := tgMsg.Photo[len(tgMsg.Photo)-1]
+		att := gateway.Attachment{
+			Type:     gateway.AttachmentImage,
+			FileID:   photo.FileID,
+			FileName: "photo.jpg",
+			MimeType: "image/jpeg",
+			FileSize: int64(photo.FileSize),
+		}
+		// 尝试下载图片
+		if url, err := a.bot.GetFileDirectURL(photo.FileID); err == nil {
+			att.FileURL = url
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+
+	// 语音消息
+	if tgMsg.Voice != nil {
+		att := gateway.Attachment{
+			Type:     gateway.AttachmentAudio,
+			FileID:   tgMsg.Voice.FileID,
+			FileName: "voice.ogg",
+			MimeType: tgMsg.Voice.MimeType,
+			FileSize: int64(tgMsg.Voice.FileSize),
+		}
+		if url, err := a.bot.GetFileDirectURL(tgMsg.Voice.FileID); err == nil {
+			att.FileURL = url
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+
+	// 音频文件
+	if tgMsg.Audio != nil {
+		att := gateway.Attachment{
+			Type:     gateway.AttachmentAudio,
+			FileID:   tgMsg.Audio.FileID,
+			FileName: tgMsg.Audio.FileName,
+			MimeType: tgMsg.Audio.MimeType,
+			FileSize: int64(tgMsg.Audio.FileSize),
+		}
+		if url, err := a.bot.GetFileDirectURL(tgMsg.Audio.FileID); err == nil {
+			att.FileURL = url
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+
+	// 视频
+	if tgMsg.Video != nil {
+		att := gateway.Attachment{
+			Type:     gateway.AttachmentVideo,
+			FileID:   tgMsg.Video.FileID,
+			FileName: tgMsg.Video.FileName,
+			MimeType: tgMsg.Video.MimeType,
+			FileSize: int64(tgMsg.Video.FileSize),
+		}
+		if url, err := a.bot.GetFileDirectURL(tgMsg.Video.FileID); err == nil {
+			att.FileURL = url
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
+
+	// 文档
+	if tgMsg.Document != nil {
+		att := gateway.Attachment{
+			Type:     gateway.AttachmentDocument,
+			FileID:   tgMsg.Document.FileID,
+			FileName: tgMsg.Document.FileName,
+			MimeType: tgMsg.Document.MimeType,
+			FileSize: int64(tgMsg.Document.FileSize),
+		}
+		if url, err := a.bot.GetFileDirectURL(tgMsg.Document.FileID); err == nil {
+			att.FileURL = url
+		}
+		msg.Attachments = append(msg.Attachments, att)
+	}
 }
 
 // isMentioned checks if the bot is mentioned in the message.

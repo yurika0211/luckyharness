@@ -313,6 +313,7 @@ func main() {
 	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, discord)")
 	msgGatewayStartCmd.Flags().String("token", "", "Bot token")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
+	msgGatewayStartCmd.Flags().String("api-addr", ":9090", "HTTP API 监听地址")
 	msgGatewayStopCmd := &cobra.Command{
 		Use:   "stop [platform]",
 		Short: "停止消息网关",
@@ -1276,6 +1277,23 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// v0.36.0: 同时启动 HTTP API Server
+	apiAddr, _ := cmd.Flags().GetString("api-addr")
+	if apiAddr == "" {
+		apiAddr = ":9090"
+	}
+	srv := server.New(a, server.ServerConfig{
+		Addr:       apiAddr,
+		EnableCORS: true,
+		RateLimit:  60,
+	})
+	go func() {
+		if err := srv.Start(); err != nil {
+			fmt.Printf("[server] HTTP API error: %v\n", err)
+		}
+	}()
+	fmt.Printf("📡 HTTP API server starting on %s\n", apiAddr)
+
 	startAll, _ := cmd.Flags().GetBool("all")
 	if startAll {
 		if err := gm.StartAll(ctx); err != nil {
@@ -1288,6 +1306,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		<-sigCh
 		fmt.Println("\n🛑 正在停止所有消息网关...")
 		_ = gm.StopAll()
+		_ = srv.Stop()
 		return nil
 	}
 
@@ -1321,6 +1340,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	<-sigCh
 	fmt.Println("\n🛑 正在停止消息网关...")
 	_ = gm.StopAll()
+	_ = srv.Stop()
 	return nil
 }
 

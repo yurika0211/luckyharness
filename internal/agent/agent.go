@@ -11,9 +11,11 @@ import (
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -45,6 +47,8 @@ type Agent struct {
 	collabReg    *collab.Registry        // v0.22.0: Agent 协作注册表
 	collabMgr    *collab.DelegateManager // v0.22.0: 协作任务管理器
 	skills       []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
+	metrics      *metrics.Metrics        // v0.36.0: 指标收集器
+	cronEngine   *cron.Engine            // v0.36.0: 定时任务引擎
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -231,6 +235,22 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.23.0: 创建流式索引器
 	streamIndexer := rag.NewStreamIndexer(ragManager, rag.DefaultStreamConfig())
 
+	// v0.36.0: 创建指标收集器
+	m := metrics.NewMetrics()
+
+	// v0.36.0: 创建定时任务引擎
+	cronEngine := cron.NewEngine()
+	cronEngine.SetEventHandler(func(event cron.Event) {
+		switch event.Type {
+		case cron.EventJobStarted:
+			fmt.Printf("[cron] job %s started\n", event.JobName)
+		case cron.EventJobCompleted:
+			fmt.Printf("[cron] job %s completed\n", event.JobName)
+		case cron.EventJobFailed:
+			fmt.Printf("[cron] job %s failed: %v\n", event.JobName, event.Error)
+		}
+	})
+
 	a := &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -253,6 +273,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		embedderReg: embedderReg,
 		collabReg:   collabReg,
 		collabMgr:   collabMgr,
+		metrics:     m,
+		cronEngine:  cronEngine,
 	}
 
 	// v0.35.0: 自动加载 skills 目录
@@ -262,6 +284,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 			fmt.Printf("[agent] loaded %d skills from %s\n", count, skillsDir)
 		}
 	}
+
+	// v0.36.0: 启动定时任务引擎
+	cronEngine.Start()
 
 	return a, nil
 }
@@ -283,7 +308,6 @@ func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput
 
 // chatWithSession 是 Chat/ChatWithSession 的共享实现。
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
@@ -295,6 +319,8 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 		if chatErr != nil {
 			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
 		}
+		// v0.36.0: 记录指标
+		a.metrics.RecordChatRequest()
 		return response, nil
 	}
 
@@ -315,6 +341,14 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 	}
 	if a.chatCount%20 == 0 {
 		a.autoSummarize()
+	}
+
+	// v0.36.0: 记录指标
+	a.metrics.RecordChatRequest()
+	if len(result.ToolCalls) > 0 {
+		for range result.ToolCalls {
+			a.metrics.RecordToolCall()
+		}
 	}
 
 	return response, nil
@@ -698,6 +732,21 @@ func (a *Agent) Sessions() *session.Manager {
 // Config 返回配置管理器
 func (a *Agent) Config() *config.Manager {
 	return a.cfg
+}
+
+// Metrics 返回指标收集器
+func (a *Agent) Metrics() *metrics.Metrics {
+	return a.metrics
+}
+
+// CronEngine 返回定时任务引擎
+func (a *Agent) CronEngine() *cron.Engine {
+	return a.cronEngine
+}
+
+// Memory 返回记忆存储
+func (a *Agent) Memory() *memory.Store {
+	return a.memory
 }
 
 // ContextWindow 返回上下文窗口管理器

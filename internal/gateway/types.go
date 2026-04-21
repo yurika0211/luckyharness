@@ -72,7 +72,31 @@ type Message struct {
 	IsCommand bool
 	Command   string // e.g., "/start"
 	Args      string // everything after the command
+
+	// v0.36.0: 多媒体附件
+	Attachments []Attachment
 }
+
+// Attachment represents a media attachment in a message.
+type Attachment struct {
+	Type     AttachmentType // image, audio, video, document
+	FileID   string         // platform-specific file ID
+	FileURL  string         // download URL (if available)
+	FileName string         // original filename
+	MimeType string         // MIME type
+	FileSize int64          // file size in bytes
+	Data     []byte         // downloaded file data (populated on demand)
+}
+
+// AttachmentType represents the type of media attachment.
+type AttachmentType string
+
+const (
+	AttachmentImage    AttachmentType = "image"
+	AttachmentAudio    AttachmentType = "audio"
+	AttachmentVideo    AttachmentType = "video"
+	AttachmentDocument AttachmentType = "document"
+)
 
 // MessageHandler is the callback type for handling incoming messages.
 type MessageHandler func(ctx context.Context, msg *Message) error

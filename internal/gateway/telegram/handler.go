@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
@@ -75,13 +77,37 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 		return h.handleCommand(ctx, msg)
 	}
 
+	// v0.36.0: 如果有附件，构造多媒体描述
+	inputText := msg.Text
+	if len(msg.Attachments) > 0 {
+		var mediaDesc strings.Builder
+		mediaDesc.WriteString(inputText)
+		if inputText != "" {
+			mediaDesc.WriteString("\n\n")
+		}
+		mediaDesc.WriteString("[多媒体内容]\n")
+		for i, att := range msg.Attachments {
+			switch att.Type {
+			case gateway.AttachmentImage:
+				mediaDesc.WriteString(fmt.Sprintf("📷 图片 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
+			case gateway.AttachmentAudio:
+				mediaDesc.WriteString(fmt.Sprintf("🎤 语音 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
+			case gateway.AttachmentVideo:
+				mediaDesc.WriteString(fmt.Sprintf("🎬 视频 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
+			case gateway.AttachmentDocument:
+				mediaDesc.WriteString(fmt.Sprintf("📎 文件 %d: %s (%s, URL: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
+			}
+		}
+		inputText = mediaDesc.String()
+	}
+
 	// Regular text in private chats → forward to Agent
 	if msg.Chat.Type == gateway.ChatPrivate {
-		return h.handleChat(ctx, msg, msg.Text)
+		return h.handleChat(ctx, msg, inputText)
 	}
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
-	return h.handleChat(ctx, msg, msg.Text)
+	return h.handleChat(ctx, msg, inputText)
 }
 
 // handleCommand dispatches bot commands.
@@ -105,6 +131,15 @@ func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error
 		return h.handleHistory(ctx, msg)
 	case "session":
 		return h.handleSession(ctx, msg)
+	// v0.36.0: 新增命令
+	case "skills":
+		return h.handleSkills(ctx, msg)
+	case "cron":
+		return h.handleCron(ctx, msg)
+	case "metrics":
+		return h.handleMetrics(ctx, msg)
+	case "health":
+		return h.handleHealth(ctx, msg)
 	default:
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", msg.Command))
 	}
@@ -121,12 +156,17 @@ I'm an AI assistant powered by LuckyHarness.
 /model — Show current model
 /soul — Show current SOUL info
 /tools — List available tools
+/skills — List loaded skills
+/cron — Manage scheduled tasks
+/metrics — Show usage metrics
+/health — System health check
 /reset — Reset conversation
 /history — Show conversation history
 /session — Show current session info
 /help — Show this help
 
-You can also just type a message directly!`
+You can also just type a message directly!
+Send me photos, voice messages, or files!`
 
 	return h.adapter.Send(ctx, msg.Chat.ID, welcome)
 }
@@ -141,6 +181,10 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 /model \[name] — Get/set current model
 /soul — Show current SOUL info
 /tools — List available tools
+/skills — List loaded skills
+/cron \[list|add|remove] — Manage scheduled tasks
+/metrics — Show usage metrics
+/health — System health check
 /reset — Reset conversation
 /history — Show conversation history
 /session — Show current session info
@@ -148,7 +192,8 @@ func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 *Tips:*
 • In private chats, just type your message directly
 • In groups, mention @bot or reply to a bot message
-• Each chat has its own conversation session`
+• Each chat has its own conversation session
+• Send photos, voice, or files for multimodal processing`
 
 	return h.adapter.Send(ctx, msg.Chat.ID, help)
 }
@@ -321,4 +366,176 @@ func (h *Handler) handleSession(ctx context.Context, msg *gateway.Message) error
 	)
 
 	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+// handleSkills lists loaded skills.
+func (h *Handler) handleSkills(ctx context.Context, msg *gateway.Message) error {
+	skills := h.agent.Skills()
+	if len(skills) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No skills loaded.")
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🎯 *Loaded Skills* (%d):\n\n", len(skills)))
+
+	maxShow := 30
+	for i, s := range skills {
+		if i >= maxShow {
+			sb.WriteString(fmt.Sprintf("\n... and %d more", len(skills)-maxShow))
+			break
+		}
+		desc := s.Description
+		if len(desc) > 60 {
+			desc = desc[:57] + "..."
+		}
+		sb.WriteString(fmt.Sprintf("• %s — %s\n", s.Name, desc))
+	}
+
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+// handleCron manages scheduled tasks.
+func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
+	engine := h.agent.CronEngine()
+	args := strings.TrimSpace(msg.Args)
+
+	if args == "" || args == "list" {
+		// List all cron jobs
+		jobs := engine.ListJobs()
+		if len(jobs) == 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "⏰ No scheduled tasks. Use /cron add <name> <interval|cron> <prompt>")
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("⏰ *Scheduled Tasks* (%d):\n\n", len(jobs)))
+		for _, job := range jobs {
+			status := "🟢"
+			switch job.Status {
+			case cron.StatusRunning:
+				status = "🔵"
+			case cron.StatusPaused:
+				status = "🟡"
+			case cron.StatusFailed:
+				status = "🔴"
+			}
+			sb.WriteString(fmt.Sprintf("%s %s — %s\n  Schedule: %s | Runs: %d\n", status, job.ID, job.Name, job.Schedule, job.RunCount))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+	}
+
+	parts := strings.Fields(args)
+	if len(parts) < 1 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron [list|add|remove|pause|resume]")
+	}
+
+	switch parts[0] {
+	case "add":
+		if len(parts) < 4 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron add <id> <name> <interval_seconds> <prompt>")
+		}
+		id := parts[1]
+		name := parts[2]
+		var intervalSec int
+		if _, err := fmt.Sscanf(parts[3], "%d", &intervalSec); err != nil || intervalSec <= 0 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "❌ Invalid interval. Must be positive integer (seconds).")
+		}
+		prompt := strings.Join(parts[4:], " ")
+		if prompt == "" {
+			prompt = name
+		}
+
+		err := engine.AddJob(id, name, prompt, cron.IntervalSchedule{Interval: time.Duration(intervalSec) * time.Second}, func() error {
+			// 执行时调用 agent chat
+			chatCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			_, err := h.agent.Chat(chatCtx, prompt)
+			return err
+		})
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to add job: %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` added: %s (every %ds)", id, name, intervalSec))
+
+	case "remove":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron remove <id>")
+		}
+		if err := engine.RemoveJob(parts[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Job `%s` removed", parts[1]))
+
+	case "pause":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron pause <id>")
+		}
+		if err := engine.PauseJob(parts[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("⏸ Job `%s` paused", parts[1]))
+
+	case "resume":
+		if len(parts) < 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron resume <id>")
+		}
+		if err := engine.ResumeJob(parts[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err.Error()))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("▶️ Job `%s` resumed", parts[1]))
+
+	default:
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: /cron [list|add|remove|pause|resume]")
+	}
+}
+
+// handleMetrics shows usage metrics.
+func (h *Handler) handleMetrics(ctx context.Context, msg *gateway.Message) error {
+	m := h.agent.Metrics()
+	snapshot := m.Snapshot()
+
+	info := fmt.Sprintf("📊 *Metrics:*\n\n• Total requests: %d\n• Tool calls: %d\n• Errors: %d\n• Uptime: %s",
+		snapshot.TotalRequests,
+		snapshot.ToolCalls,
+		snapshot.ErrorRequests,
+		snapshot.Uptime,
+	)
+
+	return h.adapter.Send(ctx, msg.Chat.ID, info)
+}
+
+// handleHealth shows system health.
+func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error {
+	var sb strings.Builder
+	sb.WriteString("🏥 *System Health:*\n\n")
+
+	// Agent 状态
+	sb.WriteString("• Agent: ✅ Running\n")
+
+	// Cron 引擎
+	cronEngine := h.agent.CronEngine()
+	if cronEngine.IsRunning() {
+		sb.WriteString(fmt.Sprintf("• Cron Engine: ✅ Running (%d jobs)\n", cronEngine.JobCount()))
+	} else {
+		sb.WriteString("• Cron Engine: ❌ Stopped\n")
+	}
+
+	// Skills
+	skills := h.agent.Skills()
+	sb.WriteString(fmt.Sprintf("• Skills: ✅ %d loaded\n", len(skills)))
+
+	// Sessions
+	sb.WriteString("• Sessions: ✅ Active\n")
+
+	// Memory
+	mem := h.agent.Memory()
+	if mem != nil {
+		sb.WriteString("• Memory: ✅ Active\n")
+	}
+
+	// Metrics
+	m := h.agent.Metrics()
+	snapshot := m.Snapshot()
+	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
+
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
