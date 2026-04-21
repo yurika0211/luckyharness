@@ -10,6 +10,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/embedder"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
@@ -31,6 +32,7 @@ type Agent struct {
 	sessions     *session.Manager
 	tools        *tool.Registry
 	gateway      *tool.Gateway          // 统一工具网关
+	msgGateway   *gateway.GatewayManager // v0.6.0: 消息平台网关
 	mcpClient    *tool.MCPClient         // MCP 客户端
 	delegate     *tool.DelegateManager   // 子代理委派管理器
 	contextWin   *contextx.ContextWindow // 上下文窗口管理器
@@ -144,7 +146,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 	mcpClient := tool.NewMCPClient()
 
 	// 创建统一工具网关
-	gateway := tool.NewGateway(tools)
+	toolGateway := tool.NewGateway(tools)
 
 	// 创建上下文窗口管理器
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
@@ -237,7 +239,8 @@ func New(cfg *config.Manager) (*Agent, error) {
 		memory:     mem,
 		sessions:   sessions,
 		tools:      tools,
-		gateway:    gateway,
+		gateway:    toolGateway,
+		msgGateway: gateway.NewGatewayManager(),
 		mcpClient:  mcpClient,
 		delegate:   delegateMgr,
 		contextWin: contextWin,
@@ -510,6 +513,11 @@ func (a *Agent) Delegate() *tool.DelegateManager {
 // Gateway 返回统一工具网关
 func (a *Agent) Gateway() *tool.Gateway {
 	return a.gateway
+}
+
+// MsgGateway 返回消息平台网关管理器 (v0.6.0)
+func (a *Agent) MsgGateway() *gateway.GatewayManager {
+	return a.msgGateway
 }
 
 // LoadSkills 从目录加载 Skill 插件

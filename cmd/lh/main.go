@@ -18,6 +18,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
+	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/profile"
@@ -25,6 +26,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 )
 
 var (
@@ -285,6 +287,32 @@ func main() {
 	gatewayAliasCmd.AddCommand(gatewayAliasListCmd, gatewayAliasAddCmd, gatewayAliasRemoveCmd)
 	gatewayRouteCmd.AddCommand(gatewayRouteListCmd, gatewayRouteAddCmd, gatewayRouteRemoveCmd)
 	gatewayCmd.AddCommand(gatewayInfoCmd, gatewayRouteCmd, gatewayAliasCmd)
+
+	// ===== v0.6.0: Messaging Gateway 命令 =====
+	msgGatewayCmd := &cobra.Command{
+		Use:   "msg-gateway",
+		Short: "消息平台网关管理 (Telegram, Discord, etc.)",
+	}
+	msgGatewayStartCmd := &cobra.Command{
+		Use:   "start [--platform telegram --token TOKEN]",
+		Short: "启动消息网关",
+		RunE:  runMsgGatewayStart,
+	}
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, discord)")
+	msgGatewayStartCmd.Flags().String("token", "", "Bot token")
+	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
+	msgGatewayStopCmd := &cobra.Command{
+		Use:   "stop [platform]",
+		Short: "停止消息网关",
+		Args:  cobra.MaximumNArgs(1),
+		RunE:  runMsgGatewayStop,
+	}
+	msgGatewayStatusCmd := &cobra.Command{
+		Use:   "status",
+		Short: "查看消息网关状态",
+		RunE:  runMsgGatewayStatus,
+	}
+	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd)
 
 	// ===== v0.10.0: Subscription 命令 =====
 	subCmd := &cobra.Command{
@@ -553,7 +581,7 @@ func main() {
 
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd)
+		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -1164,6 +1192,101 @@ func runGatewayAliasRemove(cmd *cobra.Command, args []string) error {
 
 	a.Gateway().Router().RemoveAlias(args[0])
 	fmt.Printf("🗑️ 别名已移除: %s\n", args[0])
+	return nil
+}
+
+// ===== v0.6.0: Messaging Gateway 命令实现 =====
+
+func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	gm := a.MsgGateway()
+	ctx := context.Background()
+
+	startAll, _ := cmd.Flags().GetBool("all")
+	if startAll {
+		if err := gm.StartAll(ctx); err != nil {
+			return err
+		}
+		fmt.Println("✅ 所有消息网关已启动")
+		return nil
+	}
+
+	platform, _ := cmd.Flags().GetString("platform")
+	token, _ := cmd.Flags().GetString("token")
+
+	switch platform {
+	case "telegram":
+		if token == "" {
+			return fmt.Errorf("telegram 需要 --token 参数")
+		}
+		tgAdapter := telegram.NewAdapter(telegram.Config{Token: token})
+		handler := telegram.NewHandler(tgAdapter, a)
+		tgAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return handler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(tgAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "telegram"); err != nil {
+			return err
+		}
+		fmt.Println("✅ Telegram 网关已启动")
+	default:
+		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
+	}
+	return nil
+}
+
+func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	gm := a.MsgGateway()
+
+	if len(args) == 0 {
+		if err := gm.StopAll(); err != nil {
+			return err
+		}
+		fmt.Println("✅ 所有消息网关已停止")
+		return nil
+	}
+
+	if err := gm.Stop(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("✅ 消息网关 %s 已停止\n", args[0])
+	return nil
+}
+
+func runMsgGatewayStatus(cmd *cobra.Command, args []string) error {
+	a, err := getAgent()
+	if err != nil {
+		return err
+	}
+
+	gm := a.MsgGateway()
+	statuses := gm.Status()
+
+	if len(statuses) == 0 {
+		fmt.Println("📋 暂无已注册的消息网关")
+		return nil
+	}
+
+	fmt.Println("📋 消息网关状态:")
+	for _, s := range statuses {
+		running := "❌ 停止"
+		if s.Running {
+			running = "✅ 运行中"
+		}
+		fmt.Printf("  %s %s (发送: %d, 接收: %d, 错误: %d)\n",
+			running, s.Name, s.Stats.MessagesSent, s.Stats.MessagesReceived, s.Stats.Errors)
+	}
 	return nil
 }
 
