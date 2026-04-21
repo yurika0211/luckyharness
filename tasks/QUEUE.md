@@ -23,7 +23,7 @@
 | v0.32.0 | Evaluation & Benchmark | ✅ Done | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
 | v0.33.0 | Prompt Template Engine | ✅ Done | 模板引擎 + 变量插值 + 条件/循环 + 继承 + CLI |
 | v0.34.0 | Cost Tracker | ✅ Done | 成本追踪 + 预算告警 + 报表 + CLI |
-| v0.35.0 | Retry & Circuit Breaker | 🟡 In Progress | 指数退避重试 + 熔断器 + 可组合中间件 |
+| v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
 
 ---
 
@@ -91,14 +91,14 @@
 
 ---
 
-## 🟡 In Progress — v0.35.0 Retry & Circuit Breaker
+## ✅ Done — v0.35.0 Retry & Circuit Breaker
 
 ### 子任务
 
-- [ ] **RC-1**: Retry — 指数退避重试 + 抖动 + 可重试错误分类
-- [ ] **RC-2**: CircuitBreaker — 三态熔断（Closed/Open/HalfOpen）+ 自适应恢复
-- [ ] **RC-3**: ResilientProvider — 组合 Retry + CircuitBreaker 的 Provider 装饰器
-- [ ] **RC-4**: 测试 — 每个子模块单元测试
+- [x] **RC-1**: Retry — 指数退避 + 抖动 + IsRetryable 分类 + 泛型 RetryWithResult[T]
+- [x] **RC-2**: CircuitBreaker — 三态熔断（Closed/Open/HalfOpen）+ 自适应恢复 + 状态回调
+- [x] **RC-3**: ResilientProvider — 组合 Retry + CB 的 Provider 装饰器，支持 Chat/ChatStream
+- [x] **RC-4**: 测试 — 26 个单元测试（含 race detection）
 
 ---
 
