@@ -27,6 +27,7 @@
 | v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
 | v0.38.0 | Workflow Engine v2 | ✅ Done | 条件分支 + 输出传递 + YAML 定义 + 持久化 + 事件回调 |
+| v0.39.0 | CLI Integration | 🟡 In Progress | search CLI + workflow CLI + cron CLI |
 
 ---
 
@@ -136,6 +137,17 @@
 - [x] **WF-2**: YAML 定义 + 持久化 — YAML/JSON 加载保存 + FileStore + 实例恢复
 - [x] **WF-3**: 事件回调 + Hooks — 6 种事件类型 + EventEmitter + 线程安全
 - [x] **WF-4**: 测试 — 46 个单元测试（含 race detection + 并发安全 + 条件分支）
+
+---
+
+## 🟡 In Progress — v0.39.0 CLI Integration
+
+### 子任务
+
+- [ ] **CI-1**: search CLI — `lh search <query>` + `lh fetch <url>` + `lh search config`
+- [ ] **CI-2**: workflow CLI — `lh workflow list/run/status/cancel/load` + `lh workflow instance list/status/cancel`
+- [ ] **CI-3**: cron CLI — `lh cron list/add/remove/pause/resume`
+- [ ] **CI-4**: 测试 — CLI 命令集成测试
 
 ---
 

@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cost"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/dashboard"
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
 	"github.com/yurika0211/luckyharness/internal/eval"
@@ -30,10 +32,12 @@ import (
 	"github.com/yurika0211/luckyharness/internal/profile"
 	"github.com/yurika0211/luckyharness/internal/prompt"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/search"
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
+	"github.com/yurika0211/luckyharness/internal/workflow"
 )
 
 var (
@@ -52,6 +56,8 @@ var (
 	costModel    string
 	costPeriod   string
 	costLimit    int
+	// cron command flags
+	cronName string
 )
 
 func main() {
@@ -688,9 +694,124 @@ func main() {
 
 	costCmd.AddCommand(costSummaryCmd, costDetailCmd, costBudgetCmd, costSetBudgetCmd)
 
+	// ===== v0.39.0: Search CLI =====
+	searchCmd := &cobra.Command{
+		Use:   "search",
+		Short: "Web search and URL fetch",
+	}
+	searchQueryCmd := &cobra.Command{
+		Use:   "query <query>",
+		Short: "Search the web",
+		Args:  cobra.MinimumNArgs(1),
+		RunE:  runSearchQuery,
+	}
+	searchFetchCmd := &cobra.Command{
+		Use:   "fetch <url>",
+		Short: "Fetch and extract content from a URL",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runSearchFetch,
+	}
+	searchDeepCmd := &cobra.Command{
+		Use:   "deep <query>",
+		Short: "Deep search (multi-engine concurrent)",
+		Args:  cobra.MinimumNArgs(1),
+		RunE:  runSearchDeep,
+	}
+	searchConfigCmd := &cobra.Command{
+		Use:   "config",
+		Short: "Show search configuration",
+		RunE:  runSearchConfig,
+	}
+	var searchCount int
+	var searchMaxChars int
+	searchQueryCmd.Flags().IntVarP(&searchCount, "count", "n", 5, "Number of results")
+	searchFetchCmd.Flags().IntVar(&searchMaxChars, "max-chars", 5000, "Max characters to extract")
+	searchDeepCmd.Flags().IntVarP(&searchCount, "count", "n", 10, "Number of results per engine")
+	searchCmd.AddCommand(searchQueryCmd, searchFetchCmd, searchDeepCmd, searchConfigCmd)
+
+	// ===== v0.39.0: Workflow CLI =====
+	wfCmd := &cobra.Command{
+		Use:   "workflow",
+		Short: "Workflow engine management",
+	}
+	wfListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registered workflows",
+		RunE:  runWorkflowList,
+	}
+	wfLoadCmd := &cobra.Command{
+		Use:   "load <file>",
+		Short: "Load a workflow from JSON/YAML file",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runWorkflowLoad,
+	}
+	wfRunCmd := &cobra.Command{
+		Use:   "run <workflow-id>",
+		Short: "Start a workflow instance",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runWorkflowRun,
+	}
+	wfStatusCmd := &cobra.Command{
+		Use:   "status <instance-id>",
+		Short: "Show workflow instance status",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runWorkflowStatus,
+	}
+	wfCancelCmd := &cobra.Command{
+		Use:   "cancel <instance-id>",
+		Short: "Cancel a running workflow instance",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runWorkflowCancel,
+	}
+	wfValidateCmd := &cobra.Command{
+		Use:   "validate <file>",
+		Short: "Validate a workflow definition file",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runWorkflowValidate,
+	}
+	wfCmd.AddCommand(wfListCmd, wfLoadCmd, wfRunCmd, wfStatusCmd, wfCancelCmd, wfValidateCmd)
+
+	// ===== v0.39.0: Cron CLI =====
+	cronCmd := &cobra.Command{
+		Use:   "cron",
+		Short: "Cron job management",
+	}
+	cronListCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List cron jobs",
+		RunE:  runCronList,
+	}
+	cronAddCmd := &cobra.Command{
+		Use:   "add <id> <schedule> <command>",
+		Short: "Add a cron job (schedule: cron expr or natural language)",
+		Args:  cobra.MinimumNArgs(3),
+		RunE:  runCronAdd,
+	}
+	cronRemoveCmd := &cobra.Command{
+		Use:   "remove <id>",
+		Short: "Remove a cron job",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runCronRemove,
+	}
+	cronPauseCmd := &cobra.Command{
+		Use:   "pause <id>",
+		Short: "Pause a cron job",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runCronPause,
+	}
+	cronResumeCmd := &cobra.Command{
+		Use:   "resume <id>",
+		Short: "Resume a paused cron job",
+		Args:  cobra.ExactArgs(1),
+		RunE:  runCronResume,
+	}
+	cronAddCmd.Flags().StringVarP(&cronName, "name", "N", "", "Human-readable job name")
+	cronCmd.AddCommand(cronListCmd, cronAddCmd, cronRemoveCmd, cronPauseCmd, cronResumeCmd)
+
 	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, modelsCmd, versionCmd,
 		profileCmd, backupCmd, dashboardCmd, debugCmd,
-		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd, tmplCmd, costCmd)
+		gatewayCmd, msgGatewayCmd, subCmd, usageCmd, serveCmd, ragCmd, pluginCmd, metricsCmd, wsCmd, agentCmd, evalCmd, tmplCmd, costCmd,
+		searchCmd, wfCmd, cronCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -2758,4 +2879,367 @@ func periodLabel(period string) string {
 	default:
 		return period
 	}
+}
+
+// ---------------------------------------------------------------------------
+// v0.39.0: Search CLI
+// ---------------------------------------------------------------------------
+
+func getSearchManager() (*search.Manager, error) {
+	cfg := search.DefaultSearchConfig()
+	cfg = search.SearchConfigFromEnv(cfg)
+	return search.NewManager(cfg), nil
+}
+
+func runSearchQuery(cmd *cobra.Command, args []string) error {
+	mgr, err := getSearchManager()
+	if err != nil {
+		return err
+	}
+	query := strings.Join(args, " ")
+	count, _ := cmd.Flags().GetInt("count")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	results, err := mgr.QuickSearch(ctx, query, count)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+
+	fmt.Print(search.FormatResults(query, results))
+	return nil
+}
+
+func runSearchFetch(cmd *cobra.Command, args []string) error {
+	mgr, err := getSearchManager()
+	if err != nil {
+		return err
+	}
+	rawURL := args[0]
+	maxChars, _ := cmd.Flags().GetInt("max-chars")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	result, err := mgr.FetchURL(ctx, rawURL, maxChars)
+	if err != nil {
+		return fmt.Errorf("fetch failed: %w", err)
+	}
+
+	fmt.Printf("📄 %s\n", result.Title)
+	fmt.Printf("   URL: %s\n", result.URL)
+	fmt.Printf("   Source: %s\n", result.Source)
+	fmt.Printf("   Length: %d chars\n", len(result.Content))
+	fmt.Println()
+	fmt.Println(result.Content)
+	return nil
+}
+
+func runSearchDeep(cmd *cobra.Command, args []string) error {
+	mgr, err := getSearchManager()
+	if err != nil {
+		return err
+	}
+	query := strings.Join(args, " ")
+	count, _ := cmd.Flags().GetInt("count")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	dr, err := mgr.DeepSearch(ctx, query, count)
+	if err != nil {
+		return fmt.Errorf("deep search failed: %w", err)
+	}
+
+	fmt.Print(search.FormatDeepResults(query, dr))
+	return nil
+}
+
+func runSearchConfig(cmd *cobra.Command, args []string) error {
+	cfg := search.DefaultSearchConfig()
+	cfg = search.SearchConfigFromEnv(cfg)
+
+	fmt.Println("🔍 Search Configuration")
+	fmt.Printf("  Default Provider: %s\n", cfg.DefaultProvider)
+	fmt.Printf("  Preferred Fetch: %s\n", cfg.PreferredFetch)
+	fmt.Printf("  Max Results: %d\n", cfg.MaxResults)
+	fmt.Printf("  Cache TTL: %s\n", cfg.CacheTTL)
+	fmt.Printf("  Cache Size: %d\n", cfg.CacheSize)
+	fmt.Printf("  Brave API Key: %s\n", maskKey(cfg.BraveAPIKey))
+	fmt.Printf("  Exa API Key: %s\n", maskKey(cfg.ExaAPIKey))
+	fmt.Printf("  Jina API Key: %s\n", maskKey(cfg.JinaAPIKey))
+	fmt.Printf("  SearXNG URL: %s\n", cfg.SearXNGBaseURL)
+	fmt.Printf("  Proxy: %s\n", cfg.Proxy)
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// v0.39.0: Workflow CLI
+// ---------------------------------------------------------------------------
+
+// Global workflow engine for CLI (lazy-initialized)
+var (
+	globalWfEngine *workflow.WorkflowEngine
+	globalWfOnce   sync.Once
+)
+
+func getWorkflowEngine() *workflow.WorkflowEngine {
+	globalWfOnce.Do(func() {
+		executor := workflow.NewDefaultExecutor()
+		// Register basic action handlers for CLI demo
+		executor.RegisterActionHandler("echo", func(ctx context.Context, task *workflow.Task) (interface{}, error) {
+			msg, _ := task.Params["msg"].(string)
+			return map[string]interface{}{"message": msg}, nil
+		})
+		executor.RegisterActionHandler("http", func(ctx context.Context, task *workflow.Task) (interface{}, error) {
+			url, _ := task.Params["url"].(string)
+			method, _ := task.Params["method"].(string)
+			if method == "" {
+				method = "GET"
+			}
+			return map[string]interface{}{"url": url, "method": method, "status": "simulated"}, nil
+		})
+		executor.RegisterActionHandler("script", func(ctx context.Context, task *workflow.Task) (interface{}, error) {
+			cmd, _ := task.Params["command"].(string)
+			return map[string]interface{}{"command": cmd, "output": "simulated"}, nil
+		})
+		globalWfEngine = workflow.NewWorkflowEngine(executor, 5)
+	})
+	return globalWfEngine
+}
+
+func runWorkflowList(cmd *cobra.Command, args []string) error {
+	engine := getWorkflowEngine()
+	workflows := engine.ListWorkflows()
+
+	if len(workflows) == 0 {
+		fmt.Println("没有已注册的工作流。使用 lh workflow load <file> 加载。")
+		return nil
+	}
+
+	fmt.Printf("📋 已注册工作流 (%d):\n", len(workflows))
+	for _, w := range workflows {
+		fmt.Printf("  %s  %s  (%d tasks, v%s)\n", w.ID[:8], w.Name, len(w.Tasks), w.Version)
+	}
+	return nil
+}
+
+func runWorkflowLoad(cmd *cobra.Command, args []string) error {
+	path := args[0]
+	wf, err := workflow.LoadFromFile(path)
+	if err != nil {
+		return fmt.Errorf("加载工作流失败: %w", err)
+	}
+	if err := wf.Validate(); err != nil {
+		return fmt.Errorf("工作流验证失败: %w", err)
+	}
+
+	engine := getWorkflowEngine()
+	if err := engine.RegisterWorkflow(wf); err != nil {
+		return fmt.Errorf("注册工作流失败: %w", err)
+	}
+
+	fmt.Printf("✅ 工作流已加载: %s (ID: %s, %d tasks)\n", wf.Name, wf.ID[:8], len(wf.Tasks))
+	return nil
+}
+
+func runWorkflowRun(cmd *cobra.Command, args []string) error {
+	workflowID := args[0]
+	engine := getWorkflowEngine()
+
+	inst, err := engine.StartWorkflow(workflowID)
+	if err != nil {
+		return fmt.Errorf("启动工作流失败: %w", err)
+	}
+
+	fmt.Printf("🚀 工作流实例已启动: %s\n", inst.ID[:8])
+	fmt.Println("   使用 lh workflow status <instance-id> 查看状态")
+	return nil
+}
+
+func runWorkflowStatus(cmd *cobra.Command, args []string) error {
+	instanceID := args[0]
+	engine := getWorkflowEngine()
+
+	inst, ok := engine.GetInstance(instanceID)
+	if !ok {
+		return fmt.Errorf("实例未找到: %s", instanceID)
+	}
+
+	snap := inst.Snapshot()
+	fmt.Printf("📊 工作流实例: %s\n", snap.ID[:8])
+	fmt.Printf("   工作流: %s\n", snap.WorkflowID[:8])
+	fmt.Printf("   状态: %s\n", snap.Status)
+	if !snap.StartTime.IsZero() {
+		fmt.Printf("   开始: %s\n", snap.StartTime.Format("2006-01-02 15:04:05"))
+	}
+	if !snap.EndTime.IsZero() {
+		fmt.Printf("   结束: %s\n", snap.EndTime.Format("2006-01-02 15:04:05"))
+	}
+
+	if len(snap.Results) > 0 {
+		fmt.Println("\n   任务结果:")
+		for taskID, r := range snap.Results {
+			icon := "✅"
+			switch r.Status {
+			case workflow.StatusFailed:
+				icon = "❌"
+			case workflow.StatusSkipped:
+				icon = "⏭️"
+			case workflow.StatusRunning:
+				icon = "🔄"
+			case workflow.StatusPending:
+				icon = "⏳"
+			}
+			errInfo := ""
+			if r.Error != "" {
+				errInfo = fmt.Sprintf(" (%s)", truncate(r.Error, 50))
+			}
+			fmt.Printf("     %s %s: %s%s\n", icon, taskID, r.Status, errInfo)
+		}
+	}
+	return nil
+}
+
+func runWorkflowCancel(cmd *cobra.Command, args []string) error {
+	instanceID := args[0]
+	engine := getWorkflowEngine()
+
+	if err := engine.CancelInstance(instanceID); err != nil {
+		return err
+	}
+
+	fmt.Printf("🛑 工作流实例已取消: %s\n", instanceID[:8])
+	return nil
+}
+
+func runWorkflowValidate(cmd *cobra.Command, args []string) error {
+	path := args[0]
+	wf, err := workflow.LoadFromFile(path)
+	if err != nil {
+		return fmt.Errorf("加载工作流失败: %w", err)
+	}
+	if err := wf.Validate(); err != nil {
+		return fmt.Errorf("❌ 验证失败: %w", err)
+	}
+
+	fmt.Printf("✅ 工作流验证通过: %s (%d tasks)\n", wf.Name, len(wf.Tasks))
+
+	order, err := wf.GetExecutionOrder()
+	if err == nil {
+		fmt.Println("   执行顺序:")
+		for i, id := range order {
+			fmt.Printf("     %d. %s\n", i+1, id)
+		}
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// v0.39.0: Cron CLI
+// ---------------------------------------------------------------------------
+
+var globalCronEngine *cron.Engine
+
+func getCronEngine() *cron.Engine {
+	if globalCronEngine == nil {
+		globalCronEngine = cron.NewEngine()
+		globalCronEngine.Start()
+	}
+	return globalCronEngine
+}
+
+func runCronList(cmd *cobra.Command, args []string) error {
+	engine := getCronEngine()
+	jobs := engine.ListJobs()
+
+	if len(jobs) == 0 {
+		fmt.Println("没有定时任务。使用 lh cron add <id> <schedule> <command> 添加。")
+		return nil
+	}
+
+	fmt.Printf("⏰ 定时任务 (%d):\n", len(jobs))
+	for _, j := range jobs {
+		status := "🟢 活跃"
+		if j.Status == cron.StatusPaused {
+			status = "⏸️ 暂停"
+		}
+		fmt.Printf("  %s  %s  %s  %s  上次: %s  下次: %s\n",
+			j.ID, j.Name, j.Schedule.String(), status,
+			formatTime(j.LastRun), formatTime(j.NextRun))
+		if j.Description != "" {
+			fmt.Printf("    %s\n", j.Description)
+		}
+	}
+	return nil
+}
+
+func runCronAdd(cmd *cobra.Command, args []string) error {
+	id := args[0]
+	scheduleStr := args[1]
+	command := strings.Join(args[2:], " ")
+
+	// Try cron expression first, then natural language
+	var sched cron.Schedule
+	var err error
+
+	sched, err = cron.ParseCronExpr(scheduleStr)
+	if err != nil {
+		sched, err = cron.ParseNaturalLanguage(scheduleStr)
+		if err != nil {
+			return fmt.Errorf("无法解析调度表达式 %q: %w", scheduleStr, err)
+		}
+	}
+
+	engine := getCronEngine()
+	name := cronName
+	if name == "" {
+		name = id
+	}
+
+	err = engine.AddJob(id, name, command, sched, func() error {
+		fmt.Printf("⏰ [%s] 执行: %s\n", id, command)
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("添加任务失败: %w", err)
+	}
+
+	fmt.Printf("✅ 定时任务已添加: %s (%s)\n", id, sched.String())
+	return nil
+}
+
+func runCronRemove(cmd *cobra.Command, args []string) error {
+	engine := getCronEngine()
+	if err := engine.RemoveJob(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("🗑️ 定时任务已删除: %s\n", args[0])
+	return nil
+}
+
+func runCronPause(cmd *cobra.Command, args []string) error {
+	engine := getCronEngine()
+	if err := engine.PauseJob(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("⏸️ 定时任务已暂停: %s\n", args[0])
+	return nil
+}
+
+func runCronResume(cmd *cobra.Command, args []string) error {
+	engine := getCronEngine()
+	if err := engine.ResumeJob(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("▶️ 定时任务已恢复: %s\n", args[0])
+	return nil
+}
+
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format("2006-01-02 15:04:05")
 }
