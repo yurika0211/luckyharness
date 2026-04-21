@@ -689,6 +689,178 @@ curl -N -X POST http://localhost:9090/api/v1/chat \
   -d '{"message": "Hello!", "stream": true}'
 ```
 
+## 生产环境部署
+
+### 前置要求
+
+- Docker 20.10+ 和 Docker Compose v2
+- 一个 LLM API Key（OpenAI / Anthropic / 兼容 OpenAI 格式的第三方服务）
+- （可选）Telegram Bot Token
+
+### 1. 拉取镜像
+
+```bash
+docker pull ghcr.io/yurika0211/luckyharness:latest
+```
+
+指定版本：
+
+```bash
+docker pull ghcr.io/yurika0211/luckyharness:v0.36.0
+```
+
+### 2. 配置环境变量
+
+```bash
+# 克隆仓库获取模板（或直接下载 .env.example）
+git clone https://github.com/yurika0211/luckyharness.git
+cd luckyharness
+
+# 复制并编辑
+cp .env.example .env
+```
+
+最小配置示例（`.env`）：
+
+```bash
+# LLM — 使用 OpenAI 兼容的第三方服务
+LH_PROVIDER=openai
+LH_API_KEY=sk-your-key
+LH_API_BASE=https://api.openai.com/v1
+LH_MODEL=gpt-4o
+LH_MAX_TOKENS=131072
+LH_TEMPERATURE=0.7
+
+# Telegram Bot（可选）
+LH_TELEGRAM_TOKEN=123456:ABC-DEF
+
+# HTTP API
+LH_API_ADDR=:9090
+LH_LOG_LEVEL=info
+LH_LOG_FORMAT=json
+```
+
+### 3. 启动
+
+**Docker Compose（推荐）：**
+
+```bash
+docker compose up -d
+```
+
+**纯 Docker：**
+
+```bash
+# 仅 API Server
+docker run -d \
+  --name luckyharness \
+  --env-file .env \
+  -p 9090:9090 \
+  -v lh-config:/etc/luckyharness \
+  -v lh-data:/var/lib/luckyharness \
+  ghcr.io/yurika0211/luckyharness:latest \
+  serve
+
+# Telegram Bot + API Server
+docker run -d \
+  --name luckyharness \
+  --env-file .env \
+  -p 9090:9090 \
+  -v lh-config:/etc/luckyharness \
+  -v lh-data:/var/lib/luckyharness \
+  ghcr.io/yurika0211/luckyharness:latest \
+  msg-gateway start --platform telegram --token "$LH_TELEGRAM_TOKEN"
+```
+
+### 4. 验证
+
+```bash
+# 健康检查
+curl http://localhost:9090/api/v1/health
+
+# 同步聊天
+curl -X POST http://localhost:9090/api/v1/chat/sync \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!"}'
+
+# 流式聊天
+curl -N -X POST http://localhost:9090/api/v1/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello!", "stream": true}'
+```
+
+### 5. 自定义 SOUL
+
+挂载自定义人格文件：
+
+```bash
+# 准备 SOUL.md
+cat > ./SOUL.md << 'EOF'
+# SOUL
+
+You are a helpful coding assistant.
+Answer concisely in the user's language.
+EOF
+
+# docker-compose.yml 添加挂载
+# volumes 下增加:
+#   - ./SOUL.md:/etc/luckyharness/SOUL.md:ro
+# .env 中设置:
+#   LH_SOUL_PATH=/etc/luckyharness/SOUL.md
+```
+
+### 6. 持久化目录结构
+
+```
+/var/lib/luckyharness/
+├── config.yaml      # 运行时配置（自动生成）
+├── SOUL.md          # 人格定义
+├── sessions/        # 会话持久化
+├── memory/          # 记忆存储
+├── skills/          # Skill 插件
+├── rag/             # RAG 知识库
+└── logs/            # 日志
+```
+
+### 7. 常用运维
+
+```bash
+# 查看日志
+docker compose logs -f luckyharness
+
+# 重启
+docker compose restart
+
+# 更新镜像
+docker compose pull && docker compose up -d
+
+# 进入容器调试
+docker compose exec luckyharness sh
+
+# 清理
+docker compose down -v  # ⚠️ 删除数据卷
+```
+
+### 环境变量参考
+
+| 变量 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `LH_PROVIDER` | ✅ | `openai` | LLM 提供商 |
+| `LH_API_KEY` | ✅ | — | API Key |
+| `LH_API_BASE` | ❌ | — | 自定义 API 地址 |
+| `LH_MODEL` | ✅ | `gpt-4o` | 模型名称 |
+| `LH_MAX_TOKENS` | ❌ | `4096` | 上下文窗口大小 |
+| `LH_TEMPERATURE` | ❌ | `0.7` | 生成温度 |
+| `LH_TELEGRAM_TOKEN` | ❌ | — | Telegram Bot Token |
+| `LH_API_ADDR` | ❌ | `:9090` | HTTP API 监听地址 |
+| `LH_API_KEYS` | ❌ | — | API 鉴权白名单 |
+| `LH_RATE_LIMIT` | ❌ | `60` | 每分钟请求限制 |
+| `LH_SOUL_PATH` | ❌ | 自动 | SOUL.md 路径 |
+| `LH_HOME` | ❌ | `~/.luckyharness` | 数据目录 |
+| `LH_LOG_LEVEL` | ❌ | `info` | 日志级别 |
+| `LH_LOG_FORMAT` | ❌ | `text` | 日志格式 (json/text) |
+| `LH_FALLBACKS` | ❌ | — | 降级链 JSON |
+
 ## 快速开始
 
 ```bash
