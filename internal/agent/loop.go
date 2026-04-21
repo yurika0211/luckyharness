@@ -9,6 +9,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
@@ -71,12 +72,28 @@ type toolCallLog struct {
 
 // RunLoop 执行 Agent Loop
 func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
+	return a.RunLoopWithSession(ctx, nil, userInput, loopCfg)
+}
+
+// RunLoopWithSession 执行 Agent Loop（带会话上下文）
+func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
 	result := &LoopResult{
 		State: StateReason,
 	}
 
 	// 构建初始消息
 	messages := a.buildMessages(userInput)
+
+	// 注入会话历史（多轮上下文）
+	if sess != nil {
+		existingMsgs := sess.GetMessages()
+		if len(existingMsgs) > 0 {
+			// 插入到用户消息之前
+			base := messages[:len(messages)-1] // 去掉最后的 user message
+			messages = append(base, existingMsgs...)
+			messages = append(messages, provider.Message{Role: "user", Content: userInput})
+		}
+	}
 
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)

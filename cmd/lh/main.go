@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -1240,7 +1242,8 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	}
 
 	gm := a.MsgGateway()
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	startAll, _ := cmd.Flags().GetBool("all")
 	if startAll {
@@ -1248,6 +1251,12 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("✅ 所有消息网关已启动")
+		// Block until context is cancelled (SIGINT etc.)
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		fmt.Println("\n🛑 正在停止所有消息网关...")
+		_ = gm.StopAll()
 		return nil
 	}
 
@@ -1274,6 +1283,13 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	default:
 		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
 	}
+
+	// Block until context is cancelled (SIGINT etc.)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	<-sigCh
+	fmt.Println("\n🛑 正在停止消息网关...")
+	_ = gm.StopAll()
 	return nil
 }
 

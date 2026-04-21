@@ -271,6 +271,45 @@ func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput
 // chatWithSession 是 Chat/ChatWithSession 的共享实现。
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
 
+	// 优先使用 RunLoop（支持 function calling / 工具调用）
+	loopCfg := DefaultLoopConfig()
+	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
+
+	result, err := a.RunLoopWithSession(ctx, sess, userInput, loopCfg)
+	if err != nil {
+		// 如果 RunLoop 失败，回退到简单流式聊天
+		response, chatErr := a.chatStreamSimple(ctx, sess, userInput)
+		if chatErr != nil {
+			return "", fmt.Errorf("runloop: %w; fallback chat: %w", err, chatErr)
+		}
+		return response, nil
+	}
+
+	response := result.Response
+
+	// 保存到会话
+	sess.AddMessage("user", userInput)
+	sess.AddMessage("assistant", response)
+	_ = sess.Save()
+
+	// 自动记忆
+	a.chatCount++
+	a.memory.SaveShortTerm("User: "+userInput, "conversation")
+	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+
+	if a.chatCount%10 == 0 {
+		a.memory.Decay(0.05)
+	}
+	if a.chatCount%20 == 0 {
+		a.autoSummarize()
+	}
+
+	return response, nil
+}
+
+// chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
+func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
+
 	// 构建消息列表：system + 记忆 + RAG + 会话历史 + 新消息
 	messages := []provider.Message{
 		{Role: "system", Content: a.soul.SystemPrompt()},

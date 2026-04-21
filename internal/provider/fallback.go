@@ -296,5 +296,84 @@ func (fc *FallbackChain) ResetAllCooldowns() {
 	fc.active = 0
 }
 
-// Ensure FallbackChain implements Provider
-var _ Provider = (*FallbackChain)(nil)
+// Ensure FallbackChain implements Provider and FunctionCallingProvider
+var (
+	_ Provider              = (*FallbackChain)(nil)
+	_ FunctionCallingProvider = (*FallbackChain)(nil)
+)
+
+// ChatWithOptions 发送消息（支持 function calling），自动降级
+func (fc *FallbackChain) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
+	startIdx := fc.nextAvailable()
+	if startIdx < 0 {
+		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
+	}
+
+	for i := startIdx; i < len(fc.chain); i++ {
+		if !fc.isAvailable(i) {
+			continue
+		}
+
+		p := fc.chain[i]
+		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
+			resp, err := fcProvider.ChatWithOptions(ctx, messages, opts)
+			if err != nil {
+				fc.recordFailure(i, err)
+				log.Printf("[fallback] provider %s ChatWithOptions failed: %v, trying next", p.Name(), err)
+				continue
+			}
+			fc.recordSuccess(i)
+			return resp, nil
+		}
+
+		// Provider 不支持 function calling，回退到普通 Chat
+		resp, err := p.Chat(ctx, messages)
+		if err != nil {
+			fc.recordFailure(i, err)
+			log.Printf("[fallback] provider %s Chat failed: %v, trying next", p.Name(), err)
+			continue
+		}
+		fc.recordSuccess(i)
+		return resp, nil
+	}
+
+	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+}
+
+// ChatStreamWithOptions 流式发送消息（支持 function calling），自动降级
+func (fc *FallbackChain) ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
+	startIdx := fc.nextAvailable()
+	if startIdx < 0 {
+		return nil, fmt.Errorf("all providers in fallback chain are unavailable")
+	}
+
+	for i := startIdx; i < len(fc.chain); i++ {
+		if !fc.isAvailable(i) {
+			continue
+		}
+
+		p := fc.chain[i]
+		if fcProvider, ok := p.(FunctionCallingProvider); ok && len(opts.Tools) > 0 {
+			ch, err := fcProvider.ChatStreamWithOptions(ctx, messages, opts)
+			if err != nil {
+				fc.recordFailure(i, err)
+				log.Printf("[fallback] provider %s ChatStreamWithOptions failed: %v, trying next", p.Name(), err)
+				continue
+			}
+			fc.recordSuccess(i)
+			return ch, nil
+		}
+
+		// Provider 不支持 function calling，回退到普通 ChatStream
+		ch, err := p.ChatStream(ctx, messages)
+		if err != nil {
+			fc.recordFailure(i, err)
+			log.Printf("[fallback] provider %s ChatStream failed: %v, trying next", p.Name(), err)
+			continue
+		}
+		fc.recordSuccess(i)
+		return ch, nil
+	}
+
+	return nil, fmt.Errorf("all %d providers failed in fallback chain", len(fc.chain))
+}
