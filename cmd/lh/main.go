@@ -33,6 +33,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 )
 
@@ -316,8 +317,15 @@ func main() {
 		Short: "启动消息网关",
 		RunE:  runMsgGatewayStart,
 	}
-	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, discord)")
-	msgGatewayStartCmd.Flags().String("token", "", "Bot token")
+	msgGatewayStartCmd.Flags().String("platform", "", "平台名称 (telegram, onebot)")
+	msgGatewayStartCmd.Flags().String("token", "", "Bot token (Telegram)")
+	msgGatewayStartCmd.Flags().String("onebot-api", "", "OneBot HTTP API 地址 (如 http://127.0.0.1:3000)")
+	msgGatewayStartCmd.Flags().String("onebot-ws", "", "OneBot WebSocket 事件地址 (如 ws://127.0.0.1:3001)")
+	msgGatewayStartCmd.Flags().String("onebot-token", "", "OneBot Access Token")
+	msgGatewayStartCmd.Flags().String("onebot-bot-id", "", "OneBot Bot QQ ID")
+	msgGatewayStartCmd.Flags().Bool("onebot-typing", true, "OneBot 显示正在输入")
+	msgGatewayStartCmd.Flags().Bool("onebot-like", true, "OneBot 收到消息自动点赞")
+	msgGatewayStartCmd.Flags().Int("onebot-like-times", 1, "OneBot 点赞次数 (1-10)")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")
 	msgGatewayStartCmd.Flags().String("api-addr", "127.0.0.1:9090", "HTTP API 监听地址")
 	msgGatewayStopCmd := &cobra.Command{
@@ -1369,8 +1377,50 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		fmt.Println("✅ Telegram 网关已启动")
+
+	case "onebot":
+		apiBase, _ := cmd.Flags().GetString("onebot-api")
+		wsURL, _ := cmd.Flags().GetString("onebot-ws")
+		obToken, _ := cmd.Flags().GetString("onebot-token")
+		botID, _ := cmd.Flags().GetString("onebot-bot-id")
+		showTyping, _ := cmd.Flags().GetBool("onebot-typing")
+		autoLike, _ := cmd.Flags().GetBool("onebot-like")
+		likeTimes, _ := cmd.Flags().GetInt("onebot-like-times")
+
+		if apiBase == "" {
+			return fmt.Errorf("onebot 需要 --onebot-api 参数")
+		}
+
+		obAdapter := onebot.NewAdapter(onebot.Config{
+			APIBase:      apiBase,
+			WSURL:        wsURL,
+			AccessToken:  obToken,
+			BotQQID:      botID,
+			ShowTyping:   showTyping,
+			AutoLike:     autoLike,
+			LikeTimes:    likeTimes,
+			MaxMessageLen: 4000,
+		})
+		obHandler := onebot.NewHandler(obAdapter, a)
+		obAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
+			return obHandler.HandleMessage(ctx, msg)
+		})
+		if err := gm.Register(obAdapter); err != nil {
+			return err
+		}
+		if err := gm.Start(ctx, "onebot"); err != nil {
+			return err
+		}
+		fmt.Println("✅ OneBot (QQ) 网关已启动")
+		if showTyping {
+			fmt.Println("   📝 正在输入提示: 开启")
+		}
+		if autoLike {
+			fmt.Printf("   👍 自动点赞: 开启 (%d次)\n", likeTimes)
+		}
+
 	default:
-		return fmt.Errorf("不支持的平台: %s (支持: telegram)", platform)
+		return fmt.Errorf("不支持的平台: %s (支持: telegram, onebot)", platform)
 	}
 
 	// Block until context is cancelled (SIGINT etc.)
