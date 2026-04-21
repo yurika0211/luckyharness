@@ -183,9 +183,7 @@ func (dm *DelegateManager) DelegateToSkill(ctx context.Context, skillName, descr
 	dm.tasks[taskID] = task
 	dm.mu.Unlock()
 
-	// Execute asynchronously
-	go dm.executeSkillTask(ctx, taskID, skillName, description)
-
+	dm.mu.Lock()
 	result, _ := json.Marshal(map[string]any{
 		"task_id":    taskID,
 		"status":     "running",
@@ -194,8 +192,12 @@ func (dm *DelegateManager) DelegateToSkill(ctx context.Context, skillName, descr
 		"priority":   priority.String(),
 		"message":    fmt.Sprintf("Task delegated to skill '%s'. Use task_status to check progress.", skillName),
 	})
-
 	task.Result = string(result)
+	dm.mu.Unlock()
+
+	// Execute asynchronously
+	go dm.executeSkillTask(ctx, taskID, skillName, description)
+
 	return task, nil
 }
 
@@ -213,9 +215,7 @@ func (dm *DelegateManager) DelegateToMCP(ctx context.Context, serverName, toolNa
 	dm.tasks[taskID] = task
 	dm.mu.Unlock()
 
-	// Execute asynchronously
-	go dm.executeMCPTask(ctx, taskID, serverName, toolName, args)
-
+	dm.mu.Lock()
 	result, _ := json.Marshal(map[string]any{
 		"task_id":     taskID,
 		"status":      "running",
@@ -225,8 +225,12 @@ func (dm *DelegateManager) DelegateToMCP(ctx context.Context, serverName, toolNa
 		"priority":    priority.String(),
 		"message":     fmt.Sprintf("Task delegated to MCP server '%s'. Use task_status to check progress.", serverName),
 	})
-
 	task.Result = string(result)
+	dm.mu.Unlock()
+
+	// Execute asynchronously
+	go dm.executeMCPTask(ctx, taskID, serverName, toolName, args)
+
 	return task, nil
 }
 

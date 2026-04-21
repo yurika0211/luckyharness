@@ -78,8 +78,13 @@ func TestDelegateToSkill(t *testing.T) {
 	if task.ID == "" {
 		t.Error("expected task ID")
 	}
-	if task.Status != StatusPending && task.Status != StatusRunning {
-		t.Errorf("expected pending or running status, got %s", task.Status)
+
+	// Check initial status under lock
+	dm.mu.RLock()
+	initialStatus := dm.tasks[task.ID].Status
+	dm.mu.RUnlock()
+	if initialStatus != StatusPending && initialStatus != StatusRunning {
+		t.Errorf("expected pending or running status, got %s", initialStatus)
 	}
 
 	// Wait for completion
@@ -87,12 +92,13 @@ func TestDelegateToSkill(t *testing.T) {
 
 	dm.mu.RLock()
 	completedTask, ok := dm.tasks[task.ID]
+	completedStatus := completedTask.Status
 	dm.mu.RUnlock()
 	if !ok {
 		t.Fatal("task not found")
 	}
-	if completedTask.Status != StatusCompleted {
-		t.Errorf("expected completed, got %s", completedTask.Status)
+	if completedStatus != StatusCompleted {
+		t.Errorf("expected completed, got %s", completedStatus)
 	}
 }
 
