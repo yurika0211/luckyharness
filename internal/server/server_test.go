@@ -13,14 +13,14 @@ import (
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
-// createTestAgent 创建测试用 Agent
+// createTestAgent 创建测试用 Agent（使用临时目录，不污染生产数据）
 func createTestAgent(t *testing.T) *agent.Agent {
 	t.Helper()
-	mgr, err := config.NewManager()
+	tmpDir := t.TempDir()
+	mgr, err := config.NewManagerWithDir(tmpDir)
 	if err != nil {
 		t.Fatalf("create config manager: %v", err)
 	}
-	// 不需要加载配置，使用默认值即可
 	a, err := agent.New(mgr)
 	if err != nil {
 		t.Fatalf("create agent: %v", err)

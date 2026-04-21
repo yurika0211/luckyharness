@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -39,7 +40,7 @@ func TestRecent(t *testing.T) {
 	}
 
 	for i := 0; i < 10; i++ {
-		s.Save("memory item", "test")
+		s.Save(fmt.Sprintf("memory item %d", i), "test")
 	}
 
 	recent := s.Recent(3)
@@ -566,5 +567,154 @@ func TestPersistenceWithNewFields(t *testing.T) {
 	}
 	if longs[0].Importance < 0.7 {
 		t.Errorf("expected importance preserved, got %f", longs[0].Importance)
+	}
+}
+
+// --- v0.42.0 新测试：去重、TTL、过期清理 ---
+
+func TestDedup(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 写入 5 条完全相同的记忆
+	for i := 0; i < 5; i++ {
+		s.Save("duplicate content", "test")
+	}
+
+	if s.Count() != 1 {
+		t.Errorf("expected 1 after dedup save, got %d", s.Count())
+	}
+
+	// 不同 category 的相同内容应该共存
+	s.Save("duplicate content", "other")
+	if s.Count() != 2 {
+		t.Errorf("expected 2 (different category), got %d", s.Count())
+	}
+}
+
+func TestDedupExisting(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 手动写入重复数据（模拟旧数据）
+	s.mu.Lock()
+	for i := 0; i < 10; i++ {
+		entry := &Entry{
+			ID:        fmt.Sprintf("mem_dup_%d", i),
+			Content:   "same content",
+			Category:  "test",
+			Tier:      TierMedium,
+			Importance: 0.5,
+			CreatedAt: time.Now(),
+			AccessedAt: time.Now(),
+		}
+		s.entries[entry.ID] = entry
+	}
+	s.mu.Unlock()
+
+	if s.Count() != 10 {
+		t.Fatalf("expected 10 before dedup, got %d", s.Count())
+	}
+
+	removed := s.Dedup()
+	if removed != 9 {
+		t.Errorf("expected 9 removed, got %d", removed)
+	}
+	if s.Count() != 1 {
+		t.Errorf("expected 1 after dedup, got %d", s.Count())
+	}
+}
+
+func TestPurgeCategory(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	s.Save("test1", "test")
+	s.Save("test2", "test")
+	s.Save("keep me", "important")
+
+	removed := s.PurgeCategory("test")
+	if removed != 2 {
+		t.Errorf("expected 2 removed, got %d", removed)
+	}
+	if s.Count() != 1 {
+		t.Errorf("expected 1 remaining, got %d", s.Count())
+	}
+}
+
+func TestExpire(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 保存一条短期记忆，TTL 1 毫秒
+	if err := s.SaveShortTermTTL("will expire", "test", 1*time.Millisecond); err != nil {
+		t.Fatalf("SaveShortTermTTL: %v", err)
+	}
+
+	// 保存一条不过期的记忆
+	s.Save("will stay", "test")
+
+	if s.Count() != 2 {
+		t.Fatalf("expected 2 before expire, got %d", s.Count())
+	}
+
+	// 等待过期
+	time.Sleep(10 * time.Millisecond)
+
+	expired := s.Expire()
+	if expired != 1 {
+		t.Errorf("expected 1 expired, got %d", expired)
+	}
+	if s.Count() != 1 {
+		t.Errorf("expected 1 after expire, got %d", s.Count())
+	}
+}
+
+func TestSaveWithTierDedupUpgrade(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	// 先存一条中期
+	s.SaveWithTier("important fact", "knowledge", TierMedium, 0.5)
+
+	// 再存同内容但更高层级
+	s.SaveWithTier("important fact", "knowledge", TierLong, 0.9)
+
+	if s.Count() != 1 {
+		t.Errorf("expected 1 (dedup), got %d", s.Count())
+	}
+
+	// 应该被提升到长期
+	longs := s.ByTier(TierLong)
+	if len(longs) != 1 {
+		t.Errorf("expected 1 long (upgraded), got %d", len(longs))
+	}
+	if longs[0].Importance < 0.9 {
+		t.Errorf("expected importance 0.9, got %f", longs[0].Importance)
+	}
+}
+
+func TestMergeTags(t *testing.T) {
+	existing := []string{"go", "rust"}
+	newTags := []string{"Rust", "python"}
+	result := mergeTags(existing, newTags)
+
+	if len(result) != 3 {
+		t.Errorf("expected 3 tags, got %d: %v", len(result), result)
 	}
 }

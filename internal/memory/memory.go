@@ -51,6 +51,7 @@ type Entry struct {
 	AccessedAt time.Time `json:"accessed_at"` // 最后被检索时间
 	Tags       []string  `json:"tags,omitempty"`
 	SummaryOf  []string  `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // 过期时间，nil 表示永不过期
 }
 
 // Weight 计算记忆权重（用于排序和衰减）
@@ -116,10 +117,37 @@ func (s *Store) Save(content, category string) error {
 	return s.SaveWithTier(content, category, TierMedium, 0.5)
 }
 
-// SaveWithTier 保存一条指定层级的记忆
+// SaveWithTier 保存一条指定层级的记忆（带去重）
 func (s *Store) SaveWithTier(content, category string, tier Tier, importance float64) error {
+	return s.SaveWithTierAndTags(content, category, tier, importance, nil)
+}
+
+// SaveWithTierAndTags 保存一条指定层级和标签的记忆（带去重）
+func (s *Store) SaveWithTierAndTags(content, category string, tier Tier, importance float64, tags []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// 去重检查：同 category + 同 content（忽略前后空白）不重复写入
+	normalized := strings.TrimSpace(content)
+	for _, e := range s.entries {
+		if strings.EqualFold(strings.TrimSpace(e.Content), normalized) &&
+			strings.EqualFold(e.Category, category) {
+			// 已存在：更新访问时间和标签，但不重复写入
+			e.AccessedAt = time.Now()
+			if len(tags) > 0 {
+				e.Tags = mergeTags(e.Tags, tags)
+			}
+			// 如果新层级更高，提升
+			if tier > e.Tier {
+				e.Tier = tier
+			}
+			// 如果新重要性更高，更新
+			if importance > e.Importance {
+				e.Importance = importance
+			}
+			return s.persist()
+		}
+	}
 
 	now := time.Now()
 	entry := &Entry{
@@ -130,9 +158,25 @@ func (s *Store) SaveWithTier(content, category string, tier Tier, importance flo
 		Importance: importance,
 		CreatedAt:  now,
 		AccessedAt:  now,
+		Tags:       tags,
 	}
 	s.entries[entry.ID] = entry
 	return s.persist()
+}
+
+// mergeTags 合并标签，去重
+func mergeTags(existing, newTags []string) []string {
+	seen := make(map[string]bool)
+	for _, t := range existing {
+		seen[strings.ToLower(t)] = true
+	}
+	for _, t := range newTags {
+		if !seen[strings.ToLower(t)] {
+			existing = append(existing, t)
+			seen[strings.ToLower(t)] = true
+		}
+	}
+	return existing
 }
 
 // SaveLongTerm 保存长期记忆（高重要性）
@@ -140,9 +184,67 @@ func (s *Store) SaveLongTerm(content, category string) error {
 	return s.SaveWithTier(content, category, TierLong, 0.9)
 }
 
-// SaveShortTerm 保存短期记忆（低重要性）
+// SaveShortTerm 保存短期记忆（低重要性，默认 1 小时过期）
 func (s *Store) SaveShortTerm(content, category string) error {
 	return s.SaveWithTier(content, category, TierShort, 0.3)
+}
+
+// SaveShortTermTTL 保存短期记忆，指定 TTL
+func (s *Store) SaveShortTermTTL(content, category string, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// 去重检查
+	normalized := strings.TrimSpace(content)
+	for _, e := range s.entries {
+		if strings.EqualFold(strings.TrimSpace(e.Content), normalized) &&
+			strings.EqualFold(e.Category, category) {
+			e.AccessedAt = time.Now()
+			if tier := TierShort; tier > e.Tier {
+				e.Tier = tier
+			}
+			return s.persist()
+		}
+	}
+
+	now := time.Now()
+	expiresAt := now.Add(ttl)
+	entry := &Entry{
+		ID:         s.generateID(),
+		Content:    content,
+		Category:   category,
+		Tier:       TierShort,
+		Importance: 0.3,
+		CreatedAt:  now,
+		AccessedAt: now,
+		ExpiresAt:  &expiresAt,
+	}
+	s.entries[entry.ID] = entry
+	return s.persist()
+}
+
+// Expire 清除已过期的记忆
+func (s *Store) Expire() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var toDelete []string
+
+	for id, e := range s.entries {
+		if e.ExpiresAt != nil && now.After(*e.ExpiresAt) {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	for _, id := range toDelete {
+		delete(s.entries, id)
+	}
+
+	if len(toDelete) > 0 {
+		s.persist()
+	}
+	return len(toDelete)
 }
 
 // Get 按 ID 获取记忆
@@ -395,6 +497,78 @@ func (s *Store) Stats() map[Tier]int {
 		stats[e.Tier]++
 	}
 	return stats
+}
+
+// Dedup 去重：删除同 category + 同 content 的重复条目，保留权重最高的
+func (s *Store) Dedup() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	type dedupKey struct {
+		content  string
+		category string
+	}
+	// 每组保留权重最高的
+	best := make(map[dedupKey]*Entry)
+	for _, e := range s.entries {
+		key := dedupKey{
+			content:  strings.ToLower(strings.TrimSpace(e.Content)),
+			category: strings.ToLower(strings.TrimSpace(e.Category)),
+		}
+		if existing, ok := best[key]; ok {
+			if e.Weight(now) > existing.Weight(now) {
+				best[key] = e
+			}
+		} else {
+			best[key] = e
+		}
+	}
+
+	// 收集要保留的 ID
+	keep := make(map[string]bool)
+	for _, e := range best {
+		keep[e.ID] = true
+	}
+
+	// 删除不在保留列表中的
+	var toDelete []string
+	for id := range s.entries {
+		if !keep[id] {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	for _, id := range toDelete {
+		delete(s.entries, id)
+	}
+
+	if len(toDelete) > 0 {
+		s.persist()
+	}
+	return len(toDelete)
+}
+
+// PurgeCategory 删除指定分类的所有记忆
+func (s *Store) PurgeCategory(category string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var toDelete []string
+	for id, e := range s.entries {
+		if strings.EqualFold(e.Category, category) {
+			toDelete = append(toDelete, id)
+		}
+	}
+
+	for _, id := range toDelete {
+		delete(s.entries, id)
+	}
+
+	if len(toDelete) > 0 {
+		s.persist()
+	}
+	return len(toDelete)
 }
 
 // Count 返回总记忆数

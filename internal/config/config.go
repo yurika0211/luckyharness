@@ -75,12 +75,16 @@ func NewManager() (*Manager, error) {
 		return nil, fmt.Errorf("get home dir: %w", err)
 	}
 
-	lhHome := filepath.Join(home, ".luckyharness")
-	cfgPath := filepath.Join(lhHome, "config.yaml")
+	return NewManagerWithDir(filepath.Join(home, ".luckyharness"))
+}
+
+// NewManagerWithDir 创建指定目录的配置管理器（用于测试隔离）
+func NewManagerWithDir(homeDir string) (*Manager, error) {
+	cfgPath := filepath.Join(homeDir, "config.yaml")
 
 	m := &Manager{
 		config:  DefaultConfig(),
-		homeDir: lhHome,
+		homeDir: homeDir,
 		cfgPath: cfgPath,
 	}
 

@@ -449,13 +449,13 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 	sess.AddMessage("assistant", response)
 	_ = sess.Save()
 
-	// 自动记忆
+	// 自动记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.memory.SaveShortTerm("User: "+userInput, "conversation")
-	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+	a.saveConversationMemory(userInput, response)
 
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
+		a.memory.Expire()
 	}
 	if a.chatCount%20 == 0 {
 		a.autoSummarize()
@@ -523,14 +523,14 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 	// 保存会话
 	_ = sess.Save()
 
-	// 自动记忆：将对话存为短期记忆
+	// 自动记忆：将对话存为短期记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
-	a.memory.SaveShortTerm("User: "+userInput, "conversation")
-	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+	a.saveConversationMemory(userInput, response)
 
-	// 每 10 轮对话触发衰减
+	// 每 10 轮对话触发衰减 + 过期清理
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
+		a.memory.Expire()
 	}
 
 	// 每 20 轮对话触发自动摘要
@@ -881,10 +881,10 @@ func (a *Agent) finalizeStream(events chan<- ChatEvent, sess *session.Session, u
 	_ = sess.Save()
 
 	a.chatCount++
-	a.memory.SaveShortTerm("User: "+userInput, "conversation")
-	a.memory.SaveShortTerm("Assistant: "+truncate(response, 200), "conversation")
+	a.saveConversationMemory(userInput, response)
 	if a.chatCount%10 == 0 {
 		a.memory.Decay(0.05)
+		a.memory.Expire()
 	}
 	if a.chatCount%20 == 0 {
 		a.autoSummarize()
@@ -983,6 +983,81 @@ func (a *Agent) buildMemoryContext(messages []provider.Message) []provider.Messa
 	}
 
 	return messages
+}
+
+// saveConversationMemory 智能保存对话记忆
+// - 用户消息：推断分类（preference/project/knowledge/conversation）
+// - 助手回复：截断到 150 字，不存完整回复
+// - 重要性：根据内容长度和类型动态调整
+func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
+	// 用户消息：推断分类
+	userCategory := inferCategory(userInput)
+	userImportance := inferImportance(userInput)
+	a.memory.SaveWithTier("User: "+truncate(userInput, 150), userCategory, memory.TierShort, userImportance)
+
+	// 助手回复：只存摘要，不存完整内容
+	assistantSummary := truncate(assistantResponse, 150)
+	a.memory.SaveWithTier("Assistant: "+assistantSummary, "conversation", memory.TierShort, 0.2)
+}
+
+// inferCategory 从用户输入推断记忆分类
+func inferCategory(input string) string {
+	lower := strings.ToLower(input)
+
+	// 偏好类
+	preferenceKeywords := []string{"喜欢", "偏好", "prefer", "like", "想要", "习惯", "讨厌", "hate", "dislike"}
+	for _, kw := range preferenceKeywords {
+		if strings.Contains(lower, kw) {
+			return "preference"
+		}
+	}
+
+	// 项目类
+	projectKeywords := []string{"项目", "project", "代码", "code", "bug", "部署", "deploy", "仓库", "repo", "pr", "merge"}
+	for _, kw := range projectKeywords {
+		if strings.Contains(lower, kw) {
+			return "project"
+		}
+	}
+
+	// 知识类
+	knowledgeKeywords := []string{"什么是", "怎么", "如何", "为什么", "what is", "how to", "why", "解释", "explain", "调研", "研究"}
+	for _, kw := range knowledgeKeywords {
+		if strings.Contains(lower, kw) {
+			return "knowledge"
+		}
+	}
+
+	// 身份类
+	identityKeywords := []string{"我叫", "我是", "我的名字", "my name", "i am", "住", "学校", "公司"}
+	for _, kw := range identityKeywords {
+		if strings.Contains(lower, kw) {
+			return "identity"
+		}
+	}
+
+	return "conversation"
+}
+
+// inferImportance 根据内容推断重要性
+func inferImportance(input string) float64 {
+	lower := strings.ToLower(input)
+
+	// 高重要性关键词
+	highKeywords := []string{"重要", "记住", "别忘", "important", "remember", "必须", "密码", "password", "key", "token"}
+	for _, kw := range highKeywords {
+		if strings.Contains(lower, kw) {
+			return 0.7
+		}
+	}
+
+	// 中等重要性：包含具体信息
+	if len(input) > 50 {
+		return 0.4
+	}
+
+	// 短消息（如"你好"）低重要性
+	return 0.2
 }
 
 // autoSummarize 自动摘要：将过多的短期记忆压缩为中期
