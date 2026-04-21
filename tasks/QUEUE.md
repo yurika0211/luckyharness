@@ -22,7 +22,7 @@
 | v0.16.0 | Multi-turn RAG | ✅ Done | ConversationContext + QueryRewriter + FollowUpDetector + ContextAwareRetriever + FeedbackStore |
 | v0.32.0 | Evaluation & Benchmark | ✅ Done | 评估框架 + 指标采集 + 基准测试 + 报告生成 |
 | v0.33.0 | Prompt Template Engine | ✅ Done | 模板引擎 + 变量插值 + 条件/循环 + 继承 + CLI |
-| v0.34.0 | Cost Tracker | 🟡 In Progress | 成本追踪 + 预算告警 + 报表 + CLI |
+| v0.34.0 | Cost Tracker | ✅ Done | 成本追踪 + 预算告警 + 报表 + CLI |
 
 ---
 
@@ -78,15 +78,15 @@
 
 ---
 
-## 🟡 In Progress — v0.34.0 Cost Tracker
+## ✅ Done — v0.34.0 Cost Tracker
 
 ### 子任务
 
-- [ ] **CT-1**: CostRecord + PriceTable — 调用记录模型 + 模型定价表（$/1K tokens）
-- [ ] **CT-2**: CostStore — 成本存储（内存 + JSON 持久化），按 provider/model/session 聚合
-- [ ] **CT-3**: BudgetManager — 预算设置 + 告警阈值 + 回调通知
-- [ ] **CT-4**: CLI — `lh cost summary/detail/budget/set-budget`
-- [ ] **CT-5**: 测试 — 每个子模块单元测试
+- [x] **CT-1**: CostRecord + PriceTable — 调用记录模型 + 模型定价表（10 个默认模型定价）
+- [x] **CT-2**: CostStore — 成本存储（内存 + JSON 持久化），按 provider/model/session/period 聚合
+- [x] **CT-3**: BudgetManager — 预算设置 + 告警阈值 + 回调通知 + provider 过滤
+- [x] **CT-4**: CLI — `lh cost summary/detail/budget/set-budget`
+- [x] **CT-5**: 测试 — 每个子模块单元测试
 
 ---
 
