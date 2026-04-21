@@ -2,6 +2,7 @@ package configcenter
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -208,22 +209,30 @@ func TestCenter_Watch(t *testing.T) {
 
 	ctx := context.Background()
 
+	var mu sync.Mutex
 	var receivedEvent ChangeEvent
 	var eventReceived bool
 
 	center.Watch("app.", func(event ChangeEvent) {
+		mu.Lock()
 		receivedEvent = event
 		eventReceived = true
+		mu.Unlock()
 	})
 
 	center.Set(ctx, "app.name", "luckyharness", TypeString)
 
 	// Wait for async callback
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return eventReceived
+	}, time.Second, 10*time.Millisecond)
 
-	assert.True(t, eventReceived)
+	mu.Lock()
 	assert.Equal(t, "app.name", receivedEvent.Key)
 	assert.Equal(t, "luckyharness", receivedEvent.NewVal)
+	mu.Unlock()
 }
 
 func TestCenter_WatchPrefixFilter(t *testing.T) {
@@ -234,26 +243,37 @@ func TestCenter_WatchPrefixFilter(t *testing.T) {
 
 	ctx := context.Background()
 
+	var mu sync.Mutex
 	var appEvents []ChangeEvent
 	var dbEvents []ChangeEvent
 
 	center.Watch("app.", func(event ChangeEvent) {
+		mu.Lock()
 		appEvents = append(appEvents, event)
+		mu.Unlock()
 	})
 	center.Watch("db.", func(event ChangeEvent) {
+		mu.Lock()
 		dbEvents = append(dbEvents, event)
+		mu.Unlock()
 	})
 
 	center.Set(ctx, "app.name", "lh", TypeString)
 	center.Set(ctx, "db.host", "localhost", TypeString)
 	center.Set(ctx, "other.key", "value", TypeString)
 
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(appEvents) >= 1 && len(dbEvents) >= 1
+	}, time.Second, 10*time.Millisecond)
 
+	mu.Lock()
 	assert.Len(t, appEvents, 1)
 	assert.Len(t, dbEvents, 1)
 	assert.Equal(t, "app.name", appEvents[0].Key)
 	assert.Equal(t, "db.host", dbEvents[0].Key)
+	mu.Unlock()
 }
 
 func TestCenter_Unwatch(t *testing.T) {
@@ -264,21 +284,34 @@ func TestCenter_Unwatch(t *testing.T) {
 
 	ctx := context.Background()
 
+	var mu sync.Mutex
 	var eventCount int
 
 	center.Watch("test.", func(event ChangeEvent) {
+		mu.Lock()
 		eventCount++
+		mu.Unlock()
 	})
 
 	center.Set(ctx, "test.key1", "v1", TypeString)
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return eventCount >= 1
+	}, time.Second, 10*time.Millisecond)
+
+	mu.Lock()
 	assert.Equal(t, 1, eventCount)
+	mu.Unlock()
 
 	center.Unwatch("test.")
 
 	center.Set(ctx, "test.key2", "v2", TypeString)
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
 	assert.Equal(t, 1, eventCount) // Should not increase
+	mu.Unlock()
 }
 
 func TestCenter_FallbackBackend(t *testing.T) {
@@ -344,24 +377,41 @@ func TestCenter_ChangeEventOldValue(t *testing.T) {
 
 	ctx := context.Background()
 
+	var mu sync.Mutex
 	var receivedEvent ChangeEvent
+
 	center.Watch("key.", func(event ChangeEvent) {
+		mu.Lock()
 		receivedEvent = event
+		mu.Unlock()
 	})
 
 	// First set (no old value)
 	center.Set(ctx, "key.1", "initial", TypeString)
-	time.Sleep(50 * time.Millisecond)
-	assert.Equal(t, "key.1", receivedEvent.Key)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return receivedEvent.Key == "key.1"
+	}, time.Second, 10*time.Millisecond)
+
+	mu.Lock()
 	assert.Equal(t, "", receivedEvent.OldVal)
 	assert.Equal(t, "initial", receivedEvent.NewVal)
+	mu.Unlock()
 
 	// Update (should have old value)
 	center.Set(ctx, "key.1", "updated", TypeString)
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return receivedEvent.NewVal == "updated"
+	}, time.Second, 10*time.Millisecond)
+
+	mu.Lock()
 	assert.Equal(t, "key.1", receivedEvent.Key)
 	assert.Equal(t, "initial", receivedEvent.OldVal)
 	assert.Equal(t, "updated", receivedEvent.NewVal)
+	mu.Unlock()
 }
 
 func TestHasPrefix(t *testing.T) {
