@@ -28,6 +28,7 @@
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
 | v0.38.0 | Workflow Engine v2 | ✅ Done | 条件分支 + 输出传递 + YAML 定义 + 持久化 + 事件回调 |
 | v0.39.0 | CLI Integration | ✅ Done | search CLI + workflow CLI + cron CLI |
+| v0.40.0 | Search Tool Integration | 🟡 In Progress | search 包接入 tool 系统，替换旧搜索实现 |
 
 ---
 
@@ -148,6 +149,17 @@
 - [x] **CI-2**: workflow CLI — `lh workflow list/load/run/status/cancel/validate`
 - [x] **CI-3**: cron CLI — `lh cron list/add/remove/pause/resume`
 - [x] **CI-4**: 编译通过 + 37 包全绿
+
+---
+
+## 🟡 In Progress — v0.40.0 Search Tool Integration
+
+### 子任务
+
+- [ ] **ST-1**: WebSearchTool 重写 — 委托 search.Manager.QuickSearch/DeepSearch，删除旧搜索函数
+- [ ] **ST-2**: WebFetchTool 重写 — 委托 search.Manager.FetchURL，删除旧抓取函数
+- [ ] **ST-3**: WebSearchConfig 适配 — 保留兼容接口，内部转换到 search.SearchConfig
+- [ ] **ST-4**: 测试 — 搜索/抓取工具单元测试 + 集成验证
 
 ---
 
