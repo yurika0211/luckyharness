@@ -24,7 +24,7 @@
 | v0.33.0 | Prompt Template Engine | ✅ Done | 模板引擎 + 变量插值 + 条件/循环 + 继承 + CLI |
 | v0.34.0 | Cost Tracker | ✅ Done | 成本追踪 + 预算告警 + 报表 + CLI |
 | v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
-| v0.36.0 | Middleware System | 🟡 In Progress | Provider 调用拦截器链 + 内置中间件 + CLI |
+| v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
 
 ---
 
@@ -103,14 +103,14 @@
 
 ---
 
-## 🟡 In Progress — v0.36.0 Middleware System
+## ✅ Done — v0.36.0 Middleware System
 
 ### 子任务
 
-- [ ] **MW-1**: Middleware 接口 + Chain — 定义 Provider 中间件接口和链式执行
-- [ ] **MW-2**: 内置中间件 — Logging / CostTracking / Retry / CircuitBreaker / RateLimit
-- [ ] **MW-3**: MiddlewareProvider — 将中间件链包装为 Provider
-- [ ] **MW-4**: 测试 — 每个子模块单元测试
+- [x] **MW-1**: Middleware 接口 + Chain — ChatHandler/StreamHandler + 反序包装 + Use/List/Len
+- [x] **MW-2**: 5 内置中间件 — Logging / CostTracking / Retry / CircuitBreaker / RateLimit
+- [x] **MW-3**: MiddlewareProvider — 包装任意 Provider + Chain 可访问
+- [x] **MW-4**: 测试 — 18 个单元测试（含全栈集成）
 
 ---
 
