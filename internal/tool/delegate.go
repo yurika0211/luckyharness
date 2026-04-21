@@ -63,12 +63,17 @@ type DelegateTask struct {
 	CompletedAt time.Time
 }
 
+// AgentExecutorFunc 子代理执行函数 — 通过 Agent Loop 真正执行任务
+// v0.38.0: 让 delegate 不再是占位，而是真正走 LLM
+type AgentExecutorFunc func(ctx context.Context, description, contextStr string) (string, error)
+
 // DelegateManager 子代理委派管理器
 type DelegateManager struct {
-	mu     sync.RWMutex
-	config DelegateConfig
-	tasks  map[string]*DelegateTask
-	nextID int
+	mu            sync.RWMutex
+	config        DelegateConfig
+	tasks         map[string]*DelegateTask
+	nextID        int
+	agentExecutor AgentExecutorFunc // v0.38.0: 真正的 Agent 执行器
 }
 
 // NewDelegateManager 创建子代理委派管理器
@@ -77,6 +82,14 @@ func NewDelegateManager(cfg DelegateConfig) *DelegateManager {
 		config: cfg,
 		tasks:  make(map[string]*DelegateTask),
 	}
+}
+
+// SetAgentExecutor 设置 Agent 执行器 (v0.38.0)
+// 让 delegate_task 工具真正通过 Agent Loop 执行
+func (dm *DelegateManager) SetAgentExecutor(fn AgentExecutorFunc) {
+	dm.mu.Lock()
+	defer dm.mu.Unlock()
+	dm.agentExecutor = fn
 }
 
 // DelegateTaskTool 创建子代理委派工具
@@ -203,6 +216,7 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 }
 
 // executeTask 执行子代理任务
+// v0.38.0: 通过 Agent Loop 真正执行子代理任务
 func (dm *DelegateManager) executeTask(taskID, description, contextStr string, timeout time.Duration) {
 	dm.mu.Lock()
 	task := dm.tasks[taskID]
@@ -212,8 +226,23 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// v0.5.0: 简化实现 — 子代理实际执行由 Agent Loop 驱动
-	// 这里只模拟任务完成，真实实现需要创建子 Agent 实例
+	// v0.38.0: 如果配置了 agentExecutor，通过 Agent Loop 执行
+	if dm.agentExecutor != nil {
+		result, err := dm.agentExecutor(ctx, description, contextStr)
+		dm.mu.Lock()
+		if err != nil {
+			task.Status = StatusFailed
+			task.Error = err.Error()
+		} else {
+			task.Status = StatusCompleted
+			task.Result = result
+		}
+		task.CompletedAt = time.Now()
+		dm.mu.Unlock()
+		return
+	}
+
+	// 降级：无 agentExecutor 时返回占位结果
 	select {
 	case <-ctx.Done():
 		dm.mu.Lock()
@@ -225,10 +254,9 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	default:
 	}
 
-	// 标记完成（占位）
 	dm.mu.Lock()
 	task.Status = StatusCompleted
-	task.Result = fmt.Sprintf("Sub-agent task completed: %s", description)
+	task.Result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
 	task.CompletedAt = time.Now()
 	dm.mu.Unlock()
 }

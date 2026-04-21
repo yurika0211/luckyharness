@@ -373,14 +373,15 @@ func defaultWebSearchConfig() *WebSearchConfig {
 	}
 }
 
-// WebSearchTool 网络搜索（多源降级：Brave → ddgs → DDG Lite）
+// WebSearchTool 网络搜索（多源降级：Brave → ddgs → DDG Lite → SearXNG）
+// 照 skills/web-search/SKILL.md 设计：三源降级 + 搜索策略 + 来源标注
 func WebSearchTool(cfg *WebSearchConfig) *Tool {
 	if cfg == nil {
 		cfg = defaultWebSearchConfig()
 	}
 	return &Tool{
 		Name:        "web_search",
-		Description: "Search the web for information. Returns search results with titles, URLs, and snippets. Supports multiple providers with automatic fallback.",
+		Description: "Search the web for information. Returns search results with titles, URLs, and snippets. Supports multiple providers with automatic fallback (Brave → DDG → SearXNG). Use mode='deep' for multi-source cross-validation.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
@@ -395,6 +396,12 @@ func WebSearchTool(cfg *WebSearchConfig) *Tool {
 				Description: "Number of results (1-10)",
 				Required:    false,
 				Default:     5,
+			},
+			"mode": {
+				Type:        "string",
+				Description: "Search mode: 'quick' (single source), 'deep' (multi-source cross-validation, merges results from multiple providers)",
+				Required:    false,
+				Default:     "quick",
 			},
 		},
 		Handler: func(args map[string]any) (string, error) {
@@ -428,58 +435,192 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 		count = 10
 	}
 
+	mode := "quick"
+	if m, ok := args["mode"].(string); ok {
+		mode = strings.ToLower(m)
+	}
+
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
 		provider = "brave"
 	}
 
-	// 按优先级尝试搜索源，任一成功即返回
+	if mode == "deep" {
+		return handleDeepSearch(cfg, query, count, provider)
+	}
+
+	// ── quick 模式：按优先级尝试搜索源，任一成功即返回 ──
 	// 降级链：Brave → ddgs → DDG Lite → SearXNG
 
 	// 1. Brave Search API
 	if provider == "brave" || (provider != "ddgs" && provider != "searxng") {
 		if result, err := searchWithBrave(cfg, query, count); err == nil && result != "" {
-			return result, nil
+			return annotateSource(result, "Brave"), nil
 		}
 	}
 
 	// 2. ddgs Python 包（绕过 DDG 验证码，推荐降级方案）
 	if provider == "ddgs" || provider == "brave" {
 		if result, err := searchWithDDGS(query, count); err == nil && result != "" {
-			return result, nil
+			return annotateSource(result, "DDG (ddgs)"), nil
 		}
 	}
 
 	// 3. DDG Lite curl（可能遇到验证码，最后降级）
 	if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
-		return result, nil
+		return annotateSource(result, "DDG Lite"), nil
 	}
 
 	// 4. SearXNG 自部署
 	if provider == "searxng" || cfg.BaseURL != "" {
 		if result, err := searchWithSearXNG(cfg, query, count); err == nil && result != "" {
-			return result, nil
+			return annotateSource(result, "SearXNG"), nil
 		}
 	}
 
 	return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
 }
 
+// handleDeepSearch 深度搜索模式：多源交叉验证，合并去重
+// 照 SKILL.md「深度调研」策略：多源搜索 → 合并去重 → 标注来源
+func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider string) (string, error) {
+	type sourceResult struct {
+		source  string
+		entries []searchEntry
+	}
+
+	var sources []sourceResult
+
+	// 从多个源收集结果
+	collect := func(name string, entries []searchEntry) {
+		if len(entries) > 0 {
+			sources = append(sources, sourceResult{source: name, entries: entries})
+		}
+	}
+
+	// 1. Brave
+	if provider == "brave" || (provider != "ddgs" && provider != "searxng") {
+		if entries, err := searchWithBraveEntries(cfg, query, count); err == nil {
+			collect("Brave", entries)
+		}
+	}
+
+	// 2. ddgs
+	if entries, err := searchWithDDGSEntries(query, count); err == nil {
+		collect("DDG", entries)
+	}
+
+	// 3. SearXNG
+	if provider == "searxng" || cfg.BaseURL != "" {
+		if entries, err := searchWithSearXNGEntries(cfg, query, count); err == nil {
+			collect("SearXNG", entries)
+		}
+	}
+
+	if len(sources) == 0 {
+		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+	}
+
+	// 合并去重（按 URL 去重，保留多源标注）
+	seen := make(map[string]*mergedEntry)
+	var order []string // 保持插入顺序
+
+	for _, src := range sources {
+		for _, e := range src.entries {
+			normalizedURL := normalizeURL(e.URL)
+			if existing, ok := seen[normalizedURL]; ok {
+				existing.sources = append(existing.sources, src.source)
+			} else {
+				seen[normalizedURL] = &mergedEntry{
+					title:   e.Title,
+					url:     e.URL,
+					snippet: e.Snippet,
+					sources: []string{src.source},
+				}
+				order = append(order, normalizedURL)
+			}
+		}
+	}
+
+	// 格式化输出
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Results for: %s (deep search, %d sources)\n\n", query, len(sources)))
+	for i, urlKey := range order {
+		if i >= count {
+			break
+		}
+		e := seen[urlKey]
+		sourceTag := strings.Join(e.sources, "+")
+		b.WriteString(fmt.Sprintf("%d. %s [%s]\n   %s\n", i+1, e.title, sourceTag, e.url))
+		if e.snippet != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", e.snippet))
+		}
+		b.WriteString("\n")
+	}
+
+	result := b.String()
+	if len(result) > 12000 {
+		result = result[:12000] + "\n... (truncated)"
+	}
+	return result, nil
+}
+
+// searchEntry 统一的搜索结果条目
+type searchEntry struct {
+	Title   string
+	URL     string
+	Snippet string
+}
+
+// mergedEntry 合并去重后的条目
+type mergedEntry struct {
+	title   string
+	url     string
+	snippet string
+	sources []string
+}
+
+// normalizeURL 简单 URL 归一化（去尾斜杠、去 fragment、小写 host）
+func normalizeURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.Fragment = ""
+	u.Host = strings.ToLower(u.Host)
+	u.Path = strings.TrimRight(u.Path, "/")
+	return u.String()
+}
+
+// annotateSource 给搜索结果标注来源
+func annotateSource(result, source string) string {
+	// 在 "Results for:" 行后插入来源标注
+	return strings.Replace(result, "Results for:", "[Source: "+source+"] Results for:", 1)
+}
+
 // ── Brave Search API ─────────────────────────────────────────────────────────
 
 func searchWithBrave(cfg *WebSearchConfig, query string, count int) (string, error) {
+	entries, err := searchWithBraveEntries(cfg, query, count)
+	if err != nil {
+		return "", err
+	}
+	return formatEntries(query, entries, count), nil
+}
+
+func searchWithBraveEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
 	apiKey := cfg.APIKey
 	if apiKey == "" {
 		apiKey = os.Getenv("BRAVE_API_KEY")
 	}
 	if apiKey == "" {
-		return "", fmt.Errorf("brave: no API key configured")
+		return nil, fmt.Errorf("brave: no API key configured")
 	}
 
-	url := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
+	reqURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
 		urlEncode(query), count)
 
-	cmd := exec.Command("curl", "-s", "-L", url,
+	cmd := exec.Command("curl", "-s", "-L", reqURL,
 		"-H", "Accept: application/json",
 		"-H", "X-Subscription-Token: "+apiKey,
 		"--max-time", "10",
@@ -493,15 +634,14 @@ func searchWithBrave(cfg *WebSearchConfig, query string, count int) (string, err
 	cmd.Stderr = nil
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("brave api request failed: %w", err)
+		return nil, fmt.Errorf("brave api request failed: %w", err)
 	}
 
 	output := stdout.String()
 	if output == "" {
-		return "", fmt.Errorf("brave: empty response")
+		return nil, fmt.Errorf("brave: empty response")
 	}
 
-	// 解析 Brave JSON 响应
 	var resp struct {
 		Web struct {
 			Results []struct {
@@ -512,36 +652,31 @@ func searchWithBrave(cfg *WebSearchConfig, query string, count int) (string, err
 		} `json:"web"`
 	}
 	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return "", fmt.Errorf("brave: parse response failed: %w", err)
+		return nil, fmt.Errorf("brave: parse response failed: %w", err)
 	}
 
 	if len(resp.Web.Results) == 0 {
-		return "", fmt.Errorf("brave: no results")
+		return nil, fmt.Errorf("brave: no results")
 	}
 
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Results for: %s\n\n", query))
-	for i, r := range resp.Web.Results {
-		if i >= count {
-			break
-		}
-		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
-		if r.Description != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", r.Description))
-		}
-		b.WriteString("\n")
+	entries := make([]searchEntry, 0, len(resp.Web.Results))
+	for _, r := range resp.Web.Results {
+		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Description})
 	}
-
-	result := b.String()
-	if len(result) > 8000 {
-		result = result[:8000] + "\n... (truncated)"
-	}
-	return result, nil
+	return entries, nil
 }
 
 // ── ddgs Python 包 ───────────────────────────────────────────────────────────
 
 func searchWithDDGS(query string, count int) (string, error) {
+	entries, err := searchWithDDGSEntries(query, count)
+	if err != nil {
+		return "", err
+	}
+	return formatEntries(query, entries, count), nil
+}
+
+func searchWithDDGSEntries(query string, count int) ([]searchEntry, error) {
 	script := fmt.Sprintf(
 		`import json; from ddgs import DDGS; ddgs=DDGS(timeout=10); results=ddgs.text(%q, max_results=%d); print(json.dumps(results, ensure_ascii=False))`,
 		query, count,
@@ -553,47 +688,31 @@ func searchWithDDGS(query string, count int) (string, error) {
 	cmd.Stderr = nil
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("ddgs search failed: %w", err)
+		return nil, fmt.Errorf("ddgs search failed: %w", err)
 	}
 
 	output := stdout.String()
 	if output == "" || output == "[]" {
-		return "", fmt.Errorf("ddgs returned empty results")
+		return nil, fmt.Errorf("ddgs returned empty results")
 	}
 
 	var results []map[string]any
 	if err := json.Unmarshal([]byte(output), &results); err != nil {
-		if len(output) > 5000 {
-			output = output[:5000] + "\n... (truncated)"
-		}
-		return output, nil
+		return nil, fmt.Errorf("ddgs: parse failed: %w", err)
 	}
 
 	if len(results) == 0 {
-		return "", fmt.Errorf("ddgs returned empty results")
+		return nil, fmt.Errorf("ddgs returned empty results")
 	}
 
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Results for: %s\n\n", query))
-	for i, r := range results {
-		if i >= count {
-			break
-		}
+	entries := make([]searchEntry, 0, len(results))
+	for _, r := range results {
 		title, _ := r["title"].(string)
 		href, _ := r["href"].(string)
 		body, _ := r["body"].(string)
-		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, title, href))
-		if body != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", body))
-		}
-		b.WriteString("\n")
+		entries = append(entries, searchEntry{Title: title, URL: href, Snippet: body})
 	}
-
-	result := b.String()
-	if len(result) > 8000 {
-		result = result[:8000] + "\n... (truncated)"
-	}
-	return result, nil
+	return entries, nil
 }
 
 // ── DDG Lite curl ────────────────────────────────────────────────────────────
@@ -639,18 +758,26 @@ func searchWithDDGLite(query string, count int) (string, error) {
 // ── SearXNG 自部署 ──────────────────────────────────────────────────────────
 
 func searchWithSearXNG(cfg *WebSearchConfig, query string, count int) (string, error) {
+	entries, err := searchWithSearXNGEntries(cfg, query, count)
+	if err != nil {
+		return "", err
+	}
+	return formatEntries(query, entries, count), nil
+}
+
+func searchWithSearXNGEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = os.Getenv("SEARXNG_BASE_URL")
 	}
 	if baseURL == "" {
-		return "", fmt.Errorf("searxng: no base URL configured")
+		return nil, fmt.Errorf("searxng: no base URL configured")
 	}
 
-	url := fmt.Sprintf("%s/search?q=%s&format=json&limit=%d",
+	reqURL := fmt.Sprintf("%s/search?q=%s&format=json&limit=%d",
 		strings.TrimRight(baseURL, "/"), urlEncode(query), count)
 
-	cmd := exec.Command("curl", "-s", "-L", url,
+	cmd := exec.Command("curl", "-s", "-L", reqURL,
 		"-H", "User-Agent: RightClaw/1.0",
 		"--max-time", "10",
 	)
@@ -663,12 +790,12 @@ func searchWithSearXNG(cfg *WebSearchConfig, query string, count int) (string, e
 	cmd.Stderr = nil
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("searxng request failed: %w", err)
+		return nil, fmt.Errorf("searxng request failed: %w", err)
 	}
 
 	output := stdout.String()
 	if output == "" {
-		return "", fmt.Errorf("searxng: empty response")
+		return nil, fmt.Errorf("searxng: empty response")
 	}
 
 	var resp struct {
@@ -679,34 +806,42 @@ func searchWithSearXNG(cfg *WebSearchConfig, query string, count int) (string, e
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return "", fmt.Errorf("searxng: parse response failed: %w", err)
+		return nil, fmt.Errorf("searxng: parse response failed: %w", err)
 	}
 
 	if len(resp.Results) == 0 {
-		return "", fmt.Errorf("searxng: no results")
+		return nil, fmt.Errorf("searxng: no results")
 	}
 
+	entries := make([]searchEntry, 0, len(resp.Results))
+	for _, r := range resp.Results {
+		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Content})
+	}
+	return entries, nil
+}
+
+// ── HTML 解析辅助 ────────────────────────────────────────────────────────────
+
+// formatEntries 将 searchEntry 列表格式化为可读文本
+func formatEntries(query string, entries []searchEntry, count int) string {
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Results for: %s\n\n", query))
-	for i, r := range resp.Results {
+	for i, e := range entries {
 		if i >= count {
 			break
 		}
-		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, r.Title, r.URL))
-		if r.Content != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", r.Content))
+		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, e.Title, e.URL))
+		if e.Snippet != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", e.Snippet))
 		}
 		b.WriteString("\n")
 	}
-
 	result := b.String()
 	if len(result) > 8000 {
 		result = result[:8000] + "\n... (truncated)"
 	}
-	return result, nil
+	return result
 }
-
-// ── HTML 解析辅助 ────────────────────────────────────────────────────────────
 
 func parseDDGLiteHTML(html string, count int) string {
 	var b strings.Builder
@@ -749,14 +884,14 @@ func urlEncode(s string) string {
 
 // ── WebFetchTool ─────────────────────────────────────────────────────────────
 
-// WebFetchTool 抓取 URL 内容（照 nanobot WebFetchTool 设计）
+// WebFetchTool 抓取 URL 内容（照 SKILL.md 设计：Defuddle → Jina → curl 降级）
 func WebFetchTool(cfg *WebSearchConfig) *Tool {
 	if cfg == nil {
 		cfg = defaultWebSearchConfig()
 	}
 	return &Tool{
 		Name:        "web_fetch",
-		Description: "Fetch and extract readable content from a URL. Returns page title and text content.",
+		Description: "Fetch and extract readable content from a URL. Returns page title and text content. Automatically uses Defuddle (best quality) → Jina Reader → curl fallback.",
 		Category:    CatBuiltin,
 		Source:      "builtin",
 		Permission:  PermApprove,
@@ -780,7 +915,7 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 }
 
 func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
-	url, ok := args["url"].(string)
+	fetchURL, ok := args["url"].(string)
 	if !ok {
 		return "", fmt.Errorf("url is required")
 	}
@@ -795,17 +930,51 @@ func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
 		}
 	}
 
-	// 策略 1: Jina Reader API（免费额度，提取正文效果好）
-	if result, err := fetchWithJina(cfg, url, maxChars); err == nil && result != "" {
+	// 策略 1: Defuddle CLI（照 SKILL.md：优先用 Defuddle 提取干净 Markdown）
+	if result, err := fetchWithDefuddle(fetchURL, maxChars); err == nil && result != "" {
 		return result, nil
 	}
 
-	// 策略 2: curl + readability（本地降级）
-	if result, err := fetchWithCurl(cfg, url, maxChars); err == nil && result != "" {
+	// 策略 2: Jina Reader API（免费额度，提取正文效果好）
+	if result, err := fetchWithJina(cfg, fetchURL, maxChars); err == nil && result != "" {
 		return result, nil
 	}
 
-	return fmt.Sprintf("Failed to fetch %s (all methods failed)", url), nil
+	// 策略 3: curl + strip HTML（本地降级）
+	if result, err := fetchWithCurl(cfg, fetchURL, maxChars); err == nil && result != "" {
+		return result, nil
+	}
+
+	return fmt.Sprintf("Failed to fetch %s (all methods failed)", fetchURL), nil
+}
+
+// fetchWithDefuddle 使用 defuddle CLI 提取网页正文为干净 Markdown
+func fetchWithDefuddle(fetchURL string, maxChars int) (string, error) {
+	// 检查 defuddle 是否可用
+	cmd := exec.Command("which", "defuddle")
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("defuddle not installed")
+	}
+
+	cmd = exec.Command("defuddle", "parse", fetchURL, "--md")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("defuddle parse failed: %w", err)
+	}
+
+	output := stdout.String()
+	if output == "" {
+		return "", fmt.Errorf("defuddle: empty result")
+	}
+
+	if len(output) > maxChars {
+		output = output[:maxChars] + "\n... (truncated)"
+	}
+
+	return output, nil
 }
 
 func fetchWithJina(cfg *WebSearchConfig, url string, maxChars int) (string, error) {

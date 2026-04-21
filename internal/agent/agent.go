@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/autonomy"
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
@@ -49,6 +50,7 @@ type Agent struct {
 	skills       []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
 	metrics      *metrics.Metrics        // v0.36.0: 指标收集器
 	cronEngine   *cron.Engine            // v0.36.0: 定时任务引擎
+	autonomy     *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
 	chatCount    int // 对话计数，用于触发自动摘要
 }
 
@@ -261,6 +263,93 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 	})
 
+	// v0.38.0: 创建自主工作套件
+	autonomyCfg := autonomy.DefaultAutonomyConfig()
+	// AgentExecutor will be set after Agent is fully constructed
+	autonomyKit := autonomy.NewAutonomyKit(autonomyCfg, nil)
+
+	// 注册自主工作工具
+	autonomyTools := autonomy.NewToolDefinitions(autonomyKit)
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_queue_add",
+		Description: "Add a task to the autonomy task queue. Tasks are picked up by workers automatically.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters: map[string]tool.Param{
+			"title":       {Type: "string", Description: "Task title", Required: true},
+			"description": {Type: "string", Description: "Detailed task description", Required: false},
+			"priority":    {Type: "string", Description: "Priority: low, normal, high, critical", Required: false, Default: "normal"},
+			"tags":        {Type: "array", Description: "Tags for categorization", Required: false},
+		},
+		Handler: autonomyTools.HandleQueueAdd,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_queue_list",
+		Description: "List tasks in the autonomy queue. Optionally filter by state.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters: map[string]tool.Param{
+			"state": {Type: "string", Description: "Filter by state: ready, in_progress, blocked, done", Required: false},
+		},
+		Handler: autonomyTools.HandleQueueList,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_queue_update",
+		Description: "Update a task's state in the autonomy queue.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters: map[string]tool.Param{
+			"task_id": {Type: "string", Description: "Task ID to update", Required: true},
+			"action":  {Type: "string", Description: "Action: complete, fail, block, unblock", Required: true},
+			"result":  {Type: "string", Description: "Result text (for complete action)", Required: false},
+			"error":   {Type: "string", Description: "Error message (for fail action)", Required: false},
+			"reason":  {Type: "string", Description: "Block reason (for block action)", Required: false},
+			"retry":   {Type: "boolean", Description: "Whether to retry on failure (default true)", Required: false},
+		},
+		Handler: autonomyTools.HandleQueueUpdate,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_worker_spawn",
+		Description: "Spawn a worker to execute a specific task from the queue.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermApprove,
+		Parameters: map[string]tool.Param{
+			"task_id": {Type: "string", Description: "Task ID to execute", Required: true},
+		},
+		Handler: autonomyTools.HandleWorkerSpawn,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_worker_list",
+		Description: "List active workers and their status.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters:  map[string]tool.Param{},
+		Handler:     autonomyTools.HandleWorkerList,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_heartbeat_trigger",
+		Description: "Manually trigger a heartbeat cycle to check for work and dispatch tasks.",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters:  map[string]tool.Param{},
+		Handler:     autonomyTools.HandleHeartbeatTrigger,
+	})
+	tools.Register(&tool.Tool{
+		Name:        "autonomy_status",
+		Description: "Get the overall status of the autonomy system (queue, workers, heartbeat).",
+		Category:    tool.CatDelegate,
+		Source:      "builtin",
+		Permission:  tool.PermAuto,
+		Parameters:  map[string]tool.Param{},
+		Handler:     autonomyTools.HandleStatus,
+	})
+
 	a := &Agent{
 		cfg:        cfg,
 		soul:       s,
@@ -285,6 +374,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabMgr:   collabMgr,
 		metrics:     m,
 		cronEngine:  cronEngine,
+		autonomy:    autonomyKit,
 	}
 
 	// v0.35.0: 自动加载 skills 目录
@@ -297,6 +387,23 @@ func New(cfg *config.Manager) (*Agent, error) {
 
 	// v0.36.0: 启动定时任务引擎
 	cronEngine.Start()
+
+	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
+	delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		sess := sessions.NewWithTitle("delegate-task")
+		prompt := description
+		if contextStr != "" {
+			prompt = fmt.Sprintf("%s\n\nContext: %s", description, contextStr)
+		}
+		loopCfg := DefaultLoopConfig()
+		loopCfg.AutoApprove = true
+		loopCfg.MaxIterations = 10
+		result, err := a.RunLoopWithSession(ctx, sess, prompt, loopCfg)
+		if err != nil {
+			return "", err
+		}
+		return result.Response, nil
+	})
 
 	return a, nil
 }
@@ -624,6 +731,62 @@ func (a *Agent) MCPClient() *tool.MCPClient {
 // Delegate 返回子代理委派管理器
 func (a *Agent) Delegate() *tool.DelegateManager {
 	return a.delegate
+}
+
+// Autonomy 返回自主工作套件 (v0.38.0)
+func (a *Agent) Autonomy() *autonomy.AutonomyKit {
+	return a.autonomy
+}
+
+// StartAutonomy 启动自主工作套件（WorkerPool + HeartbeatEngine）
+// 必须在 Agent 创建完成后调用，因为 Worker 需要引用 Agent 本身
+func (a *Agent) StartAutonomy(ctx context.Context) error {
+	if a.autonomy == nil {
+		return fmt.Errorf("autonomy kit not initialized")
+	}
+
+	// Create executor adapter that bridges Agent to AgentExecutor interface
+	executor := &agentExecutorAdapter{agent: a}
+
+	// Re-create with executor reference
+	a.autonomy = autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), executor)
+	return a.autonomy.Start(ctx)
+}
+
+// agentExecutorAdapter bridges Agent to autonomy.AgentExecutor interface
+type agentExecutorAdapter struct {
+	agent *Agent
+}
+
+func (a *agentExecutorAdapter) RunLoopWithSession(ctx context.Context, sessionID string, userInput string, cfg autonomy.LoopConfig) (*autonomy.LoopResult, error) {
+	// Look up session by ID
+	sess, ok := a.agent.sessions.Get(sessionID)
+	if !ok {
+		// Fallback: create new session
+		sess = a.agent.sessions.NewWithTitle("autonomy-worker")
+	}
+
+	loopCfg := LoopConfig{
+		MaxIterations: cfg.MaxIterations,
+		Timeout:       cfg.Timeout,
+		AutoApprove:   cfg.AutoApprove,
+	}
+
+	result, err := a.agent.RunLoopWithSession(ctx, sess, userInput, loopCfg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &autonomy.LoopResult{
+		Response:   result.Response,
+		TokensUsed: result.TokensUsed,
+		Iterations: result.Iterations,
+	}, nil
+}
+
+func (a *agentExecutorAdapter) NewSession(title string) string {
+	sess := a.agent.sessions.NewWithTitle(title)
+	return sess.ID
 }
 
 // Gateway 返回统一工具网关

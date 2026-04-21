@@ -24,6 +24,7 @@
 | v0.33.0 | Prompt Template Engine | ✅ Done | 模板引擎 + 变量插值 + 条件/循环 + 继承 + CLI |
 | v0.34.0 | Cost Tracker | ✅ Done | 成本追踪 + 预算告警 + 报表 + CLI |
 | v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
+| v0.36.0 | Middleware System | 🟡 In Progress | Provider 调用拦截器链 + 内置中间件 + CLI |
 
 ---
 
@@ -99,6 +100,17 @@
 - [x] **RC-2**: CircuitBreaker — 三态熔断（Closed/Open/HalfOpen）+ 自适应恢复 + 状态回调
 - [x] **RC-3**: ResilientProvider — 组合 Retry + CB 的 Provider 装饰器，支持 Chat/ChatStream
 - [x] **RC-4**: 测试 — 26 个单元测试（含 race detection）
+
+---
+
+## 🟡 In Progress — v0.36.0 Middleware System
+
+### 子任务
+
+- [ ] **MW-1**: Middleware 接口 + Chain — 定义 Provider 中间件接口和链式执行
+- [ ] **MW-2**: 内置中间件 — Logging / CostTracking / Retry / CircuitBreaker / RateLimit
+- [ ] **MW-3**: MiddlewareProvider — 将中间件链包装为 Provider
+- [ ] **MW-4**: 测试 — 每个子模块单元测试
 
 ---
 
