@@ -27,6 +27,7 @@
 | v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
 | v0.43.0 | Agent 包测试 + v0.43 功能整合 | ✅ Done | Agent 测试 37 新 (4.9%→23.9%) + 短期/中期记忆 + remember/recall + OneBot网关 + Telegram增强 + 文件沙箱 + Cron反馈 |
+| v0.44.0 | Server 包测试补全 | ✅ Done | Server 测试 55 新 (41.0%→65.8%) — Health/Metrics/Context/FC/RAGStore/Workflow/Gateway/Plugin/Collab |
 
 ---
 
