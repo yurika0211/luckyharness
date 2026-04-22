@@ -32,6 +32,7 @@
 | v0.46.0 | Tool 包测试补全 | ✅ Done | 40 新测试 (64.0%→69.2%) — CallWithShellContext/UsageTracker/纯函数/边界 |
 | v0.47.0 | Gateway 包测试补全 | ✅ Done | 35 新测试 — telegram 8.5%→18.0%, onebot 11.8%→28.6% |
 | v0.48.0 | Provider 包测试补全 | ✅ Done | 45 新测试 (44.1%→56.1%) — Registry/FallbackChain/TokenStore/ModelCatalog/StreamParser |
+| v0.49.0 | Search 包测试补全 | ✅ Done | 76 新测试 (52.5%→88.1%) — 纯函数/Cache边界/Config边界/Manager边界/URL验证/格式化/DeepSearch/Engine构造/DDGLite解析/集成测试 |
 
 ---
 
