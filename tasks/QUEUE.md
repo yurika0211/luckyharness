@@ -209,16 +209,70 @@
 
 ---
 
+## ✅ Done — v0.49.0 Search 包测试补全
+
+### 子任务
+
+- [x] **SR-1**: Search 包测试补全 — 76 新测试 (52.5%→88.1%)
+  - 纯函数测试（URL 验证/格式化/规范化）
+  - Cache 边界测试
+  - Config 边界测试
+  - Manager 边界测试
+  - DDG Lite 解析测试
+  - DeepSearch 测试
+  - Engine 构造测试
+  - 集成测试（DDGS/DDGLite/Jina/Curl）
+
+---
+
+## 🔴 Planned — v0.50.0 Session 包测试补全
+
+### 子任务
+
+- [ ] **SS-1**: Session 包测试补全 — 目标覆盖率 71.9%→85%+
+  - Session 构造函数测试
+  - Message 序列化/反序列化测试
+  - TTL 过期测试
+  - sliding window 边界测试
+  - 并发安全测试
+
+---
+
+## 🔴 Planned — v0.51.0 WebSocket 包测试补全
+
+### 子任务
+
+- [ ] **WS-1**: WebSocket 包测试补全 — 目标覆盖率 56.7%→80%+
+  - Client 连接/重连测试
+  - Server 广播/单播测试
+  - 消息队列测试
+  - 心跳/超时测试
+
+---
+
+## 🔴 Planned — v0.52.0 全仓库覆盖率里程碑
+
+### 子任务
+
+- [ ] **CV-1**: 全仓库覆盖率里程碑 — 目标 60%+
+  - api/grpc 包测试 (5.0%→60%+)
+  - internal/gateway/telegram 包测试 (18.0%→60%+)
+  - internal/agent 包测试 (21.7%→60%+)
+  - internal/gateway/onebot 包测试 (28.6%→60%+)
+  - internal/autonomy 包测试 (39.1%→60%+)
+
+---
+
 ## 🔴 Blocked
 
 ### v0.6.0 消息网关
-- 需要: Bot Token (Telegram/Discord/Slack)
+- 需要：Bot Token (Telegram/Discord/Slack)
 - 用户需提供至少一个平台的 Bot Token
 
 ### v0.8.0 沙箱与安全
-- 需要: Docker 环境
+- 需要：Docker 环境
 - 当前运行环境无 Docker
 
 ---
 
-*Last updated: 2026-04-22 (v0.48.0)*
+*Last updated: 2026-04-22 (v0.49.0)*
