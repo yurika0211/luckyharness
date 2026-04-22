@@ -225,16 +225,21 @@
 
 ---
 
-## 🔴 Planned — v0.50.0 Session 包测试补全
+## ✅ Done — v0.50.0 Session 包测试补全
 
 ### 子任务
 
-- [ ] **SS-1**: Session 包测试补全 — 目标覆盖率 71.9%→85%+
-  - Session 构造函数测试
-  - Message 序列化/反序列化测试
-  - TTL 过期测试
-  - sliding window 边界测试
-  - 并发安全测试
+- [x] **SS-1**: Session 包测试补全 — 71.9%→86.7%
+  - ShellContext 测试（GetCwd/SetCwd/GetEnv/SetEnv/UnsetEnv）
+  - 懒加载测试（GetMessages 懒加载逻辑）
+  - Save/SaveAll 边界测试
+  - NewManager 边界测试
+  - Delete 边界测试
+  - 并发安全测试（Session/Env 并发读写）
+  - Message 序列化测试
+  - Session 元数据测试（时间戳/标题）
+  - Manager 搜索功能增强测试
+  - 边界情况测试（特殊字符/Unicode/空查询）
 
 ---
 
@@ -275,4 +280,4 @@
 
 ---
 
-*Last updated: 2026-04-22 (v0.49.0)*
+*Last updated: 2026-04-22 (v0.50.0)*
