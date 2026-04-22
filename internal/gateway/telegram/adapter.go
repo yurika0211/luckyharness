@@ -481,6 +481,13 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 	}
 
 	chatID := strconv.FormatInt(tgMsg.Chat.ID, 10)
+	fmt.Printf("[telegram] received msg: chatID=%s, chatType=%s, from=%v, text=%q\n",
+		chatID, tgMsg.Chat.Type, tgMsg.From.UserName, func() string {
+			if len(tgMsg.Text) > 80 {
+				return tgMsg.Text[:80]
+			}
+			return tgMsg.Text
+		}())
 
 	// Check chat whitelist
 	if !a.cfg.IsChatAllowed(chatID) {
@@ -493,6 +500,8 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 	if msg.Chat.Type != gateway.ChatPrivate {
 		mentioned := a.isMentioned(tgMsg)
 		replyToBot := a.isReplyToBot(tgMsg)
+		fmt.Printf("[telegram] group msg: chatID=%s, mentioned=%v, replyToBot=%v, botUsername=%s, text=%q\n",
+			chatID, mentioned, replyToBot, a.botUsername, msg.Text[:min(80, len(msg.Text))])
 		if !mentioned && !replyToBot {
 			return
 		}

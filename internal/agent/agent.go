@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -779,6 +780,29 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 				ToolCalls: toolCalls,
 			})
 
+			// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
+			type streamToolResult struct {
+				Index       int
+				ToolCallID  string
+				ToolName    string
+				Result      string
+				ShortResult string
+			}
+
+			resultCh := make(chan streamToolResult, len(toolCalls))
+
+			// 分类：可并发 vs 必须串行
+			var parallelIdx []int
+			var serialIdx []int
+			for i, tc := range toolCalls {
+				if a.isToolParallelSafe(tc.Name) {
+					parallelIdx = append(parallelIdx, i)
+				} else {
+					serialIdx = append(serialIdx, i)
+				}
+			}
+
+			// 先发所有 ToolCall 事件（让用户看到进度）
 			for _, tc := range toolCalls {
 				shortArgs := tc.Arguments
 				if len(shortArgs) > 100 {
@@ -790,28 +814,65 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					Args:    shortArgs,
 					Content: fmt.Sprintf("🔧 %s", tc.Name),
 				}
+			}
 
+			// 并发执行无状态工具
+			for _, idx := range parallelIdx {
+				tc := toolCalls[idx]
+				go func(idx int, tc provider.ToolCall) {
+					toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+					if err != nil {
+						toolResult = fmt.Sprintf("Error: %v", err)
+					}
+					shortResult := toolResult
+					if len(shortResult) > 200 {
+						shortResult = shortResult[:197] + "..."
+					}
+					resultCh <- streamToolResult{
+						Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
+						Result: toolResult, ShortResult: shortResult,
+					}
+				}(idx, tc)
+			}
+
+			// 串行执行有状态工具
+			for _, idx := range serialIdx {
+				tc := toolCalls[idx]
 				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
 				if err != nil {
 					toolResult = fmt.Sprintf("Error: %v", err)
 				}
-
 				shortResult := toolResult
 				if len(shortResult) > 200 {
 					shortResult = shortResult[:197] + "..."
 				}
+				resultCh <- streamToolResult{
+					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
+					Result: toolResult, ShortResult: shortResult,
+				}
+			}
+
+			// 收集结果，按顺序
+			allResults := make([]streamToolResult, 0, len(toolCalls))
+			for i := 0; i < len(toolCalls); i++ {
+				allResults = append(allResults, <-resultCh)
+			}
+			sort.Slice(allResults, func(i, j int) bool {
+				return allResults[i].Index < allResults[j].Index
+			})
+
+			for _, r := range allResults {
 				events <- ChatEvent{
 					Type:    ChatEventToolResult,
-					Name:    tc.Name,
-					Result:  shortResult,
-					Content: fmt.Sprintf("📋 %s → %s", tc.Name, shortResult),
+					Name:    r.ToolName,
+					Result:  r.ShortResult,
+					Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
 				}
-
 				messages = append(messages, provider.Message{
 					Role:       "tool",
-					Content:    toolResult,
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
+					Content:    r.Result,
+					ToolCallID: r.ToolCallID,
+					Name:       r.ToolName,
 				})
 			}
 
@@ -859,6 +920,29 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			ToolCalls: resp.ToolCalls,
 		})
 
+		// v0.44.0: 并发执行工具调用（无状态工具并行，有状态工具串行）
+		type simToolResult struct {
+			Index       int
+			ToolCallID  string
+			ToolName    string
+			Result      string
+			ShortResult string
+		}
+
+		simResultCh := make(chan simToolResult, len(resp.ToolCalls))
+
+		// 分类
+		var parallelIdx []int
+		var serialIdx []int
+		for i, tc := range resp.ToolCalls {
+			if a.isToolParallelSafe(tc.Name) {
+				parallelIdx = append(parallelIdx, i)
+			} else {
+				serialIdx = append(serialIdx, i)
+			}
+		}
+
+		// 先发所有 ToolCall 事件
 		for _, tc := range resp.ToolCalls {
 			shortArgs := tc.Arguments
 			if len(shortArgs) > 100 {
@@ -870,28 +954,64 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				Args:    shortArgs,
 				Content: fmt.Sprintf("🔧 %s", tc.Name),
 			}
+		}
 
+		// 并发执行无状态工具
+		for _, idx := range parallelIdx {
+			tc := resp.ToolCalls[idx]
+			go func(idx int, tc provider.ToolCall) {
+				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+				if err != nil {
+					toolResult = fmt.Sprintf("Error: %v", err)
+				}
+				shortResult := toolResult
+				if len(shortResult) > 200 {
+					shortResult = shortResult[:197] + "..."
+				}
+				simResultCh <- simToolResult{
+					Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
+					Result: toolResult, ShortResult: shortResult,
+				}
+			}(idx, tc)
+		}
+
+		// 串行执行有状态工具
+		for _, idx := range serialIdx {
+			tc := resp.ToolCalls[idx]
 			toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
 			if err != nil {
 				toolResult = fmt.Sprintf("Error: %v", err)
 			}
-
 			shortResult := toolResult
 			if len(shortResult) > 200 {
 				shortResult = shortResult[:197] + "..."
 			}
+			simResultCh <- simToolResult{
+				Index: idx, ToolCallID: tc.ID, ToolName: tc.Name,
+				Result: toolResult, ShortResult: shortResult,
+			}
+		}
+
+		simResults := make([]simToolResult, 0, len(resp.ToolCalls))
+		for i := 0; i < len(resp.ToolCalls); i++ {
+			simResults = append(simResults, <-simResultCh)
+		}
+		sort.Slice(simResults, func(i, j int) bool {
+			return simResults[i].Index < simResults[j].Index
+		})
+
+		for _, r := range simResults {
 			events <- ChatEvent{
 				Type:    ChatEventToolResult,
-				Name:    tc.Name,
-				Result:  shortResult,
-				Content: fmt.Sprintf("📋 %s → %s", tc.Name, shortResult),
+				Name:    r.ToolName,
+				Result:  r.ShortResult,
+				Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
 			}
-
 			messages = append(messages, provider.Message{
 				Role:       "tool",
-				Content:    toolResult,
-				ToolCallID: tc.ID,
-				Name:       tc.Name,
+				Content:    r.Result,
+				ToolCallID: r.ToolCallID,
+				Name:       r.ToolName,
 			})
 		}
 

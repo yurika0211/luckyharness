@@ -41,6 +41,7 @@ func ShellTool() *Tool {
 		Source:      "builtin",
 		Permission:  PermApprove, // shell 命令需要审批
 		ShellAware:  true,
+		ParallelSafe: false,
 		Parameters: map[string]Param{
 			"command": {
 				Type:        "string",
@@ -428,6 +429,7 @@ func WebSearchTool(cfg *WebSearchConfig) *Tool {
 		Handler: func(args map[string]any) (string, error) {
 			return handleWebSearch(cfg, args)
 		},
+		ParallelSafe: true,
 	}
 }
 
@@ -990,6 +992,7 @@ func WebFetchTool(cfg *WebSearchConfig) *Tool {
 		Handler: func(args map[string]any) (string, error) {
 			return handleWebFetch(cfg, args)
 		},
+		ParallelSafe: true,
 	}
 }
 
@@ -1175,6 +1178,7 @@ func CurrentTimeTool() *Tool {
 		Permission:  PermAuto,
 		Parameters:  map[string]Param{},
 		Handler:     handleCurrentTime,
+		ParallelSafe: true,
 	}
 }
 
@@ -1317,6 +1321,7 @@ func RememberTool() *Tool {
 			// 实际处理在 agent.handleMemoryTool 中
 			return "", nil
 		},
+		ParallelSafe: false,
 	}
 }
 
@@ -1339,5 +1344,6 @@ func RecallTool() *Tool {
 			// 实际处理在 agent.handleMemoryTool 中
 			return "", nil
 		},
+		ParallelSafe: true,
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -176,10 +177,67 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				sess.AddMessage("assistant", resp.Content)
 			}
 
-			// Act: 执行每个工具调用
-			for _, tc := range resp.ToolCalls {
-				start := time.Now()
+			// Act: 执行工具调用（并发优化：无依赖的工具并行执行）
+			type toolExecResult struct {
+				Index       int
+				ToolCall    toolCallLog
+				ToolMessage provider.Message
+			}
 
+			// 分析依赖：shell/file_write/remember 等有状态工具必须串行
+			// 无状态工具（web_search, web_fetch, file_read, current_time, recall）可并发
+			var parallelGroup []int  // 可并发的工具索引
+			var serialGroup []int    // 必须串行的工具索引
+
+			for i, tc := range resp.ToolCalls {
+				if a.isToolParallelSafe(tc.Name) {
+					parallelGroup = append(parallelGroup, i)
+				} else {
+					serialGroup = append(serialGroup, i)
+				}
+			}
+
+			resultCh := make(chan toolExecResult, len(resp.ToolCalls))
+
+			// 并发执行无状态工具
+			if len(parallelGroup) > 0 {
+				for _, idx := range parallelGroup {
+					tc := resp.ToolCalls[idx]
+					go func(idx int, tc provider.ToolCall) {
+						start := time.Now()
+						toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess)
+						duration := time.Since(start)
+
+						tcLog := toolCallLog{
+							Name:      tc.Name,
+							Arguments: tc.Arguments,
+							Duration:  duration,
+						}
+						if err != nil {
+							toolResult = fmt.Sprintf("Error: %v", err)
+							tcLog.Result = toolResult
+						} else {
+							tcLog.Result = toolResult
+						}
+
+						resultCh <- toolExecResult{
+							Index:    idx,
+							ToolCall: tcLog,
+							ToolMessage: provider.Message{
+								Role:       "tool",
+								Content:    toolResult,
+								ToolCallID: tc.ID,
+								Name:       tc.Name,
+							},
+						}
+					}(idx, tc)
+				}
+			}
+
+			// 串行执行有状态工具
+			for _, idx := range serialGroup {
+				tc := resp.ToolCalls[idx]
+				start := time.Now()
 				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess)
 				duration := time.Since(start)
 
@@ -188,7 +246,6 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 					Arguments: tc.Arguments,
 					Duration:  duration,
 				}
-
 				if err != nil {
 					toolResult = fmt.Sprintf("Error: %v", err)
 					tcLog.Result = toolResult
@@ -196,19 +253,33 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 					tcLog.Result = toolResult
 				}
 
-				result.ToolCalls = append(result.ToolCalls, tcLog)
+				resultCh <- toolExecResult{
+					Index:    idx,
+					ToolCall: tcLog,
+					ToolMessage: provider.Message{
+						Role:       "tool",
+						Content:    toolResult,
+						ToolCallID: tc.ID,
+						Name:       tc.Name,
+					},
+				}
+			}
 
-				// 将工具结果加入消息（含 tool_call_id）
-				messages = append(messages, provider.Message{
-					Role:       "tool",
-					Content:    toolResult,
-					ToolCallID: tc.ID,
-					Name:       tc.Name,
-				})
+			// 收集所有结果，按原始顺序排列
+			allResults := make([]toolExecResult, 0, len(resp.ToolCalls))
+			for i := 0; i < len(resp.ToolCalls); i++ {
+				allResults = append(allResults, <-resultCh)
+			}
+			// 按 Index 排序，保证消息顺序与 tool_calls 一致
+			sort.Slice(allResults, func(i, j int) bool {
+				return allResults[i].Index < allResults[j].Index
+			})
 
-				// 写入 session：工具调用结果
+			for _, r := range allResults {
+				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
+				messages = append(messages, r.ToolMessage)
 				if sess != nil {
-					sess.AddToolMessage(tc.Name, toolResult)
+					sess.AddToolMessage(r.ToolMessage.Name, r.ToolMessage.Content)
 				}
 			}
 
@@ -498,4 +569,13 @@ func (a *Agent) buildMessages(userInput string) []provider.Message {
 	messages = append(messages, provider.Message{Role: "user", Content: userInput})
 
 	return messages
+}
+
+// isToolParallelSafe 检查工具是否可安全并发执行
+func (a *Agent) isToolParallelSafe(toolName string) bool {
+	t, ok := a.tools.Get(toolName)
+	if !ok {
+		return false // 未知工具保守处理
+	}
+	return t.ParallelSafe
 }

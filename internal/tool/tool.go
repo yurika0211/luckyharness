@@ -51,6 +51,10 @@ type Tool struct {
 	Enabled      bool            // 是否启用
 	// ShellAware 标记该工具需要 shell 上下文注入（cwd + env）
 	ShellAware bool
+	// ParallelSafe 标记该工具可安全并发执行（无状态、无副作用冲突）
+	// 如 web_search, web_fetch, file_read, current_time, recall 等
+	// shell, file_write 等有状态依赖的工具不应标记
+	ParallelSafe bool
 }
 
 // Param 代表工具参数
