@@ -183,13 +183,13 @@
 
 ---
 
-## 🔴 Ready — v0.47.0 Gateway 包测试补全
+## ✅ Done — v0.47.0 Gateway 包测试补全
 
 ### 子任务
 
-- [ ] **GW-1**: Telegram adapter 测试 — processUpdate/reply-to-bot/isMentioned
-- [ ] **GW-2**: OneBot adapter 测试 — WebSocket 消息解析/发送
-- [ ] **GW-3**: Gateway 接口测试 — ChatType/Message 类型
+- [x] **GW-1**: Telegram adapter 测试 — escapeMarkdownV2/streamSender/renderContent
+- [x] **GW-2**: OneBot adapter 测试 — handleEvent/parseGroupID/splitMessage
+- [x] **GW-3**: Gateway 接口测试 — Config defaults/Adapter lifecycle
 
 ---
 
