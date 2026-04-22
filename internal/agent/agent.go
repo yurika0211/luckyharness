@@ -516,8 +516,8 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 	// 加入 RAG 检索上下文
 	messages = a.buildRAGContext(ctx, messages, userInput)
 
-	// 加入已有会话历史（多轮对话上下文）
-	existingMsgs := sess.GetMessages()
+	// 加入已有会话历史（多轮对话上下文，滑动窗口）
+	existingMsgs := sess.GetMessages(20) // v0.44.0: 只取最近 20 轮
 	if len(existingMsgs) > 0 {
 		messages = append(messages, existingMsgs...)
 	}

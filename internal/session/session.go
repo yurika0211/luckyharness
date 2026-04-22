@@ -24,6 +24,10 @@ type Session struct {
 	dir       string
 	// ShellContext 持久化 shell 环境（跨工具调用保持）
 	ShellContext ShellContext
+
+	// v0.44.0: 懒加载支持
+	messagesLoaded bool // 是否已加载完整消息
+	messageCount   int  // 元数据中的消息数量（未加载时使用）
 }
 
 // ShellContext 保存 shell 会话的环境状态
@@ -102,7 +106,14 @@ func (s *Session) AddMessage(role, content string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 确保消息已加载
+	if !s.messagesLoaded {
+		s.Messages = make([]provider.Message, 0)
+		s.messagesLoaded = true
+	}
+
 	s.Messages = append(s.Messages, provider.Message{Role: role, Content: content})
+	s.messageCount = len(s.Messages)
 	s.UpdatedAt = time.Now()
 
 	// 自动生成标题：取第一条用户消息的前 50 字符
@@ -120,24 +131,67 @@ func (s *Session) AddToolMessage(toolName, result string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// 确保消息已加载
+	if !s.messagesLoaded {
+		s.Messages = make([]provider.Message, 0)
+		s.messagesLoaded = true
+	}
+
 	s.Messages = append(s.Messages, provider.Message{
 		Role:    "tool",
 		Content: fmt.Sprintf("[Tool: %s] %s", toolName, result),
 	})
+	s.messageCount = len(s.Messages)
 	s.UpdatedAt = time.Now()
 }
 
-// GetMessages 获取所有消息
-func (s *Session) GetMessages() []provider.Message {
+// GetMessages 获取消息（懒加载 + 滑动窗口）
+// maxTurns: 最大对话轮数（0=全部），一轮 = 一条 user + 一条 assistant
+func (s *Session) GetMessages(maxTurns ...int) []provider.Message {
+	// 懒加载
+	if err := s.loadMessages(); err != nil {
+		return nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	cp := make([]provider.Message, len(s.Messages))
-	copy(cp, s.Messages)
+
+	if len(s.Messages) == 0 {
+		return nil
+	}
+
+	// 无窗口限制，返回全部
+	if len(maxTurns) == 0 || maxTurns[0] <= 0 {
+		cp := make([]provider.Message, len(s.Messages))
+		copy(cp, s.Messages)
+		return cp
+	}
+
+	window := maxTurns[0]
+	// 保留最后 window*2 条消息（user+assistant 对）
+	maxMsgs := window * 2
+	if maxMsgs > len(s.Messages) {
+		maxMsgs = len(s.Messages)
+	}
+
+	start := len(s.Messages) - maxMsgs
+	// 对齐到 user 消息开头（避免从 assistant 中间截断）
+	for start > 0 && s.Messages[start].Role != "user" {
+		start--
+	}
+
+	cp := make([]provider.Message, len(s.Messages)-start)
+	copy(cp, s.Messages[start:])
 	return cp
 }
 
 // LastMessage 获取最后一条消息
 func (s *Session) LastMessage() *provider.Message {
+	// 懒加载
+	if err := s.loadMessages(); err != nil {
+		return nil
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if len(s.Messages) == 0 {
@@ -147,11 +201,14 @@ func (s *Session) LastMessage() *provider.Message {
 	return &m
 }
 
-// MessageCount 返回消息数量
+// MessageCount 返回消息数量（不需要加载完整消息）
 func (s *Session) MessageCount() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return len(s.Messages)
+	if s.messagesLoaded {
+		return len(s.Messages)
+	}
+	return s.messageCount
 }
 
 // Save 保存会话到磁盘 (JSON 格式)
@@ -191,6 +248,16 @@ type sessionData struct {
 	ShellContext ShellContext      `json:"shell_context"`
 }
 
+// sessionMeta 是仅元数据的轻量格式（用于启动时批量加载）
+type sessionMeta struct {
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	MessageCount int          `json:"message_count"`
+	CreatedAt    time.Time    `json:"created_at"`
+	UpdatedAt    time.Time    `json:"updated_at"`
+	ShellContext ShellContext  `json:"shell_context"`
+}
+
 // SessionInfo 是会话的摘要信息（用于列表展示）
 type SessionInfo struct {
 	ID           string    `json:"id"`
@@ -227,7 +294,7 @@ func NewManager(dir string) (*Manager, error) {
 	return m, nil
 }
 
-// loadFromDisk 从磁盘加载所有会话
+// loadFromDisk 从磁盘加载所有会话（仅元数据，消息按需加载）
 func (m *Manager) loadFromDisk() error {
 	entries, err := os.ReadDir(m.dir)
 	if err != nil {
@@ -254,17 +321,52 @@ func (m *Manager) loadFromDisk() error {
 		}
 
 		s := &Session{
-			ID:           sd.ID,
-			Title:        sd.Title,
-			Messages:     sd.Messages,
-			CreatedAt:    sd.CreatedAt,
-			UpdatedAt:    sd.UpdatedAt,
-			dir:          m.dir,
-			ShellContext: sd.ShellContext,
+			ID:             sd.ID,
+			Title:          sd.Title,
+			Messages:       nil, // 不加载消息，按需加载
+			CreatedAt:      sd.CreatedAt,
+			UpdatedAt:      sd.UpdatedAt,
+			dir:            m.dir,
+			ShellContext:   sd.ShellContext,
+			messagesLoaded: false,
+			messageCount:   len(sd.Messages),
 		}
 		m.sessions[s.ID] = s
 	}
 
+	return nil
+}
+
+// loadMessages 懒加载 session 的完整消息
+func (s *Session) loadMessages() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.messagesLoaded {
+		return nil
+	}
+
+	path := filepath.Join(s.dir, s.ID+".json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// 文件不存在时用空消息
+		s.Messages = make([]provider.Message, 0)
+		s.messagesLoaded = true
+		return nil
+	}
+
+	var sd sessionData
+	if err := json.Unmarshal(data, &sd); err != nil {
+		s.Messages = make([]provider.Message, 0)
+		s.messagesLoaded = true
+		return nil
+	}
+
+	s.Messages = sd.Messages
+	if s.Messages == nil {
+		s.Messages = make([]provider.Message, 0)
+	}
+	s.messagesLoaded = true
 	return nil
 }
 
@@ -275,6 +377,8 @@ func (m *Manager) New() *Session {
 
 	id := fmt.Sprintf("%d", time.Now().UnixNano())
 	s := NewSession(id, m.dir)
+	s.messagesLoaded = true // 新会话消息已在内存
+	s.messageCount = 0
 	m.sessions[id] = s
 	return s
 }

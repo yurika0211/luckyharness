@@ -116,9 +116,9 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	// 构建初始消息
 	messages := a.buildMessages(userInput)
 
-	// 注入会话历史（多轮上下文）
+	// 注入会话历史（多轮上下文，滑动窗口）
 	if sess != nil {
-		existingMsgs := sess.GetMessages()
+		existingMsgs := sess.GetMessages(20) // v0.44.0: 只取最近 20 轮
 		if len(existingMsgs) > 0 {
 			// 插入到用户消息之前
 			base := messages[:len(messages)-1] // 去掉最后的 user message
