@@ -93,10 +93,22 @@
 
 ---
 
-### v0.58.0: Provider 包测试补全 (52.8%→60%+)
+### v0.58.0: Provider 包测试补全 (52.8%→68.2%)
 
-**状态**: Ready
-**优先级**: Medium
+- [x] 分析当前覆盖率状态（52.8%）
+- [x] 补充测试覆盖未覆盖函数：
+  - 各 Provider 的 Name() 方法（Anthropic/Ollama/OpenRouter/OpenAICompatible）
+  - Ollama Validate() 方法
+  - StreamParser 的 Feed/FeedDelta/IsDone/GetModel/BuildResponse 等方法
+  - 各 Provider 的 Chat/ChatStream 错误处理
+  - OpenAI 流式重试逻辑
+- [x] 修复测试编译错误（API 签名不匹配）
+- [x] 运行测试验证覆盖率
+- [x] 目标：60%+ 覆盖率 → 实际 68.2%
+
+**状态**: Done
+**进度**: 68.2% (2026-04-22 23:05)
+**备注**: 剩余未覆盖函数主要是内部辅助函数和需要实际 API 连接的函数，已达到合理覆盖率水平
 
 ---
 
