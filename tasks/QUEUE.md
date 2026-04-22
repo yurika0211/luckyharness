@@ -281,6 +281,21 @@
 
 ---
 
+## ✅ Done — v0.53.0 OneBot 包测试补全 (接近上限)
+
+### 子任务
+
+- [x] **OB-1**: OneBot 包测试补全 — 覆盖率 43.9%→44.3% (+0.4pp)
+  - ✅ 新增 Handler 基础测试 (NewHandler)
+  - ✅ 新增 Adapter 并发测试 (ConcurrentCallAPI)
+  - ✅ 修复 parseGroupID 测试用例 (适配实际实现)
+  - ✅ 跳过需要 agent/实际服务的测试
+  - ⚠️ 限制：Handler 方法需要 agent 实例，Start/Send 等需要实际 OneBot 服务
+  - ⚠️ 未覆盖函数：`Start` (18.2%)、`Send` (25%)、`sendQQMessage` (0%)、`listenWebSocket` (0%)、`startWebhookServer` (0%)、Handler 方法 (0%)
+  - 💡 建议：通过集成测试或 mock 覆盖，而非单元测试
+
+---
+
 ## 🔴 Blocked
 
 ### v0.6.0 消息网关
@@ -293,4 +308,4 @@
 
 ---
 
-*Last updated: 2026-04-22 (v0.52.0 done — 全仓库覆盖率 60.5% 里程碑达成)*
+*Last updated: 2026-04-22 (v0.53.0 done — OneBot 包 44.3%，接近单元测试上限)*
