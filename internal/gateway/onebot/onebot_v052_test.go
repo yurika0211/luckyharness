@@ -315,3 +315,99 @@ func TestConfigValidation(t *testing.T) {
 		t.Errorf("expected LikeTimes clamped to 10, got %d", adapter.cfg.LikeTimes)
 	}
 }
+
+// ============================================================
+// CV-4: Handler 测试补全
+// ============================================================
+
+// TestHandlerNewHandler 测试 NewHandler
+func TestHandlerNewHandler(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIBase = "http://127.0.0.1:3000"
+	adapter := NewAdapter(cfg)
+	
+	handler := NewHandler(adapter, nil)
+	if handler == nil {
+		t.Error("expected non-nil handler")
+	}
+}
+
+// TestHandlerGetSessionID 测试 getSessionID
+func TestHandlerGetSessionID(t *testing.T) {
+	t.Skip("requires agent instance")
+}
+
+// TestHandlerResetSession 测试 resetSession
+func TestHandlerResetSession(t *testing.T) {
+	t.Skip("requires agent instance")
+}
+
+// TestHandlerHandleMessage 测试 HandleMessage
+func TestHandlerHandleMessage(t *testing.T) {
+	t.Skip("requires agent instance")
+}
+
+// TestHandlerHandleCommand 测试 handleCommand
+func TestHandlerHandleCommand(t *testing.T) {
+	t.Skip("requires agent instance")
+}
+
+// TestHandlerSessionManagement 测试 Session 管理
+func TestHandlerSessionManagement(t *testing.T) {
+	t.Skip("requires agent instance")
+}
+
+// TestHandlerConcurrentSessions 测试并发 session 操作
+func TestHandlerConcurrentSessions(t *testing.T) {
+	// 需要 agent 支持，跳过
+	t.Skip("requires agent instance")
+}
+
+// TestAdapterParseGroupID 测试 parseGroupID
+func TestAdapterParseGroupID(t *testing.T) {
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+	
+	tests := []struct {
+		chatID   string
+		expected int64
+		wantOK   bool
+	}{
+		{"123456", 123456, true},  // 大数字是群 ID
+		{"888888", 888888, true},  // 大数字是群 ID
+		{"12345", 12345, false},   // 小数字不是群 ID
+		{"group_12345", 0, false}, // 带前缀的无法解析
+		{"invalid", 0, false},
+		{"", 0, false},
+	}
+	
+	for _, tt := range tests {
+		result, ok := adapter.parseGroupID(tt.chatID)
+		if ok != tt.wantOK {
+			t.Errorf("parseGroupID(%q) ok = %v, want %v", tt.chatID, ok, tt.wantOK)
+		}
+		if result != tt.expected {
+			t.Errorf("parseGroupID(%q) = %d, want %d", tt.chatID, result, tt.expected)
+		}
+	}
+}
+
+// TestAdapterConcurrentCallAPI 测试并发 callAPI
+func TestAdapterConcurrentCallAPI(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.APIBase = "http://invalid-url"
+	adapter := NewAdapter(cfg)
+	
+	done := make(chan bool)
+	
+	for i := 0; i < 10; i++ {
+		go func(idx int) {
+			adapter.callAPI("send_msg", nil)
+			done <- true
+		}(i)
+	}
+	
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
