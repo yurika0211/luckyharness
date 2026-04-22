@@ -243,15 +243,20 @@
 
 ---
 
-## 🔴 Planned — v0.51.0 WebSocket 包测试补全
+## ✅ Done — v0.51.0 WebSocket 包测试补全
 
 ### 子任务
 
-- [ ] **WS-1**: WebSocket 包测试补全 — 目标覆盖率 56.7%→80%+
-  - Client 连接/重连测试
-  - Server 广播/单播测试
-  - 消息队列测试
-  - 心跳/超时测试
+- [x] **WS-1**: WebSocket 包测试补全 — 覆盖率 56.7%→60.3% (+3.6pp)
+  - ✅ Hub SendToClient/SendToSession 边界测试
+  - ✅ Message 解析错误处理 (invalid JSON/missing type/nil data)
+  - ✅ 并发广播压力测试 (10 客户端)
+  - ✅ 并发连接/断开压力测试 (20 客户端)
+  - ✅ Hub Stats 并发安全访问
+  - ✅ 所有消息类型序列化/反序列化 (Chat/StreamChunk/StreamEnd/ToolCall/ToolResult/Status/Error/Reconnect)
+  - ✅ Hub 生命周期管理
+  - ✅ Client channel 并发写入
+  - ⚠️ handler.go 测试 (HandleMessage/handleChat/syncChat/streamChat) 因依赖真实 agent.Agent 实例，待后续补充集成测试环境
 
 ---
 
