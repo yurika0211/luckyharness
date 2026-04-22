@@ -260,16 +260,22 @@
 
 ---
 
-## 🔴 Planned — v0.52.0 全仓库覆盖率里程碑
+## 🔄 In Progress — v0.52.0 全仓库覆盖率里程碑
 
 ### 子任务
 
-- [ ] **CV-1**: 全仓库覆盖率里程碑 — 目标 60%+
-  - api/grpc 包测试 (5.0%→60%+)
-  - internal/gateway/telegram 包测试 (18.0%→60%+)
-  - internal/agent 包测试 (21.7%→60%+)
-  - internal/gateway/onebot 包测试 (28.6%→60%+)
-  - internal/autonomy 包测试 (39.1%→60%+)
+- [x] **CV-1**: OneBot 包测试补全 — 覆盖率 28.6%→43.9% (+15.3pp)
+  - ✅ 新增 24 个测试 (onebot_v052_test.go)
+  - ✅ Adapter 生命周期测试 (Start/Stop/IsRunning)
+  - ✅ API 方法测试 (Send/SendWithReply/checkAPI/sendTyping/sendLike/callAPI)
+  - ✅ 工具函数测试 (splitMessage/parseGroupID/truncateStr/waitRateLimit)
+  - ✅ 并发安全测试 (SetHandler/Send/waitRateLimit)
+  - ✅ Config 验证与边界测试
+- [ ] **CV-2**: Telegram 包测试补全 — 目标 18.0%→60%+
+- [ ] **CV-3**: Agent 包测试补全 — 目标 21.7%→60%+
+- [ ] **CV-4**: Autonomy 包测试补全 — 目标 39.1%→60%+
+- [ ] **CV-5**: gRPC API 包测试补全 — 目标 5.0%→60%+
+- [ ] **CV-6**: 全仓库覆盖率里程碑 — 目标 59.7%→60%+
 
 ---
 
@@ -285,4 +291,4 @@
 
 ---
 
-*Last updated: 2026-04-22 (v0.50.0)*
+*Last updated: 2026-04-22 (v0.51.0 done, v0.52.0 in progress)*
