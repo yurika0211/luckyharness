@@ -26,6 +26,7 @@
 | v0.35.0 | Retry & Circuit Breaker | ✅ Done | 指数退避重试 + 熔断器 + 可组合中间件 |
 | v0.36.0 | Middleware System | ✅ Done | Provider 调用拦截器链 + 5 内置中间件 + MiddlewareProvider |
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
+| v0.43.0 | Agent 包测试 + v0.43 功能整合 | ✅ Done | Agent 测试 37 新 (4.9%→23.9%) + 短期/中期记忆 + remember/recall + OneBot网关 + Telegram增强 + 文件沙箱 + Cron反馈 |
 
 ---
 
@@ -124,6 +125,33 @@
 - [x] **SF-3**: SearchCache + 并发搜索 — TTL 缓存 + 并发多源 + 合并去重 + 多源标注
 - [x] **SF-4**: SearchConfig + 环境变量覆盖 — LH_SEARCH_* + BuildEngines/BuildFetchEngines + Manager
 - [x] **SF-5**: 测试 — 35 个单元测试（含 race detection + 并发安全）
+
+---
+
+## ✅ Done — v0.43.0 Agent 包测试 + v0.43 功能整合
+
+### 子任务
+
+- [x] **AT-1**: Agent 包测试补全 — 37 新测试，覆盖率 4.9%→23.9%
+  - truncate, splitIntoChunks (文本处理)
+  - inferCategory, inferImportance (记忆分类)
+  - sanitizeLoopConfig (Loop 配置校验)
+  - toContextMessages, fromContextMessages (消息转换)
+  - applyWebSearchEnv (环境变量覆盖)
+  - handleMemoryTool (remember/recall 工具)
+  - updateShellContext (shell cd/export/unset)
+  - saveConversationMemory, autoSummarize (记忆持久化)
+  - MemoryStats, DecayMemory, ExpireMidTermMemory
+  - buildMessages, getStreamMode
+  - LoopState/EventType 边界情况
+- [x] **AT-2**: v0.43 功能整合（已在之前 commit 完成）
+  - 短期记忆 ShortTermBuffer（滑动窗口 + 摘要压缩）
+  - 中期记忆 MidTermStore（会话摘要 + 时间衰减检索）
+  - remember/recall 工具（LLM 自主记忆）
+  - OneBot (QQ) 网关适配器
+  - Telegram 网关增强（typing + auto-like + group chat + chatID 持久化）
+  - 文件系统沙箱
+  - Cron 任务执行反馈
 
 ---
 
