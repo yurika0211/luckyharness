@@ -29,6 +29,7 @@
 | v0.43.0 | Agent 包测试 + v0.43 功能整合 | ✅ Done | Agent 测试 37 新 (4.9%→23.9%) + 短期/中期记忆 + remember/recall + OneBot网关 + Telegram增强 + 文件沙箱 + Cron反馈 |
 | v0.44.0 | Server 包测试补全 | ✅ Done | Server 测试 55 新 (41.0%→65.8%) — Health/Metrics/Context/FC/RAGStore/Workflow/Gateway/Plugin/Collab |
 | v0.45.0 | 并发工具执行 | ✅ Done | ParallelSafe 标记 + 并发调度 + 串行保序 + 2 新测试 |
+| v0.46.0 | Tool 包测试补全 | ✅ Done | 40 新测试 (64.0%→69.2%) — CallWithShellContext/UsageTracker/纯函数/边界 |
 
 ---
 
@@ -174,11 +175,21 @@
 
 ### 子任务
 
-- [ ] **TT-1**: Registry 边界测试 — 重复注册/空名称/nil Handler
-- [ ] **TT-2**: Permission 测试 — PermAuto/PermApprove/PermDeny 全路径
-- [ ] **TT-3**: UsageTracker 并发测试 — race condition + quota 并发扣减
-- [ ] **TT-4**: ToOpenAIFormat 完整测试 — 嵌套对象/数组参数 + required 字段
-- [ ] **TT-5**: 内置工具参数校验 — Shell/WebSearch/WebFetch/Remember/Recall 参数缺失/类型错误
+- [x] **TT-1**: Registry 边界测试 — 重复注册/空名称/nil Handler
+- [x] **TT-2**: Permission 测试 — PermAuto/PermApprove/PermDeny 全路径
+- [x] **TT-3**: UsageTracker 并发测试 — race condition + quota 并发扣减
+- [x] **TT-4**: ToOpenAIFormat 完整测试 — 嵌套对象/数组参数 + required 字段
+- [x] **TT-5**: 内置工具参数校验 — Shell/WebSearch/WebFetch/Remember/Recall 参数缺失/类型错误
+
+---
+
+## 🔴 Ready — v0.47.0 Gateway 包测试补全
+
+### 子任务
+
+- [ ] **GW-1**: Telegram adapter 测试 — processUpdate/reply-to-bot/isMentioned
+- [ ] **GW-2**: OneBot adapter 测试 — WebSocket 消息解析/发送
+- [ ] **GW-3**: Gateway 接口测试 — ChatType/Message 类型
 
 ---
 
