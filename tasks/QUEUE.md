@@ -80,10 +80,16 @@
 
 ---
 
-### v0.57.0: Autonomy 包测试补全 (39.1%→60%+)
+### v0.57.0: Autonomy 包测试补全 (39.1%→67.5%)
 
-**状态**: Ready  
-**优先级**: Low
+- [x] 分析当前覆盖率状态（39.1%）
+- [x] 修复 tools.go context nil bug（HandleWorkerSpawn 传入 nil context 导致 panic）
+- [x] 运行测试验证覆盖率
+- [x] 目标：60%+ 覆盖率 → 实际 67.5%
+
+**状态**: Done
+**进度**: 67.5% (2026-04-22 22:35)
+**备注**: 剩余未覆盖函数（Execute/executeTask/SetExecutor/TaskCount）为内部函数和 setter/getter，已达到合理覆盖率水平
 
 ---
 
