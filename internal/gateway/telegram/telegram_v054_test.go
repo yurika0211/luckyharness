@@ -13,6 +13,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/cron"
+	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/soul"
+	"github.com/yurika0211/luckyharness/internal/tool"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
@@ -2531,5 +2539,1072 @@ func TestV054AdapterName(t *testing.T) {
 
 	if adapter.Name() != "telegram" {
 		t.Errorf("expected name 'telegram', got '%s'", adapter.Name())
+	}
+}
+
+// ============================================================
+// Mock agentProvider for handler tests
+// ============================================================
+
+type mockAgentProvider struct {
+	sessions    *session.Manager
+	configSnap  agentConfigSnapshot
+	soulVal     *soul.Soul
+	toolsVal    *tool.Registry
+	skillsVal   []*tool.SkillInfo
+	cronEngine  *cron.Engine
+	metricsVal  *metrics.Metrics
+	memoryVal   *memory.Store
+	chatFunc    func(ctx context.Context, userInput string) (string, error)
+	chatSessFn  func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatStreamFn func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	switchModelFn func(modelID string) error
+}
+
+func (m *mockAgentProvider) Sessions() *session.Manager {
+	return m.sessions
+}
+
+func (m *mockAgentProvider) Config() agentConfigProvider {
+	return &mockConfigProvider{snap: m.configSnap}
+}
+
+func (m *mockAgentProvider) SwitchModel(modelID string) error {
+	if m.switchModelFn != nil {
+		return m.switchModelFn(modelID)
+	}
+	return nil
+}
+
+func (m *mockAgentProvider) Soul() *soul.Soul {
+	return m.soulVal
+}
+
+func (m *mockAgentProvider) Tools() *tool.Registry {
+	return m.toolsVal
+}
+
+func (m *mockAgentProvider) Skills() []*tool.SkillInfo {
+	return m.skillsVal
+}
+
+func (m *mockAgentProvider) CronEngine() *cron.Engine {
+	return m.cronEngine
+}
+
+func (m *mockAgentProvider) Chat(ctx context.Context, userInput string) (string, error) {
+	if m.chatFunc != nil {
+		return m.chatFunc(ctx, userInput)
+	}
+	return "mock response", nil
+}
+
+func (m *mockAgentProvider) ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error) {
+	if m.chatSessFn != nil {
+		return m.chatSessFn(ctx, sessionID, userInput)
+	}
+	return "mock response", nil
+}
+
+func (m *mockAgentProvider) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+	if m.chatStreamFn != nil {
+		return m.chatStreamFn(ctx, sessionID, userInput)
+	}
+	ch := make(chan agent.ChatEvent, 1)
+	ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "mock response"}
+	close(ch)
+	return ch, nil
+}
+
+func (m *mockAgentProvider) Metrics() *metrics.Metrics {
+	return m.metricsVal
+}
+
+func (m *mockAgentProvider) Memory() *memory.Store {
+	return m.memoryVal
+}
+
+type mockConfigProvider struct {
+	snap agentConfigSnapshot
+}
+
+func (m *mockConfigProvider) Get() agentConfigSnapshot {
+	return m.snap
+}
+
+// newHandlerWithMockAgent creates a Handler with a mock agent for testing.
+func newHandlerWithMockAgent(t *testing.T) (*Handler, *httptest.Server) {
+	t.Helper()
+
+	adapter, server, err := newAdapterWithMockBot()
+	if err != nil {
+		t.Fatalf("failed to create adapter: %v", err)
+	}
+
+	sessMgr, err := session.NewManager(t.TempDir())
+	if err != nil {
+		t.Fatalf("failed to create session manager: %v", err)
+	}
+	mockAgent := &mockAgentProvider{
+		sessions:   sessMgr,
+		configSnap: agentConfigSnapshot{Model: "test-model", Provider: "test-provider"},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	handler := &Handler{
+		adapter:  adapter,
+		agent:    mockAgent,
+		sessions: make(map[string]string),
+	}
+
+	return handler, server
+}
+
+// ============================================================
+// Handler 命令测试 (with mock agent)
+// ============================================================
+
+func TestV054HandleModelShow(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		Text:      "/model",
+		IsCommand: true,
+		Command:   "model",
+		Args:      "",
+	}
+
+	err := handler.handleModel(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleModelSwitch(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		Text:      "/model gpt-4",
+		IsCommand: true,
+		Command:   "model",
+		Args:      "gpt-4",
+	}
+
+	err := handler.handleModel(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleModelSwitchError(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).switchModelFn = func(modelID string) error {
+		return fmt.Errorf("model not found")
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/model invalid",
+		IsCommand: true,
+		Command:   "model",
+		Args:      "invalid",
+	}
+
+	err := handler.handleModel(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error (error sent as message), got: %v", err)
+	}
+}
+
+func TestV054HandleSoul(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/soul",
+		IsCommand: true,
+		Command:   "soul",
+	}
+
+	err := handler.handleSoul(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleSoulWithSoul(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).soulVal = soul.Default()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/soul",
+		IsCommand: true,
+		Command:   "soul",
+	}
+
+	err := handler.handleSoul(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleTools(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/tools",
+		IsCommand: true,
+		Command:   "tools",
+	}
+
+	err := handler.handleTools(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleToolsWithTools(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	reg := handler.agent.(*mockAgentProvider).toolsVal
+	reg.Register(&tool.Tool{
+		Name:        "web_search",
+		Description: "Search the web",
+		Enabled:     true,
+	})
+	reg.Register(&tool.Tool{
+		Name:        "shell",
+		Description: "Execute shell commands",
+		Enabled:     false,
+	})
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/tools",
+		IsCommand: true,
+		Command:   "tools",
+	}
+
+	err := handler.handleTools(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleReset(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/reset",
+		IsCommand: true,
+		Command:   "reset",
+	}
+
+	err := handler.handleReset(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleHistory(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/history",
+		IsCommand: true,
+		Command:   "history",
+	}
+
+	err := handler.handleHistory(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/session",
+		IsCommand: true,
+		Command:   "session",
+	}
+
+	err := handler.handleSession(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleSessionWithSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	// 先创建一个 session
+	sid := handler.getSessionID("12345")
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/session",
+		IsCommand: true,
+		Command:   "session",
+	}
+
+	err := handler.handleSession(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+	_ = sid
+}
+
+func TestV054HandleSkills(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/skills",
+		IsCommand: true,
+		Command:   "skills",
+	}
+
+	err := handler.handleSkills(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleSkillsWithSkills(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).skillsVal = []*tool.SkillInfo{
+		{Name: "web-search", Description: "Search the web for information"},
+		{Name: "summarize", Description: "Summarize web pages and documents"},
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/skills",
+		IsCommand: true,
+		Command:   "skills",
+	}
+
+	err := handler.handleSkills(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronList(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron list",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "list",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronEmpty(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronAdd(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron add test1 TestTask 60 check status",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "add test1 TestTask 60 check status",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronAddInvalidInterval(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron add test1 TestTask abc check status",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "add test1 TestTask abc check status",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronRemove(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron remove test1",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "remove test1",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCronUnknown(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/cron unknown",
+		IsCommand: true,
+		Command:   "cron",
+		Args:      "unknown",
+	}
+
+	err := handler.handleCron(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleMetrics(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/metrics",
+		IsCommand: true,
+		Command:   "metrics",
+	}
+
+	err := handler.handleMetrics(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleHealth(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/health",
+		IsCommand: true,
+		Command:   "health",
+	}
+
+	err := handler.handleHealth(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatEmpty(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/chat",
+		IsCommand: true,
+		Command:   "chat",
+		Args:      "",
+	}
+
+	err := handler.handleChat(ctx, msg, "")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatWithText(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text:      "/chat hello",
+		IsCommand: true,
+		Command:   "chat",
+		Args:      "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatGroupWithSender(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "888888",
+			Type: gateway.ChatGroup,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		IsGroupTrigger: true,
+		Text:           "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleMessageNonCommand(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		Text: "hello world",
+	}
+
+	err := handler.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleMessageNonCommandWithAttachments(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		Text: "check this",
+		Attachments: []gateway.Attachment{
+			{
+				Type:     gateway.AttachmentImage,
+				FileID:   "photo1",
+				FileName: "photo.jpg",
+				FileURL:  "https://example.com/photo.jpg",
+			},
+		},
+	}
+
+	err := handler.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleMessageGroupNonCommand(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "888888",
+			Type: gateway.ChatGroup,
+		},
+		Sender: gateway.User{
+			ID:       "12345",
+			Username: "testuser",
+		},
+		Text: "hello",
+	}
+
+	err := handler.HandleMessage(ctx, msg)
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleCommandAll(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	ctx := context.Background()
+
+	commands := []struct {
+		cmd  string
+		args string
+	}{
+		{"start", ""},
+		{"help", ""},
+		{"model", ""},
+		{"soul", ""},
+		{"tools", ""},
+		{"reset", ""},
+		{"history", ""},
+		{"session", ""},
+		{"skills", ""},
+		{"cron", "list"},
+		{"metrics", ""},
+		{"health", ""},
+	}
+
+	for _, tc := range commands {
+		msg := &gateway.Message{
+			ID: "1",
+			Chat: gateway.Chat{
+				ID:   "12345",
+				Type: gateway.ChatPrivate,
+			},
+			Text:      "/" + tc.cmd,
+			IsCommand: true,
+			Command:   tc.cmd,
+			Args:      tc.args,
+		}
+
+		err := handler.handleCommand(ctx, msg)
+		if err != nil {
+			t.Errorf("handleCommand(%s): expected no error, got: %v", tc.cmd, err)
+		}
+	}
+}
+
+func TestV054GetSessionID(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	// 第一次调用应该创建新 session
+	sid1 := handler.getSessionID("12345")
+	if sid1 == "" {
+		t.Error("expected non-empty session ID")
+	}
+
+	// 第二次调用应该返回相同的 session
+	sid2 := handler.getSessionID("12345")
+	if sid1 != sid2 {
+		t.Errorf("expected same session ID, got %s then %s", sid1, sid2)
+	}
+}
+
+func TestV054ResetSession(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	sid1 := handler.getSessionID("12345")
+	sid2 := handler.resetSession("12345")
+	if sid1 == sid2 {
+		t.Error("expected different session ID after reset")
+	}
+}
+
+func TestV054HandleChatStreamError(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		return nil, fmt.Errorf("session not found")
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (error handled gracefully), got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamTimeout(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		return nil, fmt.Errorf("timeout after 30s")
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (timeout handled gracefully), got: %v", err)
+	}
+}
+
+func TestV054HandleChatStream503(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		return nil, fmt.Errorf("503 service unavailable")
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (503 handled gracefully), got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamSuccess(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 3)
+		ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "thinking..."}
+		ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "Hello!"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "Hello!"}
+		close(ch)
+		return ch, nil
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamWithToolCall(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 5)
+		ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "thinking..."}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"test"}`}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Content: "search results"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "Here are the results"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "Here are the results"}
+		close(ch)
+		return ch, nil
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "search for test",
+	}
+
+	err := handler.handleChat(ctx, msg, "search for test")
+	if err != nil {
+		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamErrorEvent(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventError, Err: fmt.Errorf("something went wrong")}
+		close(ch)
+		return ch, nil
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (error event handled gracefully), got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamError524(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventError, Err: fmt.Errorf("524 timeout")}
+		close(ch)
+		return ch, nil
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (524 error handled gracefully), got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamError429(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventError, Err: fmt.Errorf("429 rate limited")}
+		close(ch)
+		return ch, nil
+	}
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+
+	err := handler.handleChat(ctx, msg, "hello")
+	if err != nil {
+		t.Errorf("expected no error (429 error handled gracefully), got: %v", err)
 	}
 }

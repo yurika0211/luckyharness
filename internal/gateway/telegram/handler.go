@@ -11,14 +11,114 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
+	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/soul"
+	"github.com/yurika0211/luckyharness/internal/tool"
 )
+
+// agentProvider 定义 Handler 需要从 Agent 获得的能力接口。
+// 生产代码使用 *agent.Agent 实现，测试代码可注入 mock。
+type agentProvider interface {
+	Sessions() *session.Manager
+	Config() agentConfigProvider
+	SwitchModel(modelID string) error
+	Soul() *soul.Soul
+	Tools() *tool.Registry
+	Skills() []*tool.SkillInfo
+	CronEngine() *cron.Engine
+	Chat(ctx context.Context, userInput string) (string, error)
+	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
+	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	Metrics() *metrics.Metrics
+	Memory() *memory.Store
+}
+
+// agentConfigProvider 定义 Handler 需要从 config 获得的能力接口。
+type agentConfigProvider interface {
+	Get() agentConfigSnapshot
+}
+
+// agentConfigSnapshot 是 config 快照的最小子集。
+type agentConfigSnapshot struct {
+	Model    string
+	Provider string
+}
+
+// agentProviderAdapter 将 *agent.Agent 适配为 agentProvider 接口。
+type agentProviderAdapter struct {
+	inner *agent.Agent
+}
+
+func (a agentProviderAdapter) Sessions() *session.Manager {
+	return a.inner.Sessions()
+}
+
+func (a agentProviderAdapter) Config() agentConfigProvider {
+	return agentConfigWrapper{a.inner.Config()}
+}
+
+func (a agentProviderAdapter) SwitchModel(modelID string) error {
+	return a.inner.SwitchModel(modelID)
+}
+
+func (a agentProviderAdapter) Soul() *soul.Soul {
+	return a.inner.Soul()
+}
+
+func (a agentProviderAdapter) Tools() *tool.Registry {
+	return a.inner.Tools()
+}
+
+func (a agentProviderAdapter) Skills() []*tool.SkillInfo {
+	return a.inner.Skills()
+}
+
+func (a agentProviderAdapter) CronEngine() *cron.Engine {
+	return a.inner.CronEngine()
+}
+
+func (a agentProviderAdapter) Chat(ctx context.Context, userInput string) (string, error) {
+	return a.inner.Chat(ctx, userInput)
+}
+
+func (a agentProviderAdapter) ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error) {
+	return a.inner.ChatWithSession(ctx, sessionID, userInput)
+}
+
+func (a agentProviderAdapter) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+	return a.inner.ChatWithSessionStream(ctx, sessionID, userInput)
+}
+
+func (a agentProviderAdapter) Metrics() *metrics.Metrics {
+	return a.inner.Metrics()
+}
+
+func (a agentProviderAdapter) Memory() *memory.Store {
+	return a.inner.Memory()
+}
+
+// agentConfigWrapper 将 *config.Manager 适配为 agentConfigProvider 接口。
+type agentConfigWrapper struct {
+	mgr *config.Manager
+}
+
+func (w agentConfigWrapper) Get() agentConfigSnapshot {
+	cfg := w.mgr.Get()
+	return agentConfigSnapshot{
+		Model:    cfg.Model,
+		Provider: cfg.Provider,
+	}
+}
 
 // Handler processes Telegram bot commands and messages with per-chat session management.
 type Handler struct {
 	adapter *Adapter
-	agent   *agent.Agent
+	agent   agentProvider
 
 	mu       sync.RWMutex
 	sessions map[string]string // chatID → sessionID
@@ -34,9 +134,13 @@ type chatSessionsData struct {
 
 // NewHandler creates a new Telegram command handler.
 func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
+	var ap agentProvider
+	if a != nil {
+		ap = agentProviderAdapter{a}
+	}
 	return &Handler{
 		adapter:  adapter,
-		agent:    a,
+		agent:    ap,
 		sessions: make(map[string]string),
 		dataDir:  "", // 默认不持久化，需 SetDataDir 启用
 	}
