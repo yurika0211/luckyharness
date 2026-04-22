@@ -365,18 +365,23 @@ func stripFrontmatter(content string) string {
 
 // sanitizeName 清理名称，去掉特殊字符
 func sanitizeName(name string) string {
-	// 去掉 emoji
+	// 去掉 emoji（保留其他所有字符）
 	re := regexp.MustCompile(`[\x{1F600}-\x{1F64F}\x{1F300}-\x{1F5FF}\x{1F680}-\x{1F6FF}\x{1F1E0}-\x{1F1FF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}]`)
 	name = re.ReplaceAllString(name, "")
 
-	// 替换空格和特殊字符为下划线
-	name = regexp.MustCompile(`[^a-zA-Z0-9_\-.]`).ReplaceAllString(name, "_")
-
-	// 去掉首尾的下划线和连字符
-	name = strings.Trim(name, "_-")
+	// 去掉首尾空白
+	name = strings.TrimSpace(name)
 
 	// 转小写
 	name = strings.ToLower(name)
+
+	// 将空白字符和连续特殊字符替换为单个下划线
+	name = regexp.MustCompile(`\s+`).ReplaceAllString(name, "_")
+	// 保留中文、字母、数字、下划线、连字符，其他都替换为下划线
+	name = regexp.MustCompile(`[^a-zA-Z0-9_\x{4e00}-\x{9fff}-]`).ReplaceAllString(name, "_")
+
+	// 去掉首尾的下划线和连字符
+	name = strings.Trim(name, "_-")
 
 	return name
 }

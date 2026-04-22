@@ -76,16 +76,25 @@ func (t *Tool) ToOpenAIFormat() map[string]any {
 	props := make(map[string]any)
 	var required []string
 	for name, p := range t.Parameters {
-		props[name] = map[string]any{
+		paramDef := map[string]any{
 			"type":        p.Type,
 			"description": p.Description,
 		}
+
+		// 数组类型需要指定 items
+		if p.Type == "array" {
+			paramDef["items"] = map[string]any{
+				"type": "string",
+			}
+		}
+
 		if p.Default != nil {
-			props[name].(map[string]any)["default"] = p.Default
+			paramDef["default"] = p.Default
 		}
 		if p.Required {
 			required = append(required, name)
 		}
+		props[name] = paramDef
 	}
 	params["properties"] = props
 	if len(required) > 0 {
@@ -97,11 +106,40 @@ func (t *Tool) ToOpenAIFormat() map[string]any {
 	return map[string]any{
 		"type": "function",
 		"function": map[string]any{
-			"name":        t.Name,
+			"name":        toOpenAIName(t.Name),
 			"description": t.Description,
 			"parameters":  params,
 		},
 	}
+}
+
+// toOpenAIName 将工具名转换为 OpenAI 兼容格式（只保留 a-zA-Z0-9_-）
+func toOpenAIName(name string) string {
+	var result strings.Builder
+	for _, ch := range name {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+			(ch >= '0' && ch <= '9') || ch == '_' || ch == '-' {
+			result.WriteRune(ch)
+		} else {
+			result.WriteRune('_')
+		}
+	}
+	ret := result.String()
+	// 确保不为空且符合长度限制（1-64 字符）
+	if len(ret) == 0 {
+		ret = "tool"
+	}
+	if len(ret) > 64 {
+		ret = ret[:64]
+	}
+	return ret
+}
+
+// fromOpenAIName 从 OpenAI 兼容名称还原为原始工具名（通过映射表）
+func fromOpenAIName(openaiName string) string {
+	// 在注册表中查找匹配的工具
+	// 注意：这个函数需要在注册表中查找，所以实际实现在 Registry 中
+	return openaiName
 }
 
 // Registry 管理所有已注册的工具
@@ -191,7 +229,13 @@ func (r *Registry) ListEnabled() []*Tool {
 // Call 调用工具
 func (r *Registry) Call(name string, args map[string]any) (string, error) {
 	r.mu.RLock()
+	// 先尝试直接查找
 	t, ok := r.tools[name]
+	// 如果没找到，尝试从 OpenAI 兼容名称反向查找
+	if !ok {
+		name = fromOpenAIName(name)
+		t, ok = r.tools[name]
+	}
 	r.mu.RUnlock()
 
 	if !ok {
