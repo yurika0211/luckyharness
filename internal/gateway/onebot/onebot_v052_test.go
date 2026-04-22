@@ -411,3 +411,31 @@ func TestAdapterConcurrentCallAPI(t *testing.T) {
 		<-done
 	}
 }
+
+// TestAdapterSplitMessage tests splitMessage edge cases.
+func TestAdapterSplitMessage(t *testing.T) {
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+
+	// Empty message
+	parts := adapter.splitMessage("")
+	if len(parts) != 1 || parts[0] != "" {
+		t.Errorf("expected empty part, got %v", parts)
+	}
+
+	// Short message
+	parts = adapter.splitMessage("hello")
+	if len(parts) != 1 || parts[0] != "hello" {
+		t.Errorf("expected ['hello'], got %v", parts)
+	}
+
+	// Long message (should split)
+	longMsg := make([]byte, 3000)
+	for i := range longMsg {
+		longMsg[i] = 'a'
+	}
+	parts = adapter.splitMessage(string(longMsg))
+	if len(parts) < 1 {
+		t.Error("expected at least one part")
+	}
+}
