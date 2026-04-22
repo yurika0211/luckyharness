@@ -3,6 +3,10 @@ package telegram
 import (
 	"context"
 	"testing"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"github.com/yurika0211/luckyharness/internal/gateway"
 )
 
 // ============================================================
@@ -153,24 +157,32 @@ func TestAdapterSendWithReply(t *testing.T) {
 	}
 }
 
-// TestAdapterSendTypingOnce 测试 sendTypingOnce (跳过，需要实际 API)
+// TestAdapterSendTypingOnce 测试 sendTypingOnce
 func TestAdapterSendTypingOnce(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
 }
 
-// TestAdapterReactToMessage 测试 ReactToMessage (跳过，需要实际 API)
+// TestAdapterReactToMessage 测试 ReactToMessage
 func TestAdapterReactToMessage(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	cfg := DefaultConfig()
+	cfg.Token = "invalid-token"
+	adapter := NewAdapter(cfg)
+	
+	// 不应该 panic（bot 为 nil 时会跳过）
+	adapter.ReactToMessage("12345", "1", "👍")
 }
 
-// TestAdapterCallSetMessageReaction 测试 callSetMessageReaction (跳过，需要实际 API)
+// TestAdapterCallSetMessageReaction 测试 callSetMessageReaction
 func TestAdapterCallSetMessageReaction(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
 }
 
-// TestAdapterCallTelegramAPI 测试 callTelegramAPI (跳过，需要实际 API)
+// TestAdapterCallTelegramAPI 测试 callTelegramAPI
 func TestAdapterCallTelegramAPI(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
 }
 
 // TestAdapterSendStream 测试 SendStream
@@ -314,39 +326,159 @@ func TestAdapterEditMessage(t *testing.T) {
 	}
 }
 
-// TestAdapterPoll 测试 poll (跳过，需要实际 API)
+// TestAdapterPoll 测试 poll (跳过，需要实际服务)
 func TestAdapterPoll(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	t.Skip("requires actual Telegram Bot API")
 }
 
-// TestAdapterProcessUpdate 测试 processUpdate (跳过，需要内部类型)
+// TestAdapterProcessUpdate 测试 processUpdate
 func TestAdapterProcessUpdate(t *testing.T) {
-	t.Skip("requires internal tgbotapi types")
+	// 需要有效的 handler，跳过
+	t.Skip("requires valid handler")
 }
 
-// TestAdapterConvertMessage 测试 convertMessage (跳过，需要内部类型)
+// TestAdapterConvertMessage 测试 convertMessage
 func TestAdapterConvertMessage(t *testing.T) {
-	t.Skip("requires internal tgbotapi types")
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+	
+	// 测试私聊消息
+	msg := &tgbotapi.Message{
+		MessageID: 1,
+		Chat: &tgbotapi.Chat{
+			ID:   12345,
+			Type: "private",
+		},
+		From: &tgbotapi.User{
+			ID:        12345,
+			UserName:  "testuser",
+			FirstName: "Test",
+		},
+		Text: "hello",
+	}
+	
+	result := adapter.convertMessage(msg)
+	if result == nil {
+		t.Error("expected non-nil message")
+	}
+	if result.Chat.ID != "12345" {
+		t.Errorf("expected chat ID 12345, got %s", result.Chat.ID)
+	}
+	if result.Text != "hello" {
+		t.Errorf("expected text 'hello', got %s", result.Text)
+	}
 }
 
-// TestAdapterExtractAttachments 测试 extractAttachments (跳过，需要内部类型)
+// TestAdapterConvertMessageGroup 测试群聊消息转换
+func TestAdapterConvertMessageGroup(t *testing.T) {
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+	
+	msg := &tgbotapi.Message{
+		MessageID: 1,
+		Chat: &tgbotapi.Chat{
+			ID:    888888,
+			Type:  "group",
+			Title: "Test Group",
+		},
+		From: &tgbotapi.User{
+			ID:        12345,
+			UserName:  "testuser",
+			FirstName: "Test",
+		},
+		Text: "group message",
+	}
+	
+	result := adapter.convertMessage(msg)
+	if result == nil {
+		t.Error("expected non-nil message")
+	}
+	if result.Chat.Type != gateway.ChatGroup {
+		t.Errorf("expected group chat type, got %v", result.Chat.Type)
+	}
+}
+
+// TestAdapterExtractAttachments 测试 extractAttachments
 func TestAdapterExtractAttachments(t *testing.T) {
-	t.Skip("requires internal tgbotapi types")
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
 }
 
-// TestAdapterIsMentioned 测试 isMentioned (跳过，需要内部类型)
+// TestAdapterExtractAttachmentsDocument 测试文档附件
+func TestAdapterExtractAttachmentsDocument(t *testing.T) {
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
+}
+
+// TestAdapterIsMentioned 测试 isMentioned
 func TestAdapterIsMentioned(t *testing.T) {
-	t.Skip("requires internal tgbotapi types")
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+	adapter.botUsername = "testbot"
+	
+	msg := &tgbotapi.Message{
+		Text: "hello @testbot",
+		Entities: []tgbotapi.MessageEntity{
+			{
+				Type:   "mention",
+				Offset: 6,
+				Length: 8,
+			},
+		},
+	}
+	
+	if !adapter.isMentioned(msg) {
+		t.Error("expected message to be mentioned")
+	}
+	
+	// 测试未提及
+	msg2 := &tgbotapi.Message{
+		Text: "hello world",
+	}
+	
+	if adapter.isMentioned(msg2) {
+		t.Error("expected message not to be mentioned")
+	}
 }
 
-// TestAdapterIsReplyToBot 测试 isReplyToBot (跳过，需要内部类型)
+// TestAdapterIsReplyToBot 测试 isReplyToBot
 func TestAdapterIsReplyToBot(t *testing.T) {
-	t.Skip("requires internal tgbotapi types")
+	cfg := DefaultConfig()
+	adapter := NewAdapter(cfg)
+	
+	// 测试回复给 bot（需要设置 IsBot=true）
+	msg := &tgbotapi.Message{
+		ReplyToMessage: &tgbotapi.Message{
+			From: &tgbotapi.User{
+				UserName: "testbot",
+				IsBot:    true,
+			},
+		},
+	}
+	
+	if !adapter.isReplyToBot(msg) {
+		t.Error("expected reply to bot")
+	}
+	
+	// 测试回复给别人
+	msg2 := &tgbotapi.Message{
+		ReplyToMessage: &tgbotapi.Message{
+			From: &tgbotapi.User{
+				UserName: "otheruser",
+				IsBot:    false,
+			},
+		},
+	}
+	
+	if adapter.isReplyToBot(msg2) {
+		t.Error("expected not reply to bot")
+	}
 }
 
-// TestAdapterSendChunk 测试 sendChunk (跳过，需要实际 API)
+// TestAdapterSendChunk 测试 sendChunk
 func TestAdapterSendChunk(t *testing.T) {
-	t.Skip("requires actual Telegram API")
+	// 需要有效的 bot 实例，跳过
+	t.Skip("requires valid bot instance")
 }
 
 // TestAdapterWaitRateLimit 测试 waitRateLimit
