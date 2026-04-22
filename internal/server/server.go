@@ -556,6 +556,75 @@ func (s *Server) handleChatSync(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequest, loopCfg agent.LoopConfig, ctx context.Context, start time.Time) {
+	// v0.56.0: 检测内置命令
+	if strings.HasPrefix(req.Message, "/") {
+		parts := strings.SplitN(strings.TrimPrefix(req.Message, "/"), " ", 2)
+		cmd := parts[0]
+		// args := ""
+		// if len(parts) > 1 {
+		// 	args = parts[1]
+		// }
+		
+		// 简单命令处理（不依赖 gateway handler）
+		switch cmd {
+		case "help":
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response: `🐾 *LuckyHarness 命令*
+
+/new — 开启新对话
+/stop — 停止当前任务
+/status — 查看状态
+/restart — 重启 bot
+/help — 显示帮助
+
+/model — 查看模型
+/soul — SOUL 信息
+/tools — 工具列表
+/skills — 技能列表
+/cron — 定时任务
+/metrics — 使用指标
+/health — 健康检查
+/reset — 重置对话
+/history — 对话历史
+/session — 会话信息
+
+💡 私聊直接发消息即可`,
+			})
+			return
+		case "new":
+			// 创建新会话
+			sess := s.agent.Sessions().New()
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response:  fmt.Sprintf("✅ New session started.\n新会话 ID: `%s`", sess.ID),
+				SessionID: sess.ID,
+			})
+			return
+		case "status":
+			cfg := s.agent.Config().Get()
+			uptime := time.Since(s.agent.Metrics().StartTime)
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response: fmt.Sprintf("📊 *LuckyHarness Status*\n\n• Version: v0.55.0\n• Model: %s\n• Uptime: %s\n• Total requests: %d",
+					cfg.Model, formatDuration(uptime), s.agent.Metrics().TotalRequests.Load()),
+			})
+			return
+		case "stop":
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response: "ℹ️ Stop command received. Task cancellation not yet implemented.",
+			})
+			return
+		case "restart":
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response: "🔄 Restarting...\n\n⚠️ Auto-restart not implemented. Please restart manually.",
+			})
+			return
+		default:
+			s.sendJSON(w, http.StatusOK, ChatResponse{
+				Response: fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", cmd),
+			})
+			return
+		}
+	}
+	
 	result, err := s.agent.RunLoop(ctx, req.Message, loopCfg)
 	if err != nil {
 		s.stats.mu.Lock()
@@ -1945,4 +2014,19 @@ func (s *Server) handleGatewayByName(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.sendError(w, "not found", http.StatusNotFound, "")
 	}
+}
+
+// formatDuration 格式化运行时间
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm %ds", mins, int(d.Seconds())%60)
 }

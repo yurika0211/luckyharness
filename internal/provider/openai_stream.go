@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -97,7 +98,7 @@ type openaiSSEEvent struct {
 
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
-func callOpenAI(cfg Config, messages []Message, opts CallOptions) (*Response, error) {
+func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
 	reqBody := openaiChatRequest{
 		Model:       cfg.Model,
 		Messages:    toOpenAIMessages(messages),
@@ -182,7 +183,90 @@ func callOpenAI(cfg Config, messages []Message, opts CallOptions) (*Response, er
 		}
 	}
 
+	// v0.55.0: 非流式返回空 content 但有 completion_tokens 时，
+	// 用流式重试（某些 API 代理如 api.boaiak.com 的 gpt-5.4-mini 非流式不返回 content）
+	hasUsage := chatResp.Usage != nil && chatResp.Usage.CompletionTokens > 0
+	if result.Content == "" && len(result.ToolCalls) == 0 && hasUsage {
+		log.Printf("[provider] non-stream empty content with %d completion_tokens, retrying stream (model=%s)", chatResp.Usage.CompletionTokens, cfg.Model)
+		streamResult, err := retryWithStream(ctx, cfg, messages, opts)
+		if err == nil && streamResult != nil && (streamResult.Content != "" || len(streamResult.ToolCalls) > 0) {
+			log.Printf("[provider] stream retry OK: content_len=%d, tool_calls=%d", len(streamResult.Content), len(streamResult.ToolCalls))
+			return streamResult, nil
+		}
+		if err != nil {
+			log.Printf("[provider] stream retry failed: %v", err)
+		} else {
+			log.Printf("[provider] stream retry also empty: content_len=%d", len(streamResult.Content))
+		}
+	}
+
 	return result, nil
+}
+
+// retryWithStream 非流式返回空 content 时，用流式重试获取完整响应
+func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
+	ch, err := callOpenAIStream(ctx, cfg, messages, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	var content strings.Builder
+	var toolCalls []ToolCall
+	toolCallAcc := make(map[int]*deltaToolCall)
+
+	for chunk := range ch {
+		if chunk.Content != "" {
+			content.WriteString(chunk.Content)
+		}
+		if len(chunk.ToolCallDeltas) > 0 {
+			for _, dtc := range chunk.ToolCallDeltas {
+				existing, ok := toolCallAcc[dtc.Index]
+				if !ok {
+					toolCallAcc[dtc.Index] = &deltaToolCall{
+						Index: dtc.Index,
+						ID:    dtc.ID,
+						Type:  "function",
+					}
+					if dtc.Name != "" {
+						toolCallAcc[dtc.Index].Function.Name = dtc.Name
+					}
+					if dtc.Arguments != "" {
+						toolCallAcc[dtc.Index].Function.Arguments = dtc.Arguments
+					}
+				} else {
+					if dtc.ID != "" {
+						existing.ID = dtc.ID
+					}
+					if dtc.Name != "" {
+						existing.Function.Name += dtc.Name
+					}
+					if dtc.Arguments != "" {
+						existing.Function.Arguments += dtc.Arguments
+					}
+				}
+			}
+		}
+		if chunk.Done {
+			break
+		}
+	}
+
+	// 组装 tool calls
+	for i := 0; i < len(toolCallAcc); i++ {
+		if tc, ok := toolCallAcc[i]; ok && tc.Function.Name != "" {
+			toolCalls = append(toolCalls, ToolCall{
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+			})
+		}
+	}
+
+	return &Response{
+		Content:   content.String(),
+		ToolCalls: toolCalls,
+		Model:     cfg.Model,
+	}, nil
 }
 
 // callOpenAIStream 执行 OpenAI API 流式调用

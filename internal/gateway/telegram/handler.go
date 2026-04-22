@@ -340,6 +340,15 @@ func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error
 		return h.handleMetrics(ctx, msg)
 	case "health":
 		return h.handleHealth(ctx, msg)
+	// v0.56.0: nanobot 风格内置命令
+	case "new":
+		return h.handleNew(ctx, msg)
+	case "stop":
+		return h.handleStop(ctx, msg)
+	case "status":
+		return h.handleStatus(ctx, msg)
+	case "restart":
+		return h.handleRestart(ctx, msg)
 	default:
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Unknown command: /%s\nType /help for available commands.", msg.Command))
 	}
@@ -375,23 +384,32 @@ Send me photos, voice messages, or files!`
 func (h *Handler) handleHelp(ctx context.Context, msg *gateway.Message) error {
 	help := `*Available Commands:*
 
-/start — Welcome message
-/help — This help message
-/chat _message_ — Send a message to the AI
-/model \[name] — Get/set current model
-/soul — Show current SOUL info
-/tools — List available tools
-/skills — List loaded skills
-/cron \[list|add|remove] — Manage scheduled tasks
-/metrics — Show usage metrics
-/health — System health check
-/reset — Reset conversation
-/history — Show conversation history
-/session — Show current session info
+*🍀 基础命令*
+/start — 欢迎消息
+/help — 显示此帮助
+/chat _消息_ — 发送消息给 AI
+
+*⚙️ 系统管理*
+/model \[name] — 查看/设置当前模型
+/soul — 查看 SOUL 信息
+/tools — 列出可用工具
+/skills — 列出已加载技能
+/cron \[list|add|remove] — 管理定时任务
+/metrics — 查看使用指标
+/health — 系统健康检查
+
+*💬 会话管理*
+/reset — 重置对话
+/history — 查看对话历史
+/session — 查看会话信息
+/new — 开启新对话（清空历史）
+/stop — 停止当前任务
+/status — 查看状态
+/restart — 重启 bot
 
 *Tips:*
-• In private chats, just type your message directly
-• In groups, mention @bot or reply to a bot message
+• 私聊直接发送消息即可
+• 群聊需要 @bot 或回复 bot 消息
 • Each chat has its own conversation session
 • Send photos, voice, or files for multimodal processing`
 
@@ -857,4 +875,103 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
 
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+// v0.56.0: nanobot 风格内置命令
+
+// handleNew 开启新对话（创建新会话）
+func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
+	chatID := msg.Chat.ID
+	
+	// 创建新会话
+	newSess := h.agent.Sessions().New()
+	
+	h.mu.Lock()
+	oldSessionID, hadOld := h.sessions[chatID]
+	h.sessions[chatID] = newSess.ID
+	h.mu.Unlock()
+	
+	h.saveChatSessions()
+	
+	info := ""
+	if hadOld {
+		info = fmt.Sprintf("旧会话：%s\n", oldSessionID)
+	}
+	
+	return h.adapter.Send(ctx, chatID, fmt.Sprintf("✅ New session started.\n%s新会话 ID: `%s`", info, newSess.ID))
+}
+
+// handleStop 停止当前任务（占位实现）
+func (h *Handler) handleStop(ctx context.Context, msg *gateway.Message) error {
+	chatID := msg.Chat.ID
+	// TODO: 实现真正的任务取消
+	return h.adapter.Send(ctx, chatID, "ℹ️ Stop command received. Task cancellation not yet implemented.")
+}
+
+// handleStatus 查看状态
+func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error {
+	chatID := msg.Chat.ID
+	sessionID := h.getSessionID(chatID)
+	
+	var sb strings.Builder
+	sb.WriteString("📊 *LuckyHarness Status*\n\n")
+	
+	// 版本
+	sb.WriteString(fmt.Sprintf("• Version: v%s\n", "0.55.0"))
+	
+	// 模型
+	cfg := h.agent.Config().Get()
+	sb.WriteString(fmt.Sprintf("• Model: %s\n", cfg.Model))
+	
+	// 运行时间
+	uptime := time.Since(h.agent.Metrics().StartTime)
+	sb.WriteString(fmt.Sprintf("• Uptime: %s\n", formatDuration(uptime)))
+	
+	// 会话历史
+	sess, ok := h.agent.Sessions().Get(sessionID)
+	msgCount := 0
+	if ok && sess != nil {
+		msgCount = sess.MessageCount()
+	}
+	sb.WriteString(fmt.Sprintf("• Session messages: %d\n", msgCount))
+	
+	// 指标
+	m := h.agent.Metrics()
+	snapshot := m.Snapshot()
+	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
+	
+	return h.adapter.Send(ctx, chatID, sb.String())
+}
+
+// handleRestart 重启 bot
+func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error {
+	chatID := msg.Chat.ID
+	
+	// 发送重启消息
+	_ = h.adapter.Send(ctx, chatID, "🔄 Restarting...")
+	
+	// 延迟 1 秒后重启
+	go func() {
+		time.Sleep(1 * time.Second)
+		// TODO: 实现重启逻辑（需要访问主进程）
+		// 目前只能提示用户手动重启
+		_ = h.adapter.Send(ctx, chatID, "⚠️ Auto-restart not implemented. Please restart manually.")
+	}()
+	
+	return nil
+}
+
+// formatDuration 格式化运行时间
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	mins := int(d.Minutes()) % 60
+	
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm %ds", mins, int(d.Seconds())%60)
 }

@@ -162,7 +162,7 @@ func (p *OpenAIProvider) Validate() error {
 }
 
 func (p *OpenAIProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(p.cfg, messages, CallOptions{})
+	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
 }
 
 func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
@@ -171,7 +171,7 @@ func (p *OpenAIProvider) ChatStream(ctx context.Context, messages []Message) (<-
 
 // ChatWithOptions 发送消息（支持 function calling）
 func (p *OpenAIProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
-	return callOpenAI(p.cfg, messages, opts)
+	return callOpenAI(ctx, p.cfg, messages, opts)
 }
 
 // ChatStreamWithOptions 发送消息流式（支持 function calling）
@@ -208,7 +208,7 @@ func (p *OpenAICompatibleProvider) Validate() error {
 }
 
 func (p *OpenAICompatibleProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
-	return callOpenAI(p.cfg, messages, CallOptions{})
+	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
 }
 
 func (p *OpenAICompatibleProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
@@ -217,7 +217,7 @@ func (p *OpenAICompatibleProvider) ChatStream(ctx context.Context, messages []Me
 
 // ChatWithOptions 发送消息（支持 function calling）
 func (p *OpenAICompatibleProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
-	return callOpenAI(p.cfg, messages, opts)
+	return callOpenAI(ctx, p.cfg, messages, opts)
 }
 
 // ChatStreamWithOptions 发送消息流式（支持 function calling）

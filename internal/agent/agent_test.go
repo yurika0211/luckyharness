@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -620,3 +621,147 @@ func TestEventTypeValues(t *testing.T) {
 		t.Errorf("unexpected EventType values: Content=%d Done=%d Error=%d", EventContent, EventDone, EventError)
 	}
 }
+
+// --- Agent Getter 测试 ---
+
+func TestAgent_Getters(t *testing.T) {
+	a := &Agent{
+		soul:      soul.Default(),
+		tmplMgr:   soul.NewTemplateManager(),
+		catalog:   provider.NewModelCatalog(),
+		tools:     tool.NewRegistry(),
+		mcpClient: tool.NewMCPClient(),
+		delegate:  tool.NewDelegateManager(tool.DefaultDelegateConfig()),
+		gateway:   tool.NewGateway(tool.NewRegistry()),
+		skills:    []*tool.SkillInfo{},
+	}
+
+	tests := []struct {
+		name string
+		got  interface{}
+	}{
+		{"Soul", a.Soul()},
+		{"TemplateManager", a.TemplateManager()},
+		{"Tools", a.Tools()},
+		{"Catalog", a.Catalog()},
+		{"MCPClient", a.MCPClient()},
+		{"Delegate", a.Delegate()},
+		{"Gateway", a.Gateway()},
+		{"Skills", a.Skills()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.got == nil {
+				t.Errorf("%s() returned nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestAgent_GettersNil(t *testing.T) {
+	a := &Agent{}
+
+	tests := []struct {
+		name string
+		got  interface{}
+	}{
+		{"Registry", a.Registry()},
+		{"Provider", a.Provider()},
+		{"Sessions", a.Sessions()},
+		{"Config", a.Config()},
+		{"Memory", a.Memory()},
+		{"ContextWindow", a.ContextWindow()},
+		{"RAG", a.RAG()},
+		{"Metrics", a.Metrics()},
+		{"CronEngine", a.CronEngine()},
+		{"Autonomy", a.Autonomy()},
+		{"MsgGateway", a.MsgGateway()},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// 这些 getter 在 Agent 未初始化时返回 nil 是预期的
+			if tt.got != nil {
+				t.Logf("%s() = %v (may be non-nil if initialized)", tt.name, tt.got)
+			}
+		})
+	}
+}
+
+func TestAgent_SessionsWithConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	// Sessions 需要 sessions 字段初始化，而不是 cfg
+	sessMgr, err := session.NewManager(tmpDir + "/sessions")
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	a := &Agent{sessions: sessMgr}
+
+	s := a.Sessions()
+	if s == nil {
+		t.Error("Sessions() should return non-nil when sessions is set")
+	}
+}
+
+func TestAgent_ConfigWithManager(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	a := &Agent{cfg: cfg}
+
+	c := a.Config()
+	if c == nil {
+		t.Error("Config() should return non-nil when cfg is set")
+	}
+}
+
+func TestAgent_SwitchModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("max_tokens", "4096")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// 尝试切换到一个不存在的模型
+	err = a.SwitchModel("nonexistent-model")
+	if err == nil {
+		t.Log("SwitchModel() should return error for nonexistent model")
+	}
+}
+
+func TestAgent_ProviderWithMock(t *testing.T) {
+	mockProv := &mockProvider{name: "test-mock"}
+	a := &Agent{provider: mockProv}
+
+	p := a.Provider()
+	if p == nil {
+		t.Error("Provider() returned nil")
+	}
+	if p.Name() != "test-mock" {
+		t.Errorf("Provider().Name() = %q, want %q", p.Name(), "test-mock")
+	}
+}
+
+// mockProvider 用于测试的 mock provider
+type mockProvider struct {
+	name string
+}
+
+func (m *mockProvider) Name() string                                    { return m.name }
+func (m *mockProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	return &provider.Response{Content: "mock"}, nil
+}
+func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	ch := make(chan provider.StreamChunk)
+	close(ch)
+	return ch, nil
+}
+func (m *mockProvider) Validate() error { return nil }

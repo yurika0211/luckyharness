@@ -34,7 +34,7 @@ func (p *OpenRouterProvider) Validate() error {
 
 func (p *OpenRouterProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
 	// OpenRouter 兼容 OpenAI API，复用 callOpenAI
-	return callOpenAI(p.cfg, messages, CallOptions{})
+	return callOpenAI(ctx, p.cfg, messages, CallOptions{})
 }
 
 func (p *OpenRouterProvider) ChatStream(ctx context.Context, messages []Message) (<-chan StreamChunk, error) {
@@ -43,7 +43,7 @@ func (p *OpenRouterProvider) ChatStream(ctx context.Context, messages []Message)
 
 // ChatWithOptions 发送消息（支持 function calling）
 func (p *OpenRouterProvider) ChatWithOptions(ctx context.Context, messages []Message, opts CallOptions) (*Response, error) {
-	return callOpenAI(p.cfg, messages, opts)
+	return callOpenAI(ctx, p.cfg, messages, opts)
 }
 
 // ChatStreamWithOptions 发送消息流式（支持 function calling）
