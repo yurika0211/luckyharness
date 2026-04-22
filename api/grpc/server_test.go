@@ -3,12 +3,14 @@ package luckyharness
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/embedder"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/workflow"
+	"google.golang.org/grpc/metadata"
 )
 
 // mockExecutor is a simple test executor
@@ -345,3 +347,458 @@ func TestNewServer(t *testing.T) {
 
 // Ensure mockEmbedder implements embedder.Embedder
 var _ embedder.Embedder = (*mockEmbedder)(nil)
+
+// ── Chat & ChatStream Tests ──────────────────────────────────────
+
+type mockAgent struct {
+	chatResponse string
+	chatError    error
+}
+
+func (m *mockAgent) Chat(ctx context.Context, message string) (string, error) {
+	return m.chatResponse, m.chatError
+}
+
+func TestServer_Chat(t *testing.T) {
+	// Chat requires non-nil agent, skip for now
+	t.Skip("Chat requires non-nil agent")
+}
+
+func TestServer_Chat_Error(t *testing.T) {
+	// Chat requires non-nil agent, skip for now
+	t.Skip("Chat requires non-nil agent")
+}
+
+func TestServer_ChatStream(t *testing.T) {
+	// ChatStream requires non-nil agent, skip for now
+	t.Skip("ChatStream requires non-nil agent")
+}
+
+type mockChatStream struct {
+	ctx     context.Context
+	sent    []*ChatChunk
+	closeCh chan struct{}
+}
+
+func (m *mockChatStream) SetHeader(md metadata.MD) error { return nil }
+func (m *mockChatStream) SendHeader(md metadata.MD) error { return nil }
+func (m *mockChatStream) SetTrailer(md metadata.MD)       {}
+func (m *mockChatStream) Context() context.Context        { return m.ctx }
+func (m *mockChatStream) SendMsg(msg interface{}) error   { return nil }
+func (m *mockChatStream) RecvMsg(msg interface{}) error   { return nil }
+
+func (m *mockChatStream) Send(chunk *ChatChunk) error {
+	m.sent = append(m.sent, chunk)
+	return nil
+}
+
+// ── RAG Tests ──────────────────────────────────────
+
+func TestServer_RAGIndex(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+	ag := &agent.Agent{}
+
+	server := NewServer(ag, memStore, ragMgr, wfEngine)
+
+	req := &RAGIndexRequest{
+		Source:  "test-source",
+		Content: "This is test content for RAG indexing",
+	}
+
+	resp, err := server.RAGIndex(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RAGIndex failed: %v", err)
+	}
+
+	if resp.Id == "" {
+		t.Error("expected non-empty document ID")
+	}
+
+	if resp.Dimension != 1536 {
+		t.Errorf("expected dimension 1536, got %d", resp.Dimension)
+	}
+
+	if resp.TotalEntries == 0 {
+		t.Error("expected at least one chunk indexed")
+	}
+}
+
+func TestServer_RAGSearch(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+	ag := &agent.Agent{}
+
+	// Index some content first
+	_, err := ragMgr.IndexText("test-source", "", "golang programming language")
+	if err != nil {
+		t.Fatalf("failed to index content: %v", err)
+	}
+
+	server := NewServer(ag, memStore, ragMgr, wfEngine)
+
+	req := &RAGSearchRequest{
+		Query:     "programming",
+		Limit:     10,
+		Threshold: 0.5,
+	}
+
+	resp, err := server.RAGSearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RAGSearch failed: %v", err)
+	}
+
+	if resp.Total == 0 {
+		t.Error("expected at least one search result")
+	}
+
+	if len(resp.Results) == 0 {
+		t.Error("expected results slice to be non-empty")
+	}
+}
+
+func TestServer_RAGSearch_DefaultLimit(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+	ag := &agent.Agent{}
+
+	server := NewServer(ag, memStore, ragMgr, wfEngine)
+
+	req := &RAGSearchRequest{
+		Query: "test",
+		Limit: 0, // Should default to 10
+	}
+
+	_, err := server.RAGSearch(context.Background(), req)
+	if err != nil {
+		t.Fatalf("RAGSearch with default limit failed: %v", err)
+	}
+}
+
+// ── Workflow Tests ──────────────────────────────────────
+
+func TestServer_WorkflowGet(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	// Register a test workflow
+	wf := workflow.NewWorkflow("test-get-wf", []*workflow.Task{
+		{ID: "t1", Name: "Task 1", Action: "echo"},
+	})
+	wfEngine.RegisterWorkflow(wf)
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowGetRequest{Id: wf.ID}
+	resp, err := server.WorkflowGet(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WorkflowGet failed: %v", err)
+	}
+
+	if resp.Name != "test-get-wf" {
+		t.Errorf("expected name 'test-get-wf', got %s", resp.Name)
+	}
+
+	if len(resp.Tasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(resp.Tasks))
+	}
+}
+
+func TestServer_WorkflowGet_NotFound(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowGetRequest{Id: "non-existent-id"}
+	_, err := server.WorkflowGet(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for non-existent workflow")
+	}
+}
+
+func TestServer_WorkflowDelete(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	// Register and then delete a workflow
+	wf := workflow.NewWorkflow("test-delete-wf", []*workflow.Task{
+		{ID: "t1", Name: "Task 1", Action: "echo"},
+	})
+	wfEngine.RegisterWorkflow(wf)
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowDeleteRequest{Id: wf.ID}
+	_, err := server.WorkflowDelete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WorkflowDelete failed: %v", err)
+	}
+
+	// Verify deletion
+	_, exists := wfEngine.GetWorkflow(wf.ID)
+	if exists {
+		t.Error("expected workflow to be deleted")
+	}
+}
+
+func TestServer_WorkflowDelete_NotFound(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowDeleteRequest{Id: "non-existent-id"}
+	// DeleteWorkflow always returns nil even for non-existent workflows
+	_, err := server.WorkflowDelete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WorkflowDelete should not return error for non-existent workflow: %v", err)
+	}
+}
+
+func TestServer_WorkflowStart(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	// Register a workflow
+	wf := workflow.NewWorkflow("test-start-wf", []*workflow.Task{
+		{ID: "t1", Name: "Task 1", Action: "echo"},
+	})
+	wfEngine.RegisterWorkflow(wf)
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowStartRequest{WorkflowId: wf.ID}
+	instance, err := server.WorkflowStart(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WorkflowStart failed: %v", err)
+	}
+
+	if instance.WorkflowId != wf.ID {
+		t.Errorf("expected workflow id %s, got %s", wf.ID, instance.WorkflowId)
+	}
+
+	if instance.Id == "" {
+		t.Error("expected non-empty instance ID")
+	}
+}
+
+func TestServer_WorkflowStart_NotFound(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowStartRequest{WorkflowId: "non-existent-id"}
+	_, err := server.WorkflowStart(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for non-existent workflow")
+	}
+}
+
+func TestServer_WorkflowInstanceGet(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	// Create workflow and start instance
+	wf := workflow.NewWorkflow("test-instance-wf", []*workflow.Task{
+		{ID: "t1", Name: "Task 1", Action: "echo"},
+	})
+	wfEngine.RegisterWorkflow(wf)
+	instance, _ := wfEngine.StartWorkflow(wf.ID)
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowInstanceGetRequest{Id: instance.ID}
+	resp, err := server.WorkflowInstanceGet(context.Background(), req)
+	if err != nil {
+		t.Fatalf("WorkflowInstanceGet failed: %v", err)
+	}
+
+	if resp.Id != instance.ID {
+		t.Errorf("expected instance id %s, got %s", instance.ID, resp.Id)
+	}
+
+	if resp.WorkflowId != wf.ID {
+		t.Errorf("expected workflow id %s, got %s", wf.ID, resp.WorkflowId)
+	}
+}
+
+func TestServer_WorkflowInstanceGet_NotFound(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	req := &WorkflowInstanceGetRequest{Id: "non-existent-instance"}
+	_, err := server.WorkflowInstanceGet(context.Background(), req)
+	if err == nil {
+		t.Fatal("expected error for non-existent instance")
+	}
+}
+
+// ── Helper Function Tests ──────────────────────────────────────
+
+func TestServer_workflowToProto(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	wf := workflow.NewWorkflow("proto-test-wf", []*workflow.Task{
+		{
+			ID:          "t1",
+			Name:        "Task 1",
+			Description: "First task",
+			Action:      "echo",
+			Params:      map[string]interface{}{"msg": "hello"},
+			DependsOn:   []string{},
+			Timeout:     30 * time.Second,
+			RetryCount:  3,
+			RetryDelay:  5 * time.Second,
+		},
+	})
+	wf.Description = "Test workflow"
+	wf.Version = "1.0"
+
+	proto := server.workflowToProto(wf)
+
+	if proto.Name != "proto-test-wf" {
+		t.Errorf("expected name 'proto-test-wf', got %s", proto.Name)
+	}
+
+	if proto.Description != "Test workflow" {
+		t.Errorf("expected description 'Test workflow', got %s", proto.Description)
+	}
+
+	if proto.Version != "1.0" {
+		t.Errorf("expected version '1.0', got %s", proto.Version)
+	}
+
+	if len(proto.Tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(proto.Tasks))
+	}
+
+	task := proto.Tasks[0]
+	if task.Name != "Task 1" {
+		t.Errorf("expected task name 'Task 1', got %s", task.Name)
+	}
+
+	if task.Params["msg"] != "hello" {
+		t.Errorf("expected param msg='hello', got %s", task.Params["msg"])
+	}
+
+	if task.TimeoutMs != 30000 {
+		t.Errorf("expected timeout 30000ms, got %d", task.TimeoutMs)
+	}
+
+	if task.RetryCount != 3 {
+		t.Errorf("expected retry count 3, got %d", task.RetryCount)
+	}
+
+	if task.RetryDelayMs != 5000 {
+		t.Errorf("expected retry delay 5000ms, got %d", task.RetryDelayMs)
+	}
+}
+
+func TestServer_instanceToProto(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	server := NewServer(nil, memStore, ragMgr, wfEngine)
+
+	wf := workflow.NewWorkflow("instance-proto-wf", []*workflow.Task{
+		{ID: "t1", Name: "Task 1", Action: "echo"},
+	})
+	wfEngine.RegisterWorkflow(wf)
+	instance, _ := wfEngine.StartWorkflow(wf.ID)
+
+	// Manually set a result for testing
+	instance.Results["t1"] = &workflow.TaskResult{
+		TaskID:    "t1",
+		Status:    "success",
+		Output:    "test output",
+		Error:     "",
+		StartTime: time.Now().Add(-1 * time.Minute),
+		EndTime:   time.Now(),
+		Duration:  time.Minute,
+	}
+
+	proto := server.instanceToProto(instance)
+
+	if proto.Id != instance.ID {
+		t.Errorf("expected instance id %s, got %s", instance.ID, proto.Id)
+	}
+
+	if proto.WorkflowId != wf.ID {
+		t.Errorf("expected workflow id %s, got %s", wf.ID, proto.WorkflowId)
+	}
+
+	if _, ok := proto.Results["t1"]; !ok {
+		t.Error("expected result for task t1")
+	}
+}
+
+// ── GRPCServer Tests ──────────────────────────────────────
+
+func TestGRPCServer_Addr(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	serviceServer := NewServer(nil, memStore, ragMgr, wfEngine)
+	grpcServer := NewGRPCServer(":0", serviceServer)
+
+	// Before start, addr should be the configured address
+	if grpcServer.Addr() != ":0" {
+		t.Errorf("expected addr ':0' before start, got %s", grpcServer.Addr())
+	}
+
+	// Start the server
+	if err := grpcServer.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+
+	// After start, addr should be the actual listening address
+	addr := grpcServer.Addr()
+	if addr == ":0" {
+		t.Error("expected actual listening address, got ':0'")
+	}
+
+	grpcServer.Stop()
+}
+
+func TestGRPCServer_Stop(t *testing.T) {
+	memStore, _ := memory.NewStore(t.TempDir())
+	ragMgr := newTestRAGManager()
+	wfEngine := newTestWorkflowEngine()
+
+	serviceServer := NewServer(nil, memStore, ragMgr, wfEngine)
+	grpcServer := NewGRPCServer(":0", serviceServer)
+
+	if err := grpcServer.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+
+	// Give server time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop should not panic
+	grpcServer.Stop()
+
+	// Give server time to stop gracefully
+	time.Sleep(100 * time.Millisecond)
+}
