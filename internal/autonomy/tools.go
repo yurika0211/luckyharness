@@ -1,6 +1,7 @@
 package autonomy
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 )
@@ -184,7 +185,7 @@ func (td *ToolDefinitions) HandleWorkerSpawn(args map[string]any) (string, error
 	}
 
 	// Execute asynchronously
-	go td.kit.Pool().executeTask(nil, worker, pulled)
+	go td.kit.Pool().executeTask(context.Background(), worker, pulled)
 
 	result, _ := json.Marshal(map[string]any{
 		"task_id":   taskID,
