@@ -28,6 +28,7 @@
 | v0.37.0 | Search & Fetch Rewrite | ✅ Done | 独立 search 包 + Exa 源 + 缓存 + 并发 + 配置管理 |
 | v0.43.0 | Agent 包测试 + v0.43 功能整合 | ✅ Done | Agent 测试 37 新 (4.9%→23.9%) + 短期/中期记忆 + remember/recall + OneBot网关 + Telegram增强 + 文件沙箱 + Cron反馈 |
 | v0.44.0 | Server 包测试补全 | ✅ Done | Server 测试 55 新 (41.0%→65.8%) — Health/Metrics/Context/FC/RAGStore/Workflow/Gateway/Plugin/Collab |
+| v0.45.0 | 并发工具执行 | ✅ Done | ParallelSafe 标记 + 并发调度 + 串行保序 + 2 新测试 |
 
 ---
 
@@ -156,6 +157,31 @@
 
 ---
 
+## ✅ Done — v0.45.0 并发工具执行
+
+### 子任务
+
+- [x] **PE-1**: Tool.ParallelSafe 标记 — 无状态工具(web_search/web_fetch/current_time/recall)标记为可并发，有状态工具(shell/remember)保持串行
+- [x] **PE-2**: streamNative 并发调度 — 分类 parallel/serial 组，并发执行无状态工具，收集结果按原始顺序排列
+- [x] **PE-3**: streamSimulated 并发调度 — 同 PE-2 逻辑，适配 simulated 流式模式
+- [x] **PE-4**: RunLoopWithSession 并发调度 — 同 PE-2 逻辑，适配 REPL 循环模式
+- [x] **PE-5**: isToolParallelSafe() — Agent 辅助方法，查询工具注册表
+- [x] **PE-6**: 测试 — TestParallelToolExecution + TestParallelExecutionTiming (2 新测试)
+
+---
+
+## 🔴 Ready — v0.46.0 Tool 包测试补全
+
+### 子任务
+
+- [ ] **TT-1**: Registry 边界测试 — 重复注册/空名称/nil Handler
+- [ ] **TT-2**: Permission 测试 — PermAuto/PermApprove/PermDeny 全路径
+- [ ] **TT-3**: UsageTracker 并发测试 — race condition + quota 并发扣减
+- [ ] **TT-4**: ToOpenAIFormat 完整测试 — 嵌套对象/数组参数 + required 字段
+- [ ] **TT-5**: 内置工具参数校验 — Shell/WebSearch/WebFetch/Remember/Recall 参数缺失/类型错误
+
+---
+
 ## 🔴 Blocked
 
 ### v0.6.0 消息网关
@@ -168,4 +194,4 @@
 
 ---
 
-*Last updated: 2026-04-21*
+*Last updated: 2026-04-22*
