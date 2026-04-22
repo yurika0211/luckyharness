@@ -742,3 +742,15 @@ func TestServer_InstanceToProtoViaStart(t *testing.T) {
 	}
 }
 
+// ── Chat & ChatStream Tests ──────────────────────────────────────
+// Note: Chat and ChatStream require a real *agent.Agent instance which is complex to mock.
+// These tests are skipped until we have a proper integration test setup.
+
+func TestServer_Chat_WithNilAgent(t *testing.T) {
+	t.Skip("Chat requires real *agent.Agent, skipping for unit test")
+}
+
+func TestServer_ChatStream_WithNilAgent(t *testing.T) {
+	t.Skip("ChatStream requires real *agent.Agent, skipping for unit test")
+}
+

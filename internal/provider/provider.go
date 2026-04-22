@@ -69,6 +69,7 @@ type Config struct {
 	Model       string
 	MaxTokens   int
 	Temperature float64
+	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
 }
 
 // Registry 管理所有已注册的 Provider

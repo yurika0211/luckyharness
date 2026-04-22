@@ -136,6 +136,11 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	
+	// v0.56.0: 添加额外请求头（如 User-Agent）
+	for k, v := range cfg.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -310,6 +315,11 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	
+	// v0.56.0: 添加额外请求头（如 User-Agent）
+	for k, v := range cfg.ExtraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
