@@ -579,3 +579,140 @@ func (a *Agent) isToolParallelSafe(toolName string) bool {
 	}
 	return t.ParallelSafe
 }
+
+// ParallelSummarizeThreshold 触发并行摘要的对话条数阈值
+const ParallelSummarizeThreshold = 20
+
+// ParallelSummarize 并行摘要对话历史
+// 当对话超过阈值时，将对话分成两半，用 goroutine 并行调用 LLM 摘要
+// 合并结果替换原对话
+func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Message, error) {
+	if len(messages) <= ParallelSummarizeThreshold {
+		return messages, nil // 未达阈值，不处理
+	}
+
+	// 保留 system 消息
+	var systemMsgs []provider.Message
+	var conversationMsgs []provider.Message
+	for _, msg := range messages {
+		if msg.Role == "system" {
+			systemMsgs = append(systemMsgs, msg)
+		} else {
+			conversationMsgs = append(conversationMsgs, msg)
+		}
+	}
+
+	if len(conversationMsgs) <= ParallelSummarizeThreshold {
+		return messages, nil
+	}
+
+	// 将对话分成两半
+	mid := len(conversationMsgs) / 2
+	firstHalf := conversationMsgs[:mid]
+	secondHalf := conversationMsgs[mid:]
+
+	// 使用 channel 收集摘要结果
+	type summarizeResult struct {
+		summary string
+		err     error
+	}
+	resultCh := make(chan summarizeResult, 2)
+
+	// 定义摘要 prompt
+	summarizePrompt := func(msgs []provider.Message, part string) string {
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Please summarize the following conversation %s concisely in 2-3 sentences. ", part))
+		sb.WriteString("Preserve key information, decisions, and action items. ")
+		sb.WriteString("Output only the summary, no additional commentary.\n\n")
+		sb.WriteString("Conversation:\n")
+		for _, m := range msgs {
+			role := m.Role
+			if role == "assistant" {
+				role = "Assistant"
+			} else {
+				role = "User"
+			}
+			sb.WriteString(fmt.Sprintf("%s: %s\n", role, m.Content))
+		}
+		return sb.String()
+	}
+
+	// 并发摘要两半对话
+	ctx := context.Background()
+	
+	// 第一部分
+	go func() {
+		prompt := summarizePrompt(firstHalf, "(first part)")
+		messages := []provider.Message{
+			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "user", Content: prompt},
+		}
+		
+		resp, err := a.provider.Chat(ctx, messages)
+		if err != nil {
+			resultCh <- summarizeResult{summary: "", err: err}
+			return
+		}
+		resultCh <- summarizeResult{summary: resp.Content, err: nil}
+	}()
+
+	// 第二部分
+	go func() {
+		prompt := summarizePrompt(secondHalf, "(second part)")
+		messages := []provider.Message{
+			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
+			{Role: "user", Content: prompt},
+		}
+		
+		resp, err := a.provider.Chat(ctx, messages)
+		if err != nil {
+			resultCh <- summarizeResult{summary: "", err: err}
+			return
+		}
+		resultCh <- summarizeResult{summary: resp.Content, err: nil}
+	}()
+
+	// 收集两个摘要结果
+	var firstSummary, secondSummary string
+	for i := 0; i < 2; i++ {
+		result := <-resultCh
+		if result.err != nil {
+			// 如果摘要失败，返回原始消息
+			return messages, result.err
+		}
+		if firstSummary == "" {
+			firstSummary = result.summary
+		} else {
+			secondSummary = result.summary
+		}
+	}
+
+	// 合并摘要
+	var summaryContent strings.Builder
+	summaryContent.WriteString("[Conversation Summary - Parallel Summarization]\n")
+	summaryContent.WriteString(fmt.Sprintf("First Part Summary: %s\n", firstSummary))
+	summaryContent.WriteString(fmt.Sprintf("Second Part Summary: %s\n", secondSummary))
+	summaryContent.WriteString("\n[End Summary]\n")
+
+	// 构建新的消息列表：system + 摘要 + 最近少量原始消息
+	newMessages := make([]provider.Message, 0, len(systemMsgs)+1+5)
+	
+	// 添加 system 消息
+	newMessages = append(newMessages, systemMsgs...)
+	
+	// 添加摘要消息
+	newMessages = append(newMessages, provider.Message{
+		Role:    "system",
+		Content: summaryContent.String(),
+	})
+	
+	// 保留最后 5 条原始对话作为上下文
+	keepCount := 5
+	if keepCount > len(conversationMsgs) {
+		keepCount = len(conversationMsgs)
+	}
+	startIdx := len(conversationMsgs) - keepCount
+	newMessages = append(newMessages, conversationMsgs[startIdx:]...)
+
+	return newMessages, nil
+}

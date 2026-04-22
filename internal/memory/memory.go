@@ -259,6 +259,136 @@ func (s *Store) Get(id string) (*Entry, error) {
 	return e, nil
 }
 
+// SearchParallel 并行检索三层记忆，按相关度排序返回 top-N 条
+// 使用 goroutine 并发检索 short/medium/long 三层记忆
+// 限制返回条数为 2-3 条最相关记忆
+func (s *Store) SearchParallel(query string, limit int) []Entry {
+	// 限制返回条数为 2-3 条
+	if limit < 2 {
+		limit = 2
+	}
+	if limit > 3 {
+		limit = 3
+	}
+
+	now := time.Now()
+	queryLower := strings.ToLower(query)
+
+	// 按层级分组记忆
+	shortEntries := make([]*Entry, 0)
+	mediumEntries := make([]*Entry, 0)
+	longEntries := make([]*Entry, 0)
+
+	s.mu.RLock()
+	for _, e := range s.entries {
+		switch e.Tier {
+		case TierShort:
+			shortEntries = append(shortEntries, e)
+		case TierMedium:
+			mediumEntries = append(mediumEntries, e)
+		case TierLong:
+			longEntries = append(longEntries, e)
+		}
+	}
+	s.mu.RUnlock()
+
+	// 使用 channel 收集各层级的检索结果
+	type tierResult struct {
+		tier   Tier
+		entries []entryScore
+	}
+	resultCh := make(chan tierResult, 3)
+
+	// 并发检索三层记忆
+	searchTier := func(tier Tier, entries []*Entry) {
+		var scored []entryScore
+		for _, e := range entries {
+			contentLower := strings.ToLower(e.Content)
+			categoryLower := strings.ToLower(e.Category)
+
+			// 关键词匹配评分
+			matchScore := 0.0
+			if strings.Contains(contentLower, queryLower) {
+				matchScore = 1.0
+				// 精确匹配加分
+				if contentLower == queryLower {
+					matchScore = 2.0
+				}
+			}
+			if strings.Contains(categoryLower, queryLower) {
+				matchScore += 0.5
+			}
+			// 标签匹配
+			for _, tag := range e.Tags {
+				if strings.Contains(strings.ToLower(tag), queryLower) {
+					matchScore += 0.3
+					break
+				}
+			}
+
+			if matchScore > 0 {
+				// 综合分 = 匹配分 × 权重 × 层级系数
+				// 长期记忆权重更高
+				tierMultiplier := 1.0
+				switch tier {
+				case TierShort:
+					tierMultiplier = 0.8
+				case TierMedium:
+					tierMultiplier = 1.0
+				case TierLong:
+					tierMultiplier = 1.2
+				}
+				totalScore := matchScore * e.Weight(now) * tierMultiplier
+				scored = append(scored, entryScore{entry: *e, score: totalScore})
+
+				// 更新访问计数（异步，不阻塞）
+				go func(entry *Entry) {
+					s.mu.Lock()
+					entry.AccessCount++
+					entry.AccessedAt = time.Now()
+					s.mu.Unlock()
+				}(e)
+			}
+		}
+		resultCh <- tierResult{tier: tier, entries: scored}
+	}
+
+	// 启动三个 goroutine 并发检索
+	go searchTier(TierShort, shortEntries)
+	go searchTier(TierMedium, mediumEntries)
+	go searchTier(TierLong, longEntries)
+
+	// 收集所有结果
+	var allScored []entryScore
+	for i := 0; i < 3; i++ {
+		result := <-resultCh
+		allScored = append(allScored, result.entries...)
+	}
+
+	// 按综合分降序排序
+	sort.Slice(allScored, func(i, j int) bool {
+		return allScored[i].score > allScored[j].score
+	})
+
+	// 取 top-N
+	if limit > len(allScored) {
+		limit = len(allScored)
+	}
+	results := make([]Entry, limit)
+	for i := 0; i < limit; i++ {
+		results[i] = allScored[i].entry
+	}
+
+	// 异步持久化访问计数更新
+	go func() {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		_ = s.persist()
+	}()
+
+	return results
+}
+
 // Search 搜索记忆（关键词匹配 + 权重排序）
 func (s *Store) Search(query string) []Entry {
 	s.mu.Lock()

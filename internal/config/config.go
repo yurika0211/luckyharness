@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -31,6 +32,9 @@ type Config struct {
 
 	// v0.43.0: 记忆系统配置
 	Memory MemoryConfig `yaml:"memory,omitempty"`
+
+	// v0.45.0: 模型路由配置
+	ModelRouter ModelRouterConfig `yaml:"model_router,omitempty"`
 }
 
 // MemoryConfig 记忆系统配置
@@ -38,6 +42,145 @@ type MemoryConfig struct {
 	ShortTermMaxTurns  int `yaml:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
 	MidTermExpireDays  int `yaml:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
 	MidTermMaxSummaries int `yaml:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+}
+
+// ModelRouterConfig 模型路由配置
+type ModelRouterConfig struct {
+	Enable       bool   `yaml:"enable,omitempty"`        // 是否启用模型路由
+	SimpleModel  string `yaml:"simple_model,omitempty"`  // 简单任务模型（便宜/快速）
+	ComplexModel string `yaml:"complex_model,omitempty"` // 复杂任务模型（强/慢）
+	LocalModel   string `yaml:"local_model,omitempty"`   // 本地模型（ollama）
+	LocalBaseURL string `yaml:"local_base_url,omitempty"` // 本地模型 API 地址
+	
+	// 自动路由阈值
+	TokenThreshold int `yaml:"token_threshold,omitempty"` // 超过此 token 数视为复杂任务（默认 500）
+}
+
+// TaskComplexity 任务复杂度
+type TaskComplexity int
+
+const (
+	TaskSimple  TaskComplexity = iota // 简单任务：问候、简单问答
+	TaskModerate                      // 中等任务：一般查询、简单分析
+	TaskComplex                       // 复杂任务：代码生成、复杂分析、多步骤推理
+)
+
+// ModelRouter 模型路由器
+type ModelRouter struct {
+	config ModelRouterConfig
+}
+
+// NewModelRouter 创建模型路由器
+func NewModelRouter(config ModelRouterConfig) *ModelRouter {
+	return &ModelRouter{config: config}
+}
+
+// SelectModel 根据任务复杂度选择模型
+func (r *ModelRouter) SelectModel(complexity TaskComplexity) (model string, apiBase string) {
+	if !r.config.Enable {
+		return "", "" // 未启用路由，使用默认配置
+	}
+
+	switch complexity {
+	case TaskSimple:
+		// 简单任务使用便宜模型
+		if r.config.SimpleModel != "" {
+			return r.config.SimpleModel, ""
+		}
+	case TaskComplex:
+		// 复杂任务使用强模型
+		if r.config.ComplexModel != "" {
+			return r.config.ComplexModel, ""
+		}
+	default:
+		// 中等任务：如果有本地模型优先使用本地
+		if r.config.LocalModel != "" {
+			return r.config.LocalModel, r.config.LocalBaseURL
+		}
+	}
+	
+	return "", ""
+}
+
+// EstimateComplexity 根据输入估算任务复杂度
+func (r *ModelRouter) EstimateComplexity(input string, tokenCount int) TaskComplexity {
+	inputLower := strings.ToLower(input)
+	
+	// 简单任务关键词
+	simpleKeywords := []string{
+		"hello", "hi", "hey", "good morning", "good night",
+		"谢谢", "你好", "再见", "早上好", "晚安",
+		"what time", "current time", "date",
+	}
+	
+	for _, kw := range simpleKeywords {
+		if strings.Contains(inputLower, kw) {
+			return TaskSimple
+		}
+	}
+	
+	// 复杂任务关键词
+	complexKeywords := []string{
+		"write code", "implement", "create a program", "build",
+		"analyze", "compare", "explain in detail", "step by step",
+		"optimize", "refactor", "debug", "design",
+		"编写代码", "实现", "创建程序", "构建",
+		"分析", "比较", "详细解释", "逐步",
+		"优化", "重构", "调试", "设计",
+	}
+	
+	for _, kw := range complexKeywords {
+		if strings.Contains(inputLower, kw) {
+			return TaskComplex
+		}
+	}
+	
+	// 根据 token 数判断
+	if tokenCount > r.config.TokenThreshold {
+		if r.config.TokenThreshold <= 0 {
+			r.config.TokenThreshold = 500
+		}
+		return TaskComplex
+	}
+	
+	// 默认为中等任务
+	return TaskModerate
+}
+
+// IsLocalTask 判断是否为本地任务（涉及本地文件/命令）
+func (r *ModelRouter) IsLocalTask(input string) bool {
+	localKeywords := []string{
+		"file", "directory", "folder", "path",
+		"run", "execute", "command", "terminal", "shell",
+		"local", "localhost",
+		"文件", "目录", "文件夹", "路径",
+		"运行", "执行", "命令", "终端",
+	}
+	
+	inputLower := strings.ToLower(input)
+	for _, kw := range localKeywords {
+		if strings.Contains(inputLower, kw) {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// SelectModelForTask 根据任务描述自动选择模型
+func (r *ModelRouter) SelectModelForTask(taskDescription string, tokenCount int) (model string, apiBase string) {
+	if !r.config.Enable {
+		return "", ""
+	}
+	
+	// 如果是本地任务，优先使用本地模型
+	if r.IsLocalTask(taskDescription) && r.config.LocalModel != "" {
+		return r.config.LocalModel, r.config.LocalBaseURL
+	}
+	
+	// 估算复杂度
+	complexity := r.EstimateComplexity(taskDescription, tokenCount)
+	return r.SelectModel(complexity)
 }
 
 // WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）

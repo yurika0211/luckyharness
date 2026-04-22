@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -310,4 +311,243 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 	})
 
 	return string(result), nil
+}
+
+// --- 并行委派支持 ---
+
+// ParallelDelegateTask 并行委派任务
+type ParallelDelegateTask struct {
+	ID          string
+	Description string
+	Context     string
+	Status      TaskStatus
+	Result      string
+	Error       string
+	StartedAt   time.Time
+	CompletedAt time.Time
+}
+
+// ParallelDelegateResult 并行委派结果
+type ParallelDelegateResult struct {
+	Results       []string // 各子代理结果
+	Summary       string   // 汇总摘要
+	FailedCount   int      // 失败任务数
+	SuccessCount  int      // 成功任务数
+	TotalDuration time.Duration
+}
+
+// DelegateParallel 并行委派多个任务
+// 支持多个子代理并行执行任务，结果汇总
+func (dm *DelegateManager) DelegateParallel(descriptions []string, contextStr string, timeout time.Duration) *ParallelDelegateResult {
+	if len(descriptions) == 0 {
+		return &ParallelDelegateResult{
+			Summary: "No tasks to delegate",
+		}
+	}
+
+	// 限制并发数
+	maxConcurrent := dm.config.MaxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 3
+	}
+
+	startTime := time.Now()
+	resultCh := make(chan struct {
+		index  int
+		result string
+		err    error
+	}, len(descriptions))
+
+	// 信号量控制并发
+	sem := make(chan struct{}, maxConcurrent)
+
+	// 启动所有任务
+	for i, desc := range descriptions {
+		go func(idx int, description string) {
+			sem <- struct{}{} // 获取信号量
+			defer func() { <-sem }() // 释放信号量
+
+			// 创建任务
+			dm.mu.Lock()
+			dm.nextID++
+			taskID := fmt.Sprintf("parallel-task-%d", dm.nextID)
+			task := &DelegateTask{
+				ID:          taskID,
+				Description: description,
+				Status:      StatusPending,
+				StartedAt:   time.Now(),
+			}
+			dm.tasks[taskID] = task
+			dm.mu.Unlock()
+
+			// 执行任务
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			var result string
+			var err error
+
+			if dm.agentExecutor != nil {
+				result, err = dm.agentExecutor(ctx, description, contextStr)
+			} else {
+				result = fmt.Sprintf("Sub-agent task completed (no executor): %s", description)
+			}
+
+			// 更新任务状态
+			dm.mu.Lock()
+			if err != nil {
+				task.Status = StatusFailed
+				task.Error = err.Error()
+			} else {
+				task.Status = StatusCompleted
+				task.Result = result
+			}
+			task.CompletedAt = time.Now()
+			dm.mu.Unlock()
+
+			resultCh <- struct {
+				index  int
+				result string
+				err    error
+			}{index: i, result: result, err: err}
+		}(i, desc)
+	}
+
+	// 收集所有结果
+	results := make([]string, len(descriptions))
+	var successCount, failedCount int
+
+	for i := 0; i < len(descriptions); i++ {
+		r := <-resultCh
+		results[r.index] = r.result
+		if r.err != nil {
+			failedCount++
+		} else {
+			successCount++
+		}
+	}
+
+	totalDuration := time.Since(startTime)
+
+	// 生成汇总摘要
+	summary := dm.generateParallelSummary(descriptions, results, successCount, failedCount)
+
+	return &ParallelDelegateResult{
+		Results:       results,
+		Summary:       summary,
+		FailedCount:   failedCount,
+		SuccessCount:  successCount,
+		TotalDuration: totalDuration,
+	}
+}
+
+// generateParallelSummary 生成并行任务汇总摘要
+func (dm *DelegateManager) generateParallelSummary(descriptions, results []string, successCount, failedCount int) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Parallel Delegation Summary:\n"))
+	sb.WriteString(fmt.Sprintf("- Total Tasks: %d\n", len(descriptions)))
+	sb.WriteString(fmt.Sprintf("- Successful: %d\n", successCount))
+	sb.WriteString(fmt.Sprintf("- Failed: %d\n", failedCount))
+	sb.WriteString("\n")
+
+	for i, desc := range descriptions {
+		status := "✅"
+		result := results[i]
+		if len(result) > 200 {
+			result = result[:200] + "..."
+		}
+		// 简单判断是否失败（包含 error 关键词）
+		if strings.Contains(strings.ToLower(result), "error") ||
+			strings.Contains(strings.ToLower(result), "failed") {
+			status = "❌"
+		}
+		sb.WriteString(fmt.Sprintf("%s Task %d: %s\n", status, i+1, desc))
+		sb.WriteString(fmt.Sprintf("   Result: %s\n\n", result))
+	}
+
+	return sb.String()
+}
+
+// DelegateParallelTool 创建并行委派工具
+func (dm *DelegateManager) DelegateParallelTool() *Tool {
+	return &Tool{
+		Name:        "delegate_parallel",
+		Description: "Delegate multiple tasks to sub-agents in parallel. Sub-agents work concurrently and results are aggregated.",
+		Category:    CatDelegate,
+		Source:      "builtin",
+		Permission:  PermApprove,
+		Parameters: map[string]Param{
+			"tasks": {
+				Type:        "array",
+				Description: "List of task descriptions to delegate",
+				Required:    true,
+			},
+			"context": {
+				Type:        "string",
+				Description: "Shared context or instructions for all sub-agents",
+				Required:    false,
+			},
+			"timeout": {
+				Type:        "number",
+				Description: "Timeout in seconds for each task (default 120)",
+				Required:    false,
+				Default:     120,
+			},
+		},
+		Handler: dm.handleDelegateParallel,
+	}
+}
+
+// handleDelegateParallel 处理并行委派请求
+func (dm *DelegateManager) handleDelegateParallel(args map[string]any) (string, error) {
+	// 解析 tasks 数组
+	tasksArg, ok := args["tasks"].([]any)
+	if !ok {
+		return "", fmt.Errorf("tasks array is required")
+	}
+
+	var descriptions []string
+	for _, t := range tasksArg {
+		if desc, ok := t.(string); ok {
+			descriptions = append(descriptions, desc)
+		}
+	}
+
+	if len(descriptions) == 0 {
+		return "", fmt.Errorf("at least one task description is required")
+	}
+
+	contextStr := ""
+	if c, ok := args["context"]; ok {
+		contextStr, _ = c.(string)
+	}
+
+	timeout := 120
+	if t, ok := args["timeout"]; ok {
+		switch v := t.(type) {
+		case float64:
+			timeout = int(v)
+		case int:
+			timeout = v
+		}
+	}
+
+	// 执行并行委派
+	result := dm.DelegateParallel(descriptions, contextStr, time.Duration(timeout)*time.Second)
+
+	// 返回结果
+	response := map[string]any{
+		"success_count": result.SuccessCount,
+		"failed_count":  result.FailedCount,
+		"duration_sec":  result.TotalDuration.Seconds(),
+		"summary":       result.Summary,
+		"results":       result.Results,
+	}
+
+	data, err := json.Marshal(response)
+	if err != nil {
+		return "", err
+	}
+
+	return string(data), nil
 }

@@ -425,3 +425,109 @@ type ErrToolDenied struct {
 func (e ErrToolDenied) Error() string {
 	return "tool denied: " + e.name
 }
+
+// --- 工具输出压缩功能 ---
+
+// OutputCompressConfig 工具输出压缩配置
+type OutputCompressConfig struct {
+	MaxChars     int    // 最大字符数（默认 2048）
+	EnableTruncate bool // 是否启用截断
+	EnableDedup  bool   // 是否启用去重
+	EnableSummary bool  // 是否启用摘要（需要 LLM 支持）
+}
+
+// DefaultOutputCompressConfig 返回默认压缩配置
+func DefaultOutputCompressConfig() OutputCompressConfig {
+	return OutputCompressConfig{
+		MaxChars:     2048, // 2KB
+		EnableTruncate: true,
+		EnableDedup:  true,
+		EnableSummary: false, // 默认不启用摘要（需要额外 LLM 调用）
+	}
+}
+
+// CompressOutput 压缩单个工具输出
+func CompressOutput(output string, config OutputCompressConfig) string {
+	if config.MaxChars <= 0 {
+		config.MaxChars = 2048
+	}
+
+	result := output
+	if config.EnableTruncate && len(result) > config.MaxChars {
+		result = result[:config.MaxChars]
+		result += "\n\n[... output truncated ...]"
+	}
+
+	return result
+}
+
+// ParallelCompressOutputs 并行压缩多个工具输出
+// 使用 goroutine 并发处理每个输出
+func ParallelCompressOutputs(outputs map[string]string, config OutputCompressConfig) map[string]string {
+	if config.MaxChars <= 0 {
+		config.MaxChars = 2048
+	}
+
+	resultCh := make(chan struct {
+		name   string
+		output string
+	}, len(outputs))
+
+	// 并发处理每个输出
+	for name, output := range outputs {
+		go func(name, output string) {
+			compressed := CompressOutput(output, config)
+			resultCh <- struct {
+				name   string
+				output string
+			}{name: name, output: compressed}
+		}(name, output)
+	}
+
+	// 收集结果
+	results := make(map[string]string, len(outputs))
+	for i := 0; i < len(outputs); i++ {
+		result := <-resultCh
+		results[result.name] = result.output
+	}
+
+	return results
+}
+
+// DedupOutputs 对多个工具输出去重（移除完全重复的输出）
+func DedupOutputs(outputs map[string]string) map[string]string {
+	seen := make(map[string][]string) // output -> names
+
+	for name, output := range outputs {
+		seen[output] = append(seen[output], name)
+	}
+
+	results := make(map[string]string)
+	for output, names := range seen {
+		// 保留第一个工具名
+		results[names[0]] = output
+	}
+
+	return results
+}
+
+// TruncateOutputs 批量截断工具输出
+func TruncateOutputs(outputs map[string]string, maxChars int) map[string]string {
+	if maxChars <= 0 {
+		maxChars = 2048
+	}
+
+	results := make(map[string]string, len(outputs))
+	for name, output := range outputs {
+		results[name] = TruncateOutput(output, maxChars)
+	}
+	return results
+}
+
+// TruncateOutput 截断单个输出
+func TruncateOutput(output string, maxChars int) string {
+	if len(output) <= maxChars {
+		return output
+	}
+	return output[:maxChars] + "\n\n[... output truncated ...]"
+}
