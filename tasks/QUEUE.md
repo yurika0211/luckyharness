@@ -30,6 +30,8 @@
 | v0.44.0 | Server 包测试补全 | ✅ Done | Server 测试 55 新 (41.0%→65.8%) — Health/Metrics/Context/FC/RAGStore/Workflow/Gateway/Plugin/Collab |
 | v0.45.0 | 并发工具执行 | ✅ Done | ParallelSafe 标记 + 并发调度 + 串行保序 + 2 新测试 |
 | v0.46.0 | Tool 包测试补全 | ✅ Done | 40 新测试 (64.0%→69.2%) — CallWithShellContext/UsageTracker/纯函数/边界 |
+| v0.47.0 | Gateway 包测试补全 | ✅ Done | 35 新测试 — telegram 8.5%→18.0%, onebot 11.8%→28.6% |
+| v0.48.0 | Provider 包测试补全 | ✅ Done | 45 新测试 (44.1%→56.1%) — Registry/FallbackChain/TokenStore/ModelCatalog/StreamParser |
 
 ---
 
@@ -171,7 +173,7 @@
 
 ---
 
-## 🔴 Ready — v0.46.0 Tool 包测试补全
+## ✅ Done — v0.46.0 Tool 包测试补全
 
 ### 子任务
 
@@ -193,6 +195,19 @@
 
 ---
 
+## ✅ Done — v0.48.0 Provider 包测试补全
+
+### 子任务
+
+- [x] **PR-1**: Registry 测试 — Create/Get/Resolve/Close/RegisterFactory 边界
+- [x] **PR-2**: Provider 构造函数 — 5 个 Provider 自定义 Config + 默认值
+- [x] **PR-3**: FallbackChain 高级 — ChatWithOptions/ChatStreamWithOptions/ActiveProvider/ActiveIndex/ChainNames/ResetAllCooldowns/recordSuccess 切换/全不可用/越界/并发
+- [x] **PR-4**: TokenStore 高级 — RefreshIfNeeded 5 种场景/持久化重载/短 token 脱敏/IsExpired 边界
+- [x] **PR-5**: ModelCatalog 高级 — ResolveProvider o1-/o3-/Register 覆盖/排序/空结果
+- [x] **PR-6**: 辅助函数 — toOpenAIMessages 边界/StreamParser 边界/结构体字段
+
+---
+
 ## 🔴 Blocked
 
 ### v0.6.0 消息网关
@@ -205,4 +220,4 @@
 
 ---
 
-*Last updated: 2026-04-22*
+*Last updated: 2026-04-22 (v0.48.0)*
