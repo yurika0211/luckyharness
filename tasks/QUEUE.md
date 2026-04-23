@@ -258,6 +258,25 @@
 
 ---
 
+### v0.65.0: 全仓库集成测试框架搭建 (规划中)
+
+**状态**: Blocked (需深度规划)
+**优先级**: High
+**说明**: 引入 gomock mock 框架，为 Agent 包核心功能（Chat、ChatStream）编写集成测试，目标覆盖率 60%+。
+
+**前置条件**:
+- 需要配置 mockgen 代码生成
+- 需要为 Provider、Memory 等接口生成 mock
+- 需要设计合理的测试数据和边界条件
+
+**下一步**:
+1. 创建 `internal/mocks/` 目录
+2. 使用 mockgen 生成 Provider 接口 mock
+3. 编写 Agent Chat 集成测试
+4. 编写 Agent ChatStream 集成测试
+
+---
+
 ## 历史版本
 
 - [x] v0.52.0: 全仓库覆盖率里程碑 60%+ (2026-04-22 完成)
