@@ -93,6 +93,23 @@
 
 ---
 
+### v0.61.0: Telemetry 包测试补全 (59.2%→60.0%) ✅
+
+**状态**: Done
+**进度**: 60.0% (2026-04-23 00:45)
+**提升**: +0.8pp
+
+- [x] 分析当前覆盖率状态（59.2%）
+- [x] 补充测试覆盖未覆盖函数：
+  - [x] `Propagator()` (100%)
+  - [x] `RecordError()` 边界情况（nil error）
+- [x] 运行测试验证覆盖率 → 60.0%
+- [x] 提交并推送代码
+
+**备注**: 剩余未覆盖函数（`GRPCUnaryInterceptor`, `GRPCStreamInterceptor`, `wrappedStream.Context()`）需要 gRPC 集成测试，当前 60.0% 已达到目标。
+
+---
+
 ### v0.60.0: Autonomy 包测试补全 (67.5%→75.8%) ✅
 
 **状态**: Done

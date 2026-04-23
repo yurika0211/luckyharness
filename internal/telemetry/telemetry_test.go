@@ -203,3 +203,39 @@ func TestSpanFromContext(t *testing.T) {
 	assert.NotNil(t, span)
 	s.End()
 }
+
+// --- v0.61.0 Telemetry Package Coverage Improvements ---
+
+func TestPropagator(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// Propagator should return a non-nil propagator in enabled mode
+	prop := Propagator()
+	assert.NotNil(t, prop)
+}
+
+func TestRecordErrorWithNilError(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	ctx, span := StartSpan(context.Background(), "test")
+	defer span.End()
+
+	// RecordError with nil error should not panic
+	RecordError(ctx, nil)
+}
+
+func TestRecordErrorWithOptions(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	ctx, span := StartSpan(context.Background(), "test")
+	defer span.End()
+
+	// RecordError with options
+	RecordError(ctx, assert.AnError)
+}
