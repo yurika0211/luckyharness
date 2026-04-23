@@ -60,7 +60,7 @@ func TestCollectEnv(t *testing.T) {
 
 func TestCollectConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte("provider: openai\nmodel: gpt-4o\n"), 0600)
+	os.WriteFile(filepath.Join(tmpDir, "config.json"), []byte(`{"provider": "openai", "model": "gpt-4o"}`+"\n"), 0600)
 
 	collector := New(tmpDir)
 	config := collector.collectConfig()

@@ -271,7 +271,7 @@ func DefaultConfig() *Config {
 		Extra:       make(map[string]string),
 		Memory: MemoryConfig{
 			ShortTermMaxTurns:   10,
-			MidTermExpireDays:   90,
+			MidTermExpireDays:   365,
 			MidTermMaxSummaries: 100,
 		},
 	}

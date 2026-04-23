@@ -5,7 +5,8 @@ import (
 )
 
 func TestCallOptionsDefault(t *testing.T) {
-	opts := DefaultCallOptions()
+	cfg := Config{} // 使用默认 Config
+	opts := DefaultCallOptions(cfg)
 	if opts.ToolChoice != "auto" {
 		t.Errorf("expected ToolChoice='auto', got %v", opts.ToolChoice)
 	}
