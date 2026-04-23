@@ -764,8 +764,13 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
 		for _, acc := range toolCallsAcc {
 			if acc.name != "" {
+				// v0.55.1: 如果 ID 为空，生成唯一 call_id
+				id := acc.id
+				if id == "" {
+					id = provider.GenerateCallID()
+				}
 				toolCalls = append(toolCalls, provider.ToolCall{
-					ID:        acc.id,
+					ID:        id,
 					Name:      acc.name,
 					Arguments: acc.arguments,
 				})

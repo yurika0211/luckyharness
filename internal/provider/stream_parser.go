@@ -112,8 +112,13 @@ func (sp *StreamParser) GetToolCalls() []ToolCall {
 	calls := make([]ToolCall, 0, len(sp.toolCalls))
 	for i := 0; i < len(sp.toolCalls); i++ {
 		if dtc, ok := sp.toolCalls[i]; ok {
+			id := dtc.ID
+			// v0.55.1: 如果 ID 为空，生成唯一 call_id
+			if id == "" {
+				id = GenerateCallID()
+			}
 			calls = append(calls, ToolCall{
-				ID:        dtc.ID,
+				ID:        id,
 				Name:      dtc.Function.Name,
 				Arguments: dtc.Function.Arguments,
 			})

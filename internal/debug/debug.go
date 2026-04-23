@@ -108,7 +108,8 @@ func (c *Collector) collectEnv() map[string]string {
 
 // collectConfig 收集配置信息
 func (c *Collector) collectConfig() map[string]interface{} {
-	configPath := filepath.Join(c.homeDir, "config.yaml")
+	// v0.55.1: 统一使用 config.json
+	configPath := filepath.Join(c.homeDir, "config.json")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return map[string]interface{}{"error": "config not found"}
