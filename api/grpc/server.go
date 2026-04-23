@@ -415,11 +415,11 @@ func (s *Server) workflowToProto(wf *workflow.Workflow) *Workflow {
 }
 
 func (s *Server) instanceToProto(instance *workflow.WorkflowInstance) *WorkflowInstance {
-	instance.RLock()
-	defer instance.RUnlock()
+	// Use Snapshot() for thread-safe access
+	snap := instance.Snapshot()
 	
 	results := make(map[string]*TaskResult)
-	for k, r := range instance.Results {
+	for k, r := range snap.Results {
 		results[k] = &TaskResult{
 			TaskId:     r.TaskID,
 			Status:     string(r.Status),
@@ -432,12 +432,12 @@ func (s *Server) instanceToProto(instance *workflow.WorkflowInstance) *WorkflowI
 	}
 
 	return &WorkflowInstance{
-		Id:         instance.ID,
-		WorkflowId: instance.WorkflowID,
-		Status:     string(instance.Status),
+		Id:         snap.ID,
+		WorkflowId: snap.WorkflowID,
+		Status:     string(snap.Status),
 		Results:    results,
-		StartTime:  timestamppb.New(instance.StartTime),
-		EndTime:    timestamppb.New(instance.EndTime),
+		StartTime:  timestamppb.New(snap.StartTime),
+		EndTime:    timestamppb.New(snap.EndTime),
 	}
 }
 
