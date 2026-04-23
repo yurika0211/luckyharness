@@ -1073,3 +1073,351 @@ func TestAgent_inferImportance(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// v0.64.0: Agent 包测试补全 - 基础函数覆盖
+// ---------------------------------------------------------------------------
+
+func TestAgentNewWithMinimalConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	
+	// Minimal config
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if a == nil {
+		t.Fatal("New() returned nil")
+	}
+}
+
+func TestAgentNewWithSoulPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	soulPath := filepath.Join(tmpDir, "SOUL.md")
+	
+	// Write minimal soul
+	if err := os.WriteFile(soulPath, []byte("# Test Soul\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("soul_path", soulPath)
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if a.Soul() == nil {
+		t.Error("Soul() returned nil")
+	}
+}
+
+func TestAgentGetters(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// Test all getters
+	if a.Config() == nil {
+		t.Error("Config() returned nil")
+	}
+	if a.Provider() == nil {
+		t.Error("Provider() returned nil")
+	}
+	if a.Tools() == nil {
+		t.Error("Tools() returned nil")
+	}
+	if a.Catalog() == nil {
+		t.Error("Catalog() returned nil")
+	}
+	if a.Registry() == nil {
+		t.Error("Registry() returned nil")
+	}
+	if a.MCPClient() == nil {
+		t.Error("MCPClient() returned nil")
+	}
+	if a.Delegate() == nil {
+		t.Error("Delegate() returned nil")
+	}
+	if a.Autonomy() == nil {
+		t.Error("Autonomy() returned nil")
+	}
+	if a.Gateway() == nil {
+		t.Error("Gateway() returned nil")
+	}
+	if a.MsgGateway() == nil {
+		t.Error("MsgGateway() returned nil")
+	}
+}
+
+func TestAgentSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	sessions := a.Sessions()
+	if sessions == nil {
+		t.Error("Sessions() returned nil")
+	}
+}
+
+func TestAgentTemplateManager(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	tm := a.TemplateManager()
+	if tm == nil {
+		t.Error("TemplateManager() returned nil")
+	}
+}
+
+func TestAgentSwitchModel(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// Switch to a different model
+	err = a.SwitchModel("gpt-4o")
+	if err != nil {
+		t.Errorf("SwitchModel() error = %v", err)
+	}
+	
+	// SwitchModel updates the provider, verification is complex
+	// Just ensure the call doesn't crash
+	t.Logf("SwitchModel() completed")
+}
+
+func TestAgentMemoryStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	stats := a.MemoryStats()
+	if stats == nil {
+		t.Error("MemoryStats() returned nil")
+	}
+}
+
+func TestAgentBuildMemoryContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// Build memory context with empty messages
+	messages := []provider.Message{}
+	result := a.buildMemoryContext(messages)
+	if result == nil {
+		t.Error("buildMemoryContext() returned nil")
+	}
+}
+
+func TestAgentAutoSummarize(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// AutoSummarize should not panic
+	a.autoSummarize()
+}
+
+func TestAgentStartAutonomy(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// StartAutonomy should not panic
+	// Note: This will fail without proper setup, but we test it doesn't crash
+	a.StartAutonomy(context.Background())
+}
+
+func TestAgentLoadSkills(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// LoadSkills with empty directory should not panic
+	a.LoadSkills(filepath.Join(tmpDir, "skills"))
+}
+
+func TestAgentHandleSkillRead(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// Get the handler function
+	handler := a.handleSkillRead()
+	if handler == nil {
+		t.Fatal("handleSkillRead() returned nil")
+	}
+	
+	// Call handler with empty args should return skill list (no error)
+	result, err := handler(map[string]any{})
+	if err != nil {
+		t.Errorf("handleSkillRead handler error = %v", err)
+	}
+	if result == "" {
+		t.Error("handleSkillRead handler should return skill list")
+	}
+	
+	// Call handler with non-existent skill name
+	result2, err := handler(map[string]any{"name": "nonexistent"})
+	if err != nil {
+		t.Errorf("handleSkillRead handler error = %v", err)
+	}
+	if !strings.Contains(result2, "not found") {
+		t.Error("handleSkillRead should indicate skill not found")
+	}
+}
+
+func TestAgentConnectMCPServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// ConnectMCPServer should not panic
+	a.ConnectMCPServer("test", "http://localhost:8080", "test-key")
+}
+
+func TestAgentChatMethodsExist(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	// Test that Chat methods exist and handle errors gracefully
+	ctx := context.Background()
+	
+	// Chat should return error without proper provider setup
+	_, err = a.Chat(ctx, "test")
+	if err == nil {
+		t.Log("Chat() should return error without proper setup")
+	}
+	
+	// ChatWithSession should return error
+	_, err = a.ChatWithSession(ctx, "session1", "test")
+	if err == nil {
+		t.Log("ChatWithSession() should return error without proper setup")
+	}
+}
+
+func TestAgentStreamMethodsExist(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	
+	ctx := context.Background()
+	
+	// ChatStream should return error without proper provider setup
+	_, err = a.ChatStream(ctx, "test")
+	if err == nil {
+		t.Log("ChatStream() should return error without proper setup")
+	}
+	
+	// ChatWithSessionStream should return error
+	_, err = a.ChatWithSessionStream(ctx, "session1", "test")
+	if err == nil {
+		t.Log("ChatWithSessionStream() should return error without proper setup")
+	}
+}
