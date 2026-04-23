@@ -918,3 +918,236 @@ func (m *mockAgentExecutor) NewSession(title string) string {
 	m.sessions = append(m.sessions, sessionID)
 	return sessionID
 }
+
+// ---------------------------------------------------------------------------
+// Additional tests for coverage
+// ---------------------------------------------------------------------------
+
+func TestWorkerTaskCount(t *testing.T) {
+	executor := &mockAgentExecutor{}
+	cfg := WorkerConfig{ID: "test-worker"}
+	worker := NewWorker(cfg, executor)
+
+	// Initial count should be 0
+	if worker.TaskCount() != 0 {
+		t.Errorf("expected initial task count 0, got %d", worker.TaskCount())
+	}
+}
+
+func TestWorkerPoolSetExecutor(t *testing.T) {
+	q := NewTaskQueue(10)
+	executor1 := &mockAgentExecutor{}
+	executor2 := &mockAgentExecutor{}
+
+	cfg := DefaultPoolConfig()
+	cfg.MinWorkers = 1
+	cfg.MaxWorkers = 2
+
+	pool := NewWorkerPool(cfg, executor1, q)
+	defer pool.Stop()
+
+	// SetExecutor should update the executor
+	pool.SetExecutor(executor2)
+
+	// Verify executor was updated
+	if pool.executor != executor2 {
+		t.Error("expected executor to be updated")
+	}
+}
+
+func TestMinFunction(t *testing.T) {
+	// Test basic min
+	result := min(3, 1, 2)
+	if result != 1 {
+		t.Errorf("expected min(3,1,2) = 1, got %d", result)
+	}
+
+	// Test single value
+	result = min(5)
+	if result != 5 {
+		t.Errorf("expected min(5) = 5, got %d", result)
+	}
+
+	// Test negative values
+	result = min(-5, -2, -10)
+	if result != -10 {
+		t.Errorf("expected min(-5,-2,-10) = -10, got %d", result)
+	}
+}
+
+func TestWorkerExecute(t *testing.T) {
+	q := NewTaskQueue(10)
+	executor := &mockAgentExecutor{}
+	cfg := DefaultPoolConfig()
+	pool := NewWorkerPool(cfg, executor, q)
+	defer pool.Stop()
+
+	// Spawn a worker
+	worker := pool.spawnWorker(context.Background())
+	if worker == nil {
+		t.Fatal("expected non-nil worker")
+	}
+
+	task := &QueueTask{
+		ID:          "test-task-1",
+		Title:       "Test Task",
+		Description: "Test Description",
+		Tags:        []string{"test"},
+	}
+
+	ctx := context.Background()
+	result := worker.Execute(ctx, task)
+
+	if result.TaskID != task.ID {
+		t.Errorf("expected task ID %s, got %s", task.ID, result.TaskID)
+	}
+}
+
+func TestWorkerExecuteWithState(t *testing.T) {
+	q := NewTaskQueue(10)
+	executor := &mockAgentExecutor{}
+	cfg := DefaultPoolConfig()
+	pool := NewWorkerPool(cfg, executor, q)
+	defer pool.Stop()
+
+	worker := pool.spawnWorker(context.Background())
+	if worker == nil {
+		t.Fatal("expected non-nil worker")
+	}
+
+	task := &QueueTask{
+		ID:    "test-task-2",
+		Title: "Test Task 2",
+	}
+
+	ctx := context.Background()
+
+	// Worker should start in Idle state
+	if worker.State != WorkerIdle {
+		t.Error("expected worker to start in Idle state")
+	}
+
+	_ = worker.Execute(ctx, task)
+
+	// After execution, worker should be back to Idle
+	if worker.State != WorkerIdle {
+		t.Error("expected worker to return to Idle after execution")
+	}
+}
+
+func TestPullChan(t *testing.T) {
+	q := NewTaskQueue(10)
+
+	// Add a task
+	_ = q.Add("Pull Test", "Test description", PriorityNormal, []string{"test"})
+
+	// PullChan should return a channel
+	ch := q.PullChan(context.Background(), "w1")
+	if ch == nil {
+		t.Error("expected non-nil channel from PullChan")
+	}
+}
+
+func TestBeatFunction(t *testing.T) {
+	// Test heartbeat engine creation and basic functions
+	q := NewTaskQueue(10)
+	executor := &mockAgentExecutor{}
+	poolCfg := DefaultPoolConfig()
+	pool := NewWorkerPool(poolCfg, executor, q)
+
+	cfg := DefaultHeartbeatConfig()
+	engine := NewHeartbeatEngine(cfg, pool, q)
+	if engine == nil {
+		t.Error("expected non-nil heartbeat engine")
+	}
+
+	// LastBeat may be zero initially before first beat
+	// Test RecentEvents instead
+	events := engine.RecentEvents(5)
+	if events == nil {
+		t.Error("expected non-nil events")
+	}
+}
+
+func TestStartStop(t *testing.T) {
+	executor := &mockAgentExecutor{}
+	cfg := DefaultAutonomyConfig()
+
+	kit := NewAutonomyKit(cfg, executor)
+	if kit == nil {
+		t.Fatal("expected non-nil autonomy kit")
+	}
+
+	ctx := context.Background()
+
+	// Start should not panic
+	kit.Start(ctx)
+
+	// Give it a moment to start
+	time.Sleep(50 * time.Millisecond)
+
+	// Stop should not panic
+	kit.Stop()
+}
+
+func TestExecuteTask(t *testing.T) {
+	q := NewTaskQueue(10)
+	executor := &mockAgentExecutor{}
+	cfg := DefaultPoolConfig()
+	cfg.MinWorkers = 1
+	cfg.MaxWorkers = 2
+
+	pool := NewWorkerPool(cfg, executor, q)
+	defer pool.Stop()
+
+	// Create a test task
+	_ = q.Add("Execute Test", "Test description", PriorityNormal, []string{"test"})
+
+	// Spawn a worker manually
+	ctx := context.Background()
+	worker := pool.spawnWorker(ctx)
+	if worker == nil {
+		t.Error("expected worker to be spawned")
+	}
+
+	// Verify worker has correct state
+	if worker.State != WorkerIdle {
+		t.Error("expected spawned worker to be idle")
+	}
+}
+
+func TestDispatchWithNilExecutor(t *testing.T) {
+	q := NewTaskQueue(10)
+	cfg := DefaultPoolConfig()
+	cfg.MinWorkers = 1
+	cfg.MaxWorkers = 2
+
+	// Create pool with nil executor
+	pool := NewWorkerPool(cfg, nil, q)
+	defer pool.Stop()
+
+	// Verify pool was created
+	if pool == nil {
+		t.Error("expected non-nil pool")
+	}
+
+	// SetExecutor with nil should work
+	pool.SetExecutor(nil)
+	if pool.executor != nil {
+		t.Error("expected nil executor")
+	}
+}
+
+func TestWorkerInfo(t *testing.T) {
+	executor := &mockAgentExecutor{}
+	cfg := WorkerConfig{ID: "info-test-worker"}
+	worker := NewWorker(cfg, executor)
+
+	info := worker.Info()
+	if info.ID != "info-test-worker" {
+		t.Errorf("expected worker ID 'info-test-worker', got %s", info.ID)
+	}
+	if info.State != WorkerIdle {
+		t.Errorf("expected state Idle, got %v", info.State)
+	}
+}
