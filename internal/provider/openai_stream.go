@@ -180,8 +180,13 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	if len(choice.Message.ToolCalls) > 0 {
 		result.ToolCalls = make([]ToolCall, len(choice.Message.ToolCalls))
 		for i, tc := range choice.Message.ToolCalls {
+			id := tc.ID
+			// v0.55.1: 如果 API 返回空 ID，生成唯一 call_id
+			if id == "" {
+				id = GenerateCallID()
+			}
 			result.ToolCalls[i] = ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
 			}
@@ -259,8 +264,13 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 	// 组装 tool calls
 	for i := 0; i < len(toolCallAcc); i++ {
 		if tc, ok := toolCallAcc[i]; ok && tc.Function.Name != "" {
+			id := tc.ID
+			// v0.55.1: 如果流式响应中 ID 为空，生成唯一 call_id
+			if id == "" {
+				id = GenerateCallID()
+			}
 			toolCalls = append(toolCalls, ToolCall{
-				ID:        tc.ID,
+				ID:        id,
 				Name:      tc.Function.Name,
 				Arguments: tc.Function.Arguments,
 			})

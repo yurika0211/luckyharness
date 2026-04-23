@@ -63,13 +63,65 @@ type Provider interface {
 
 // Config 是 Provider 的配置
 type Config struct {
-	Name        string
-	APIKey      string
-	APIBase     string
-	Model       string
-	MaxTokens   int
-	Temperature float64
+	Name         string
+	APIKey       string
+	APIBase      string
+	Model        string
+	MaxTokens    int
+	Temperature  float64
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
+	
+	// v0.56.0: 限制参数从配置文件加载
+	Limits       LimitsConfig      `json:"limits,omitempty"`
+	Retry        RetryConfig       `json:"retry,omitempty"`
+	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
+	RateLimit    RateLimitConfig   `json:"rate_limit,omitempty"`
+	Context      ContextConfig     `json:"context,omitempty"`
+}
+
+// LimitsConfig 限制配置
+type LimitsConfig struct {
+	MaxTokens              int     `json:"max_tokens"`
+	Temperature            float64 `json:"temperature"`
+	TimeoutSeconds         int     `json:"timeout_seconds"`
+	MaxTimeoutSeconds      int     `json:"max_timeout_seconds"`
+	MaxToolCalls           int     `json:"max_tool_calls"`
+	MaxConcurrentToolCalls int     `json:"max_concurrent_tool_calls"`
+}
+
+// RetryConfig 重试配置
+type RetryConfig struct {
+	Enabled            bool `json:"enabled"`
+	MaxAttempts        int  `json:"max_attempts"`
+	InitialDelayMs     int  `json:"initial_delay_ms"`
+	MaxDelayMs         int  `json:"max_delay_ms"`
+	RetryOnRateLimit   bool `json:"retry_on_rate_limit"`
+	RetryOnTimeout     bool `json:"retry_on_timeout"`
+	RetryOnServerError bool `json:"retry_on_server_error"`
+}
+
+// CircuitBreakerConfig 熔断器配置
+type CircuitBreakerConfig struct {
+	Enabled           bool `json:"enabled"`
+	ErrorThreshold    int  `json:"error_threshold"`
+	WindowSeconds     int  `json:"window_seconds"`
+	TimeoutSeconds    int  `json:"timeout_seconds"`
+	HalfOpenMaxReqs   int  `json:"half_open_max_requests"`
+}
+
+// RateLimitConfig 限流配置
+type RateLimitConfig struct {
+	Enabled          bool `json:"enabled"`
+	RequestsPerMinute int `json:"requests_per_minute"`
+	TokensPerMinute   int `json:"tokens_per_minute"`
+	BurstSize         int `json:"burst_size"`
+}
+
+// ContextConfig 上下文配置
+type ContextConfig struct {
+	MaxHistoryTurns     int     `json:"max_history_turns"`
+	MaxContextTokens    int     `json:"max_context_tokens"`
+	CompressionThreshold float64 `json:"compression_threshold"`
 }
 
 // Registry 管理所有已注册的 Provider

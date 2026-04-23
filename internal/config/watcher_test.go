@@ -206,7 +206,7 @@ func TestDiffConfigNoChange(t *testing.T) {
 func TestManagerReload(t *testing.T) {
 	tmpDir := t.TempDir()
 	homeDir := filepath.Join(tmpDir, ".luckyharness")
-	cfgPath := filepath.Join(homeDir, "config.yaml")
+	cfgPath := filepath.Join(homeDir, "config.json")
 
 	mgr, err := NewManager()
 	if err != nil {
@@ -218,8 +218,8 @@ func TestManagerReload(t *testing.T) {
 	mgr.Set("provider", "openai")
 	mgr.Save()
 
-	// Modify externally
-	os.WriteFile(cfgPath, []byte("provider: anthropic\nmodel: claude-3\n"), 0600)
+	// Modify externally with JSON format
+	os.WriteFile(cfgPath, []byte(`{"provider": "anthropic", "model": "claude-3"}`+"\n"), 0600)
 
 	// Reload
 	if err := mgr.Reload(); err != nil {

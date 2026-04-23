@@ -1,59 +1,118 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"gopkg.in/yaml.v3"
 )
 
 // Config 代表 LuckyHarness 的运行时配置
 type Config struct {
-	Provider    string            `yaml:"provider"`
-	APIKey      string            `yaml:"api_key"`
-	APIBase     string            `yaml:"api_base,omitempty"`
-	Model       string            `yaml:"model"`
-	SoulPath    string            `yaml:"soul_path,omitempty"`
-	MaxTokens   int               `yaml:"max_tokens"`
-	Temperature float64           `yaml:"temperature"`
-	Extra       map[string]string `yaml:"extra,omitempty"`
+	Provider    string            `json:"provider"`
+	APIKey      string            `json:"api_key"`
+	APIBase     string            `json:"api_base,omitempty"`
+	Model       string            `json:"model"`
+	SoulPath    string            `json:"soul_path,omitempty"`
+	MaxTokens   int               `json:"max_tokens"`
+	Temperature float64           `json:"temperature"`
+	Extra       map[string]string `json:"extra,omitempty"`
 
 	// v0.3.0: 降级链配置
-	Fallbacks []FallbackEntry `yaml:"fallbacks,omitempty"`
+	Fallbacks []FallbackEntry `json:"fallbacks,omitempty"`
 
 	// v0.37.0: Web 搜索配置
-	WebSearch WebSearchConfig `yaml:"web_search,omitempty"`
+	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 
-	// v0.40.0: 流式输出模式 (native=真流式, simulated=非流式获取+模拟推送)
-	StreamMode string `yaml:"stream_mode,omitempty"`
+	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
+	StreamMode string `json:"stream_mode,omitempty"`
 
 	// v0.43.0: 记忆系统配置
-	Memory MemoryConfig `yaml:"memory,omitempty"`
+	Memory MemoryConfig `json:"memory,omitempty"`
 
-	// v0.45.0: 模型路由配置
-	ModelRouter ModelRouterConfig `yaml:"model_router,omitempty"`
+// v0.45.0: 模型路由配置
+ModelRouter ModelRouterConfig `json:"model_router,omitempty"`
+
+// v0.56.0: 限制配置
+Limits LimitsConfig `json:"limits,omitempty"`
+
+// v0.56.0: 重试配置
+Retry RetryConfig `json:"retry,omitempty"`
+
+// v0.56.0: 熔断器配置
+CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
+
+// v0.56.0: 限流配置
+RateLimit RateLimitConfig `json:"rate_limit,omitempty"`
+
+// v0.56.0: 上下文配置
+Context ContextConfig `json:"context,omitempty"`
+}
+
+// LimitsConfig 限制配置
+type LimitsConfig struct {
+MaxTokens              int     `json:"max_tokens"`
+Temperature            float64 `json:"temperature"`
+TimeoutSeconds         int     `json:"timeout_seconds"`
+MaxTimeoutSeconds      int     `json:"max_timeout_seconds"`
+MaxToolCalls           int     `json:"max_tool_calls"`
+MaxConcurrentToolCalls int     `json:"max_concurrent_tool_calls"`
+}
+
+// RetryConfig 重试配置
+type RetryConfig struct {
+Enabled            bool `json:"enabled"`
+MaxAttempts        int  `json:"max_attempts"`
+InitialDelayMs     int  `json:"initial_delay_ms"`
+MaxDelayMs         int  `json:"max_delay_ms"`
+RetryOnRateLimit   bool `json:"retry_on_rate_limit"`
+RetryOnTimeout     bool `json:"retry_on_timeout"`
+RetryOnServerError bool `json:"retry_on_server_error"`
+}
+
+// CircuitBreakerConfig 熔断器配置
+type CircuitBreakerConfig struct {
+Enabled         bool `json:"enabled"`
+ErrorThreshold  int  `json:"error_threshold"`
+WindowSeconds   int  `json:"window_seconds"`
+TimeoutSeconds  int  `json:"timeout_seconds"`
+HalfOpenMaxReqs int  `json:"half_open_max_requests"`
+}
+
+// RateLimitConfig 限流配置
+type RateLimitConfig struct {
+Enabled           bool `json:"enabled"`
+RequestsPerMinute int  `json:"requests_per_minute"`
+TokensPerMinute   int  `json:"tokens_per_minute"`
+BurstSize         int  `json:"burst_size"`
+}
+
+// ContextConfig 上下文配置
+type ContextConfig struct {
+MaxHistoryTurns      int     `json:"max_history_turns"`
+MaxContextTokens     int     `json:"max_context_tokens"`
+CompressionThreshold float64 `json:"compression_threshold"`
 }
 
 // MemoryConfig 记忆系统配置
 type MemoryConfig struct {
-	ShortTermMaxTurns  int `yaml:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
-	MidTermExpireDays  int `yaml:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
-	MidTermMaxSummaries int `yaml:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
+	ShortTermMaxTurns  int `json:"short_term_max_turns,omitempty"`  // 短期记忆最大轮数（默认 10）
+	MidTermExpireDays  int `json:"midterm_expire_days,omitempty"`   // 中期记忆过期天数（默认 90）
+	MidTermMaxSummaries int `json:"midterm_max_summaries,omitempty"` // 中期记忆最大摘要数（默认 100）
 }
 
 // ModelRouterConfig 模型路由配置
 type ModelRouterConfig struct {
-	Enable       bool   `yaml:"enable,omitempty"`        // 是否启用模型路由
-	SimpleModel  string `yaml:"simple_model,omitempty"`  // 简单任务模型（便宜/快速）
-	ComplexModel string `yaml:"complex_model,omitempty"` // 复杂任务模型（强/慢）
-	LocalModel   string `yaml:"local_model,omitempty"`   // 本地模型（ollama）
-	LocalBaseURL string `yaml:"local_base_url,omitempty"` // 本地模型 API 地址
+	Enable       bool   `json:"enable,omitempty"`        // 是否启用模型路由
+	SimpleModel  string `json:"simple_model,omitempty"`  // 简单任务模型（便宜/快速）
+	ComplexModel string `json:"complex_model,omitempty"` // 复杂任务模型（强/慢）
+	LocalModel   string `json:"local_model,omitempty"`   // 本地模型（ollama）
+	LocalBaseURL string `json:"local_base_url,omitempty"` // 本地模型 API 地址
 	
 	// 自动路由阈值
-	TokenThreshold int `yaml:"token_threshold,omitempty"` // 超过此 token 数视为复杂任务（默认 500）
+	TokenThreshold int `json:"token_threshold,omitempty"` // 超过此 token 数视为复杂任务（默认 500）
 }
 
 // TaskComplexity 任务复杂度
@@ -185,19 +244,19 @@ func (r *ModelRouter) SelectModelForTask(taskDescription string, tokenCount int)
 
 // WebSearchConfig 网络搜索配置（照 nanobot WebSearchConfig 设计）
 type WebSearchConfig struct {
-	Provider    string `yaml:"provider,omitempty"`    // brave, ddgs, searxng（默认 brave）
-	APIKey      string `yaml:"api_key,omitempty"`     // Brave / Tavily / Jina API key
-	BaseURL     string `yaml:"base_url,omitempty"`    // SearXNG 自部署地址
-	MaxResults  int    `yaml:"max_results,omitempty"` // 最大结果数（默认 5）
-	Proxy       string `yaml:"proxy,omitempty"`       // HTTP/SOCKS5 代理
+	Provider    string `json:"provider,omitempty"`    // brave, ddgs, searxng（默认 brave）
+	APIKey      string `json:"api_key,omitempty"`     // Brave / Tavily / Jina API key
+	BaseURL     string `json:"base_url,omitempty"`    // SearXNG 自部署地址
+	MaxResults  int    `json:"max_results,omitempty"` // 最大结果数（默认 5）
+	Proxy       string `json:"proxy,omitempty"`       // HTTP/SOCKS5 代理
 }
 
 // FallbackEntry 是降级链中的一个节点配置
 type FallbackEntry struct {
-	Provider string `yaml:"provider"`
-	APIKey   string `yaml:"api_key,omitempty"`
-	APIBase  string `yaml:"api_base,omitempty"`
-	Model    string `yaml:"model,omitempty"`
+	Provider string `json:"provider"`
+	APIKey   string `json:"api_key,omitempty"`
+	APIBase  string `json:"api_base,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 // DefaultConfig 返回默认配置
@@ -212,7 +271,7 @@ func DefaultConfig() *Config {
 		Extra:       make(map[string]string),
 		Memory: MemoryConfig{
 			ShortTermMaxTurns:   10,
-			MidTermExpireDays:   90,
+			MidTermExpireDays:   365,
 			MidTermMaxSummaries: 100,
 		},
 	}
@@ -238,7 +297,8 @@ func NewManager() (*Manager, error) {
 
 // NewManagerWithDir 创建指定目录的配置管理器（用于测试隔离）
 func NewManagerWithDir(homeDir string) (*Manager, error) {
-	cfgPath := filepath.Join(homeDir, "config.yaml")
+	// v0.55.1: 统一使用 config.json
+	cfgPath := filepath.Join(homeDir, "config.json")
 
 	m := &Manager{
 		config:  DefaultConfig(),
@@ -263,7 +323,7 @@ func (m *Manager) Load() error {
 	}
 
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
@@ -280,7 +340,8 @@ func (m *Manager) Save() error {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 
-	data, err := yaml.Marshal(m.config)
+	// v0.55.1: 使用 JSON 格式保存
+	data, err := json.MarshalIndent(m.config, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

@@ -2,7 +2,20 @@ package provider
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 )
+
+// GenerateCallID 生成唯一的 call_id，用于工具调用
+// 格式："call_" + 16 字符随机字符串
+func GenerateCallID() string {
+	b := make([]byte, 8)
+	if _, err := rand.Read(b); err != nil {
+		// 极端情况下随机数生成失败，使用时间戳
+		return "call_" + hex.EncodeToString([]byte("fallback"))
+	}
+	return "call_" + hex.EncodeToString(b)
+}
 
 // CallOptions 是 API 调用的额外选项（用于 function calling）
 type CallOptions struct {
@@ -26,10 +39,14 @@ type FunctionCallingProvider interface {
 	ChatStreamWithOptions(ctx context.Context, messages []Message, opts CallOptions) (<-chan StreamChunk, error)
 }
 
-// DefaultCallOptions 返回默认调用选项
-func DefaultCallOptions() CallOptions {
+// DefaultCallOptions 返回默认调用选项（使用配置默认值）
+func DefaultCallOptions(cfg Config) CallOptions {
+	maxToolCalls := cfg.Limits.MaxToolCalls
+	if maxToolCalls <= 0 {
+		maxToolCalls = 5 // 默认值
+	}
 	return CallOptions{
 		ToolChoice:   "auto",
-		MaxToolCalls: 5,
+		MaxToolCalls: maxToolCalls,
 	}
 }
