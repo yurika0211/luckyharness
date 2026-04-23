@@ -96,8 +96,9 @@
 ### v0.59.0: OneBot 包测试补全 (44.3%→44.3%) ✅
 
 **状态**: Done (覆盖率上限)
-**优先级**: Medium
+**进度**: 44.3% (2026-04-23 00:00)
 **说明**: 核心功能依赖外部服务 (NapCat OneBot API) 和 agent 实例，单元测试覆盖率接近上限 44.3%。
+
 已覆盖：
 - [x] Adapter 基础方法 (Name, SetHandler, IsRunning, checkAPI)
 - [x] sendTyping, sendLike (mock HTTP)
@@ -107,9 +108,18 @@
 - [x] Handler 基础测试 (NewHandler, getSessionID, resetSession)
 - [x] 并发测试 (SetHandler, Send, WaitRateLimit)
 - [x] Config 验证测试
+- [x] truncateStr, splitMessage 边界测试
 
 未覆盖 (依赖外部服务，需集成测试):
 - [ ] sendQQMessage (需要真实 OneBot 端点)
+- [ ] listenWebSocket (需要 WebSocket 服务器)
+- [ ] startWebhookServer (需要 HTTP 服务器)
+- [ ] HandleMessage (需要完整 agent 实例)
+- [ ] handleCommand (需要完整 agent 实例)
+
+**备注**: 剩余未覆盖函数需要集成测试或 mock 框架 (如 gomock) 才能继续提升覆盖率。当前 44.3% 为合理水平。
+
+---
 - [ ] listenWebSocket (需要真实 WebSocket 连接)
 - [ ] startWebhookServer (需要真实 HTTP 服务器)
 - [ ] HandleMessage 完整流程 (需要真实 agent 实例)
