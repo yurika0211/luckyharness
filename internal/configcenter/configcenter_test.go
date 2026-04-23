@@ -432,3 +432,82 @@ func TestHasPrefix(t *testing.T) {
 		assert.Equal(t, tt.want, got, "hasPrefix(%q, %q)", tt.key, tt.prefix)
 	}
 }
+
+// --- v0.62.0 ConfigCenter Package Coverage Improvements ---
+
+func TestMemoryBackend_Name(t *testing.T) {
+	backend := NewMemoryBackend()
+	defer backend.Close()
+
+	name := backend.Name()
+	assert.Equal(t, "memory", name)
+}
+
+func TestFileBackend_Name(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, err := NewFileBackend(tmpDir)
+	require.NoError(t, err)
+	defer backend.Close()
+
+	name := backend.Name()
+	assert.Equal(t, "file", name)
+}
+
+func TestFileBackend_Basic(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, err := NewFileBackend(tmpDir)
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	// Set a value
+	entry, err := backend.Set(ctx, "test.key", "hello", TypeString)
+	require.NoError(t, err)
+	assert.Equal(t, "test.key", entry.Key)
+	assert.Equal(t, "hello", entry.Value)
+
+	// Get the value
+	got, err := backend.Get(ctx, "test.key")
+	require.NoError(t, err)
+	assert.Equal(t, "hello", got.Value)
+
+	// List
+	entries, err := backend.List(ctx, "")
+	require.NoError(t, err)
+	assert.Len(t, entries, 1)
+}
+
+func TestFileBackend_Delete(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, err := NewFileBackend(tmpDir)
+	require.NoError(t, err)
+	defer backend.Close()
+
+	ctx := context.Background()
+
+	// Set and delete
+	backend.Set(ctx, "del.key", "value", TypeString)
+	err = backend.Delete(ctx, "del.key")
+	require.NoError(t, err)
+
+	_, err = backend.Get(ctx, "del.key")
+	assert.Error(t, err)
+}
+
+func TestFileBackend_WatchAndClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	backend, err := NewFileBackend(tmpDir)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+
+	// Watch
+	ch, err := backend.Watch(ctx, "")
+	require.NoError(t, err)
+	assert.NotNil(t, ch)
+
+	// Close should not error
+	err = backend.Close()
+	assert.NoError(t, err)
+}

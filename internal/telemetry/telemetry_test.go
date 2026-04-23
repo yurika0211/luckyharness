@@ -239,3 +239,123 @@ func TestRecordErrorWithOptions(t *testing.T) {
 	// RecordError with options
 	RecordError(ctx, assert.AnError)
 }
+
+// ---------------------------------------------------------------------------
+// v0.61.0 Additional Telemetry Tests
+// ---------------------------------------------------------------------------
+
+func TestGRPCUnaryInterceptor(t *testing.T) {
+	// Setup telemetry
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// Create interceptor
+	interceptor := GRPCUnaryInterceptor()
+	assert.NotNil(t, interceptor)
+
+	// Test with mock handler
+	ctx := context.Background()
+	req := "test-request"
+	info := &grpc.UnaryServerInfo{
+		FullMethod: "/test.Service/Method",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return "test-response", nil
+	}
+
+	// Call interceptor
+	resp, err := interceptor(ctx, req, info, handler)
+	assert.NoError(t, err)
+	assert.Equal(t, "test-response", resp)
+}
+
+func TestGRPCUnaryInterceptorWithError(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	interceptor := GRPCUnaryInterceptor()
+	assert.NotNil(t, interceptor)
+
+	ctx := context.Background()
+	req := "test-request"
+	info := &grpc.UnaryServerInfo{
+		FullMethod: "/test.Service/Method",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return nil, assert.AnError
+	}
+
+	// Call interceptor with error
+	resp, err := interceptor(ctx, req, info, handler)
+	assert.Error(t, err)
+	assert.Nil(t, resp)
+}
+
+func TestWrappedStreamContext(t *testing.T) {
+	// Test wrappedStream.Context()
+	ctx := context.Background()
+	expectedCtx := context.WithValue(ctx, "key", "value")
+
+	ws := &wrappedStream{
+		ctx: expectedCtx,
+	}
+
+	result := ws.Context()
+	assert.NotNil(t, result)
+	assert.Equal(t, "value", result.Value("key"))
+}
+
+func TestContextFunction(t *testing.T) {
+	// Test that Context() returns the wrapped context
+	ctx := context.Background()
+	testKey := "test-key"
+	testValue := "test-value"
+	wrappedCtx := context.WithValue(ctx, testKey, testValue)
+
+	ws := &wrappedStream{
+		ctx: wrappedCtx,
+	}
+
+	result := ws.Context()
+	assert.Equal(t, testValue, result.Value(testKey))
+}
+
+func TestHTTPClientWithNilBase(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// HTTPClient with nil base should use default
+	client := HTTPClient(nil)
+	assert.NotNil(t, client)
+	assert.NotNil(t, client.Transport)
+}
+
+func TestAddAttributesWithNoSpan(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// AddAttributes with no span in context should not panic
+	ctx := context.Background()
+	AddAttributes(ctx, attribute.String("key", "value"))
+	// Should not panic
+}
+
+func TestTraceIDFromContextWithNoTrace(t *testing.T) {
+	// TraceIDFromContext with no trace should return empty string
+	traceID := TraceIDFromContext(context.Background())
+	assert.Equal(t, "", traceID)
+}
+
+func TestSpanFromContextWithNoSpan(t *testing.T) {
+	cfg := Config{Enabled: true, ExporterType: "stdout"}
+	shutdown, _ := Setup(context.Background(), cfg)
+	defer shutdown(context.Background())
+
+	// SpanFromContext with no span should return noop span
+	span := SpanFromContext(context.Background())
+	assert.NotNil(t, span)
+}

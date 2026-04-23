@@ -93,6 +93,25 @@
 
 ---
 
+### v0.62.0: ConfigCenter 包测试补全 (55.9%→77.0%) ✅
+
+**状态**: Done
+**进度**: 77.0% (2026-04-23 01:15)
+**提升**: +21.1pp
+
+- [x] 分析当前覆盖率状态（55.9%）
+- [x] 补充测试覆盖未覆盖函数：
+  - [x] `MemoryBackend.Name()` (100%)
+  - [x] `FileBackend.Name()` (100%)
+  - [x] `FileBackend.Get/Set/List/Delete` (100%)
+  - [x] `FileBackend.Watch/Close` (100%)
+- [x] 运行测试验证覆盖率 → 77.0%
+- [x] 提交并推送代码
+
+**备注**: 剩余未覆盖函数主要是文件监控内部逻辑（`watchFiles`, `checkFileChanges` 等），需要文件系统事件测试，当前 77.0% 已远超 60% 目标。
+
+---
+
 ### v0.61.0: Telemetry 包测试补全 (59.2%→60.0%) ✅
 
 **状态**: Done
