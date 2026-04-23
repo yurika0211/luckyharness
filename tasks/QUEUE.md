@@ -11,6 +11,26 @@
 
 ## 任务队列
 
+### v0.66.0: 测试配置修复与全仓库覆盖率提升 (66.8%) ✅
+
+**状态**: Done
+**进度**: 66.8% (2026-04-23 19:30)
+**提升**: +16.5pp (从 50.3%)
+
+- [x] 修复测试配置格式问题 (config.json vs config.yaml)
+- [x] 修复 internal/config/watcher_test.go: TestManagerReload
+- [x] 修复 internal/debug/debug_test.go: TestCollectConfig
+- [x] 修复 internal/provider/function_calling_test.go: DefaultCallOptions 调用
+- [x] 全部测试通过 (之前 3 个 FAIL → 0 个 FAIL)
+- [x] 全仓库覆盖率 66.8% (超 65% 里程碑)
+- [x] 提交并推送代码
+
+**备注**: 配置统一使用 JSON 格式 (v0.55.1 迁移)，测试需同步更新。核心包覆盖率：
+- memory: 83.4%, metrics: 100%, soul: 91.3%, multimodal: 93.8%
+- server: 64.5%, tool: 65.5%, websocket: 60.3% (可继续优化)
+
+---
+
 ### v0.65.0: 全仓库集成测试框架搭建 (42.1%→50.3%) ✅
 
 **状态**: Done (单元测试合理上限)
