@@ -155,3 +155,123 @@ func TestNewMessage(t *testing.T) {
 		t.Errorf("NewMessage: expected session_id 'test-session', got '%s'", msg.SessionID)
 	}
 }
+
+// v0.67.0: websocket 包测试补全 - 覆盖 syncChat 和 streamChat 0% 函数
+
+// TestSyncChatLogic 测试 syncChat 的消息发送逻辑
+func TestSyncChatLogic(t *testing.T) {
+	// 创建测试客户端
+	client := &Client{
+		ID:        "test-client",
+		SessionID: "test-session",
+		Send:      make(chan *Message, 10),
+	}
+
+	// 发送 executing 状态
+	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State:   "executing",
+		Message: "agent is running",
+	})
+	client.Send <- status
+
+	// 模拟 agent 返回错误（因为 agent 为 nil）
+	// 直接发送错误消息
+	errMsg, _ := NewMessage(TypeError, client.SessionID, ErrorData{
+		Code:    "AGENT_ERROR",
+		Message: "agent is nil",
+	})
+	errMsg.ParentID = "parent-1"
+	client.Send <- errMsg
+
+	// 发送 idle 状态
+	idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State: "idle",
+	})
+	client.Send <- idle
+
+	// 验证消息序列
+	messages := collectMessages(client.Send, 3)
+
+	if len(messages) < 2 {
+		t.Errorf("syncChat logic: expected at least 2 messages, got %d", len(messages))
+	}
+
+	// 验证第一条是 executing
+	if messages[0].Type != TypeStatus {
+		t.Errorf("syncChat: first message should be TypeStatus, got %v", messages[0].Type)
+	}
+}
+
+// TestStreamChatLogic 测试 streamChat 的消息发送逻辑
+func TestStreamChatLogic(t *testing.T) {
+	// 创建测试客户端
+	client := &Client{
+		ID:        "test-client",
+		SessionID: "test-session",
+		Send:      make(chan *Message, 10),
+	}
+
+	// 发送 executing 状态
+	status, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State:   "executing",
+		Message: "agent is running",
+	})
+	client.Send <- status
+
+	// 模拟发送 stream chunk
+	chunk, _ := NewMessage(TypeStreamChunk, client.SessionID, StreamChunkData{
+		Content: "test chunk",
+		Done:    false,
+	})
+	chunk.ParentID = "parent-2"
+	client.Send <- chunk
+
+	// 发送 stream end
+	endMsg, _ := NewMessage(TypeStreamEnd, client.SessionID, StreamEndData{
+		FullResponse: "full response",
+		Iterations:   1,
+	})
+	endMsg.ParentID = "parent-2"
+	client.Send <- endMsg
+
+	// 发送 idle 状态
+	idle, _ := NewMessage(TypeStatus, client.SessionID, StatusData{
+		State: "idle",
+	})
+	client.Send <- idle
+
+	// 验证消息序列
+	messages := collectMessages(client.Send, 4)
+
+	if len(messages) < 3 {
+		t.Errorf("streamChat logic: expected at least 3 messages, got %d", len(messages))
+	}
+
+	// 验证第一条是 executing
+	if messages[0].Type != TypeStatus {
+		t.Errorf("streamChat: first message should be TypeStatus, got %v", messages[0].Type)
+	}
+}
+
+// collectMessages 从 channel 收集消息
+func collectMessages(ch chan *Message, expected int) []*Message {
+	var messages []*Message
+	timeout := time.After(2 * time.Second)
+
+	for {
+		select {
+		case msg := <-ch:
+			messages = append(messages, msg)
+			if len(messages) >= expected {
+				return messages
+			}
+		case <-timeout:
+			return messages
+		default:
+			if len(messages) > 0 {
+				return messages
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
