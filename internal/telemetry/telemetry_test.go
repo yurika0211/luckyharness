@@ -9,6 +9,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"go.opentelemetry.io/otel/attribute"
+	"google.golang.org/grpc"
 )
 
 func TestDefaultConfig(t *testing.T) {
