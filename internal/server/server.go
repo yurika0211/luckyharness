@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/websocket"
@@ -636,9 +637,42 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 
 	duration := time.Since(start)
 
+	// v0.24.1: 如果没有提供 session_id，创建新会话
+	sessionID := req.SessionID
+	var sess *session.Session
+	if sessionID == "" {
+		sess = s.agent.Sessions().NewWithTitle("chat")
+		if sess != nil {
+			sessionID = sess.ID
+		}
+	} else {
+		// 获取现有会话
+		s, ok := s.agent.Sessions().Get(sessionID)
+		if ok {
+			sess = s
+		}
+	}
+
+	// 使用 RunLoopWithSession 确保消息被保存
+	if sess != nil {
+		loopCfgWithSession := agent.LoopConfig{
+			MaxIterations: loopCfg.MaxIterations,
+			Timeout:       loopCfg.Timeout,
+			AutoApprove:   loopCfg.AutoApprove,
+		}
+		result, err = s.agent.RunLoopWithSession(ctx, sess, req.Message, loopCfgWithSession)
+		if err != nil {
+			s.stats.mu.Lock()
+			s.stats.ErrorReqs++
+			s.stats.mu.Unlock()
+			s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
 	resp := ChatResponse{
 		Response:   result.Response,
-		SessionID:  req.SessionID,
+		SessionID:  sessionID,
 		Iterations: result.Iterations,
 		TokensUsed: result.TokensUsed,
 		Duration:   duration.String(),

@@ -283,20 +283,41 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				}
 			}
 
-			// 每轮工具调用后裁剪上下文窗口
-			messages = a.fitContextWindow(messages)
+	// 每轮工具调用后裁剪上下文窗口
+	messages = a.fitContextWindow(messages)
 
-			result.State = StateObserve
-			continue // 继续循环，让 LLM 处理工具结果
+	result.State = StateObserve
+	
+	// v0.24.1: 工具调用后保存会话
+	if sess != nil {
+		if saveErr := sess.Save(); saveErr != nil {
+			fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+		}
+	}
+	
+	continue // 继续循环，让 LLM 处理工具结果
 		}
 
 		// 没有工具调用，LLM 直接给出最终回复
 		result.Response = resp.Content
 		result.State = StateDone
 
+		// v0.24.1: 将对话添加到会话
+		if sess != nil {
+			sess.AddMessage("user", userInput)
+			sess.AddMessage("assistant", resp.Content)
+		}
+
 		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
 		if a.ragManager != nil {
 			a.indexConversationTurn(userInput, resp.Content)
+		}
+
+		// v0.24.1: 保存会话到磁盘
+		if sess != nil {
+			if saveErr := sess.Save(); saveErr != nil {
+				fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+			}
 		}
 
 		return result, nil
@@ -305,6 +326,14 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	// 达到最大循环次数
 	result.Response = "Max iterations reached, last response may be incomplete"
 	result.State = StateDone
+	
+	// v0.24.1: 保存会话到磁盘
+	if sess != nil {
+		if saveErr := sess.Save(); saveErr != nil {
+			fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+		}
+	}
+	
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
 }
 
