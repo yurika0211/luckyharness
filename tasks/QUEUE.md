@@ -93,22 +93,28 @@
 
 ---
 
-### v0.62.0: ConfigCenter 包测试补全 (55.9%→77.0%) ✅
+### v0.62.0: ConfigCenter 包测试补全 (58.3%→77.0%) ✅
 
 **状态**: Done
-**进度**: 77.0% (2026-04-23 01:15)
-**提升**: +21.1pp
+**进度**: 77.0% (2026-04-23 01:30)
+**提升**: +18.7pp
 
-- [x] 分析当前覆盖率状态（55.9%）
+- [x] 分析当前覆盖率状态（58.3%）
 - [x] 补充测试覆盖未覆盖函数：
-  - [x] `MemoryBackend.Name()` (100%)
-  - [x] `FileBackend.Name()` (100%)
-  - [x] `FileBackend.Get/Set/List/Delete` (100%)
-  - [x] `FileBackend.Watch/Close` (100%)
+  - [x] `NewModelRouter` (100%)
+  - [x] `SelectModel` (90%)
+  - [x] `EstimateComplexity` (100%)
+  - [x] `IsLocalTask` (100%)
+  - [x] `SelectModelForTask` (100%)
+  - [x] `ConfigWatcher.OnError` (100%)
+  - [x] `Manager.ConfigFile` (100%)
+  - [x] `Manager.HomeDirPath` (100%)
+  - [x] `Manager.HomeDir` (100%)
+  - [x] 边界条件测试：零阈值、禁用路由器、Set 无效 key 等
 - [x] 运行测试验证覆盖率 → 77.0%
-- [x] 提交并推送代码
+- [x] 提交并推送代码 (commit: 375f283)
 
-**备注**: 剩余未覆盖函数主要是文件监控内部逻辑（`watchFiles`, `checkFileChanges` 等），需要文件系统事件测试，当前 77.0% 已远超 60% 目标。
+**备注**: 剩余未覆盖函数 `emitError` 和部分 `Set` 逻辑为内部错误处理和边界情况，当前 77.0% 远超 60% 目标。
 
 ---
 
