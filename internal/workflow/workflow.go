@@ -68,6 +68,7 @@ type WorkflowInstance struct {
 	EndTime     time.Time              `json:"endTime,omitempty"`
 	Context     context.Context        `json:"-"`
 	CancelFunc  context.CancelFunc     `json:"-"`
+	readyCh     chan<- struct{}        `json:"-"`
 	mu          sync.RWMutex
 }
 

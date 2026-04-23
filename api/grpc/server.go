@@ -415,6 +415,9 @@ func (s *Server) workflowToProto(wf *workflow.Workflow) *Workflow {
 }
 
 func (s *Server) instanceToProto(instance *workflow.WorkflowInstance) *WorkflowInstance {
+	instance.RLock()
+	defer instance.RUnlock()
+	
 	results := make(map[string]*TaskResult)
 	for k, r := range instance.Results {
 		results[k] = &TaskResult{
@@ -431,7 +434,7 @@ func (s *Server) instanceToProto(instance *workflow.WorkflowInstance) *WorkflowI
 	return &WorkflowInstance{
 		Id:         instance.ID,
 		WorkflowId: instance.WorkflowID,
-		Status:     string(instance.GetStatus()),
+		Status:     string(instance.Status),
 		Results:    results,
 		StartTime:  timestamppb.New(instance.StartTime),
 		EndTime:    timestamppb.New(instance.EndTime),

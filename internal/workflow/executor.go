@@ -110,11 +110,16 @@ func (e *WorkflowEngine) StartWorkflow(workflowID string) (*WorkflowInstance, er
 	}
 
 	instance := NewWorkflowInstance(workflowID)
+	ready := make(chan struct{})
+	instance.readyCh = ready
 	e.mu.Lock()
 	e.instances[instance.ID] = instance
 	e.mu.Unlock()
 
-	go e.runWorkflow(instance, workflow)
+	go e.runWorkflow(instance, workflow, ready)
+
+	// Wait for workflow to start
+	<-ready
 
 	return instance, nil
 }
@@ -149,9 +154,14 @@ func (e *WorkflowEngine) CancelInstance(id string) error {
 }
 
 // runWorkflow executes the workflow DAG.
-func (e *WorkflowEngine) runWorkflow(instance *WorkflowInstance, workflow *Workflow) {
+func (e *WorkflowEngine) runWorkflow(instance *WorkflowInstance, workflow *Workflow, ready chan<- struct{}) {
 	instance.SetStatus(StatusRunning)
 	instance.SetStartTime(time.Now())
+	
+	// Signal that workflow has started
+	if ready != nil {
+		close(ready)
+	}
 
 	defer func() {
 		instance.SetEndTime(time.Now())
