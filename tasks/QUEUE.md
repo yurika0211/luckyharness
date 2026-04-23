@@ -93,31 +93,37 @@
 
 ---
 
-### v0.59.0: OneBot 包测试补全 (44.3%→44.3%) ✅
+### v0.60.0: Autonomy 包测试补全 (67.5%→75.8%) ✅
 
-**状态**: Done (覆盖率上限)
-**进度**: 44.3% (2026-04-23 00:00)
-**说明**: 核心功能依赖外部服务 (NapCat OneBot API) 和 agent 实例，单元测试覆盖率接近上限 44.3%。
+**状态**: Done
+**进度**: 75.8% (2026-04-23 00:20)
+**提升**: +8.3pp
 
-已覆盖：
-- [x] Adapter 基础方法 (Name, SetHandler, IsRunning, checkAPI)
-- [x] sendTyping, sendLike (mock HTTP)
-- [x] callAPI (部分覆盖)
-- [x] handleEvent (消息分发逻辑)
-- [x] parseGroupID, splitMessage, waitRateLimit
-- [x] Handler 基础测试 (NewHandler, getSessionID, resetSession)
-- [x] 并发测试 (SetHandler, Send, WaitRateLimit)
-- [x] Config 验证测试
-- [x] truncateStr, splitMessage 边界测试
+- [x] 分析当前覆盖率状态（67.5%）
+- [x] 补充测试覆盖未覆盖函数：
+  - [x] `min` 函数（100%）
+  - [x] `TaskCount`（100%）
+  - [x] `SetExecutor`（100%）
+  - [x] `Execute`（部分覆盖）
+  - [x] `LastBeat`、`RecentEvents`（100%）
+  - [x] `PullChan`（69.6%）
+  - [x] `spawnWorker`（90%）
+- [x] 新增测试函数：
+  - `TestWorkerTaskCount`
+  - `TestWorkerPoolSetExecutor`
+  - `TestMinFunction`
+  - `TestWorkerExecute`
+  - `TestWorkerExecuteWithState`
+  - `TestPullChan`
+  - `TestBeatFunction`
+  - `TestStartStop`
+  - `TestExecuteTask`
+  - `TestDispatchWithNilExecutor`
+  - `TestWorkerInfo`
+- [x] 运行测试验证覆盖率 → 75.8%
+- [x] 提交并推送代码
 
-未覆盖 (依赖外部服务，需集成测试):
-- [ ] sendQQMessage (需要真实 OneBot 端点)
-- [ ] listenWebSocket (需要 WebSocket 服务器)
-- [ ] startWebhookServer (需要 HTTP 服务器)
-- [ ] HandleMessage (需要完整 agent 实例)
-- [ ] handleCommand (需要完整 agent 实例)
-
-**备注**: 剩余未覆盖函数需要集成测试或 mock 框架 (如 gomock) 才能继续提升覆盖率。当前 44.3% 为合理水平。
+**备注**: 剩余未覆盖函数 (`HandleWorkerSpawn`, `executeTask`, `dispatch` 部分逻辑) 需要真实 agent 实例和完整任务执行流程，需集成测试覆盖。当前 75.8% 已超过 60% 目标。
 
 ---
 - [ ] listenWebSocket (需要真实 WebSocket 连接)
