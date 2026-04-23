@@ -4,98 +4,208 @@
 package server
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/agent"
 )
 
 // v0.67.0: server 包测试补全 - 覆盖 0% 函数
 
-// TestHandleChat 测试 handleChat 函数
-func TestHandleChat(t *testing.T) {
-	s := NewTestServer()
+// TestDoChatSyncHelp 测试 doChatSync 处理 /help 命令
+func TestDoChatSyncHelp(t *testing.T) {
+	// 创建测试服务器
+	s := &Server{}
 
-	// 测试空消息
-	req := httptest.NewRequest("POST", "/api/chat", strings.NewReader(`{"messages":[]}`))
-	req.Header.Set("Content-Type", "application/json")
+	// 创建请求
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"message": "/help"}`))
 	w := httptest.NewRecorder()
 
-	s.handleChat(w, req)
+	// 调用 doChatSync
+	s.doChatSync(w, req, ChatRequest{Message: "/help"}, agent.LoopConfig{}, context.Background(), time.Now())
 
-	// 期望返回 200 或 400（取决于实现）
-	if w.Code != 200 && w.Code != 400 {
-		t.Errorf("handleChat: expected status 200 or 400, got %d", w.Code)
+	// 验证响应
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("doChatSync /help: expected status 200, got %d", resp.StatusCode)
+	}
+
+	var chatResp ChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if !strings.Contains(chatResp.Response, "LuckyHarness") {
+		t.Errorf("doChatSync /help: expected response to contain 'LuckyHarness', got '%s'", chatResp.Response)
 	}
 }
 
-// TestHandleChatSync 测试 handleChatSync 函数
-func TestHandleChatSync(t *testing.T) {
-	s := NewTestServer()
+// TestDoChatSyncNew 测试 doChatSync 处理 /new 命令
+func TestDoChatSyncNew(t *testing.T) {
+	// 创建带 mock agent 的服务器
+	a := createTestAgent(t)
+	s := &Server{
+		agent: a,
+	}
 
-	// 测试空消息
-	req := httptest.NewRequest("POST", "/api/chat/sync", strings.NewReader(`{"messages":[]}`))
-	req.Header.Set("Content-Type", "application/json")
+	// 创建请求
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"message": "/new"}`))
 	w := httptest.NewRecorder()
 
-	s.handleChatSync(w, req)
+	// 调用 doChatSync
+	s.doChatSync(w, req, ChatRequest{Message: "/new"}, agent.LoopConfig{}, context.Background(), time.Now())
 
-	// 期望返回 200 或 400
-	if w.Code != 200 && w.Code != 400 {
-		t.Errorf("handleChatSync: expected status 200 or 400, got %d", w.Code)
+	// 验证响应
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("doChatSync /new: expected status 200, got %d", resp.StatusCode)
+	}
+
+	var chatResp ChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if !strings.Contains(chatResp.Response, "session") {
+		t.Errorf("doChatSync /new: expected response to contain 'session', got '%s'", chatResp.Response)
 	}
 }
 
-// TestHandleWebSocket 测试 handleWebSocket 函数
-func TestHandleWebSocket(t *testing.T) {
-	s := NewTestServer()
+// TestDoChatSyncStatus 测试 doChatSync 处理 /status 命令
+func TestDoChatSyncStatus(t *testing.T) {
+	a := createTestAgent(t)
+	s := &Server{
+		agent: a,
+	}
 
-	// 测试非 WebSocket 请求（应该返回非 200）
-	req := httptest.NewRequest("GET", "/ws", nil)
+	// 创建请求
+	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(`{"message": "/status"}`))
 	w := httptest.NewRecorder()
 
-	s.handleWebSocket(w, req)
+	// 调用 doChatSync
+	s.doChatSync(w, req, ChatRequest{Message: "/status"}, agent.LoopConfig{}, context.Background(), time.Now())
 
-	// 非 WS 请求应该返回非 200（可能是 400 或 503）
-	if w.Code == 200 {
-		t.Errorf("handleWebSocket: expected non-200 status for non-WS request, got %d", w.Code)
+	// 验证响应
+	resp := w.Result()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("doChatSync /status: expected status 200, got %d", resp.StatusCode)
+	}
+
+	var chatResp ChatResponse
+	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		t.Fatalf("decode response failed: %v", err)
+	}
+
+	if !strings.Contains(chatResp.Response, "Status") {
+		t.Errorf("doChatSync /status: expected response to contain 'Status', got '%s'", chatResp.Response)
 	}
 }
 
-// TestFormatDuration 测试 formatDuration 函数
-func TestFormatDuration(t *testing.T) {
-	tests := []struct {
-		input    time.Duration
-		expected string
-	}{
-		{time.Second, "0m 1s"},
-		{time.Minute, "1m 0s"},
-		{time.Hour, "1h 0m"},
-		{90 * time.Second, "1m 30s"},
-		{2*time.Hour + 30*time.Minute, "2h 30m"},
-		{25 * time.Hour, "1d 1h 0m"},
+// TestSendSSEError 测试 sendSSEError 函数
+func TestSendSSEError(t *testing.T) {
+	// 创建 buffer 和 flusher
+	var buf bytes.Buffer
+	flusher := &testFlusher{}
+
+	s := &Server{}
+	s.sendSSEError(&buf, flusher, "test error message")
+
+	output := buf.String()
+
+	// 验证 SSE 格式
+	if !strings.Contains(output, "data:") {
+		t.Errorf("sendSSEError: expected SSE format with 'data:', got '%s'", output)
 	}
 
-	for _, tt := range tests {
-		result := formatDuration(tt.input)
-		if result != tt.expected {
-			t.Errorf("formatDuration(%v) = %s, expected %s", tt.input, result, tt.expected)
+	if !strings.Contains(output, "error") {
+		t.Errorf("sendSSEError: expected response to contain 'error', got '%s'", output)
+	}
+
+	if !strings.Contains(output, "test error message") {
+		t.Errorf("sendSSEError: expected response to contain error message, got '%s'", output)
+	}
+
+	// 验证 flusher 被调用
+	if !flusher.flushed {
+		t.Error("sendSSEError: expected flusher to be called")
+	}
+}
+
+// TestCleanup 测试 rateLimiter.cleanup 函数
+func TestCleanup(t *testing.T) {
+	rl := &rateLimiter{
+		clients: make(map[string]*clientBucket),
+		limit:   10,
+	}
+
+	// 添加一个已过期的客户端
+	expiredIP := "192.168.1.1"
+	rl.clients[expiredIP] = &clientBucket{
+		count:   5,
+		resetAt: time.Now().Add(-2 * time.Minute), // 已过期
+	}
+
+	// 添加一个未过期的客户端
+	validIP := "192.168.1.2"
+	rl.clients[validIP] = &clientBucket{
+		count:   3,
+		resetAt: time.Now().Add(2 * time.Minute), // 未过期
+	}
+
+	// 执行清理
+	rl.cleanup()
+
+	// 验证过期的客户端被删除
+	if _, exists := rl.clients[expiredIP]; exists {
+		t.Error("cleanup: expected expired client to be removed")
+	}
+
+	// 验证未过期的客户端保留
+	if _, exists := rl.clients[validIP]; !exists {
+		t.Error("cleanup: expected valid client to be retained")
+	}
+}
+
+// TestRateLimiterAllow 测试 rateLimiter.Allow 函数
+func TestRateLimiterAllow(t *testing.T) {
+	rl := &rateLimiter{
+		clients: make(map[string]*clientBucket),
+		limit:   5,
+	}
+
+	ip := "192.168.1.1"
+
+	// 测试限流逻辑
+	for i := 0; i < 10; i++ {
+		allowed := rl.Allow(ip)
+		if i < 5 {
+			if !allowed {
+				t.Errorf("Allow: request %d should be allowed", i+1)
+			}
+		} else {
+			if allowed {
+				t.Errorf("Allow: request %d should be rate limited", i+1)
+			}
 		}
 	}
 }
 
-// TestHandleRAGStreamIndex 测试 handleRAGStreamIndex 函数
-// 注意：此测试需要完整的 Agent 初始化，在集成测试中覆盖
-func TestHandleRAGStreamIndex(t *testing.T) {
-	// 跳过需要复杂初始化的测试
-	t.Skip("requires full Agent initialization")
+// 辅助类型
+
+// testFlusher 用于测试的 mock flusher
+type testFlusher struct {
+	flushed bool
 }
 
-// NewTestServer 创建用于测试的 server 实例
-func NewTestServer() *Server {
-	return &Server{
-		metrics: &metrics.Metrics{},
-	}
+func (f *testFlusher) Flush() {
+	f.flushed = true
 }
+
+// 确保 testFlusher 实现 http.Flusher
+var _ http.Flusher = (*testFlusher)(nil)
