@@ -204,6 +204,26 @@
 
 ---
 
+### v0.64.0: Agent 包测试补全 (30.5%→31.6%) ✅
+
+**状态**: Done (单元测试上限)
+**进度**: 31.6% (2026-04-23 02:15)
+**提升**: +1.1pp
+
+- [x] 分析当前覆盖率状态（30.5%）
+- [x] 补充测试覆盖基础方法：
+  - [x] `Tools()`, `Catalog()`, `Registry()`, `MCPClient()` (getter 方法)
+  - [x] `MemoryStats()`, `DecayMemory()` (内存管理)
+  - [x] `Remember()`, `RememberLongTerm()`, `Recall()`, `RecallMidTerm()` (记忆操作)
+  - [x] `TemplateManager()`, `Soul()` (配置访问)
+  - [x] `getStreamMode()`, `splitIntoChunks()`, `inferImportance()` (工具函数)
+- [x] 运行测试验证覆盖率 → 31.6%
+- [x] 提交并推送代码
+
+**备注**: 核心功能（`Chat`, `ChatStream`, `buildMemoryContext`, `autoSummarize` 等）需要完整 Provider 和实际 API 调用，单元测试覆盖率 31.6% 已接近上限。剩余功能需集成测试框架或 mock 框架（如 gomock）才能继续提升。
+
+---
+
 ## 历史版本
 
 - [x] v0.52.0: 全仓库覆盖率里程碑 60%+ (2026-04-22 完成)

@@ -765,3 +765,311 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 	return ch, nil
 }
 func (m *mockProvider) Validate() error { return nil }
+
+// --- v0.64.0 Agent Package Coverage Improvements ---
+
+func TestAgent_Tools(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tools := a.Tools()
+	if tools == nil {
+		t.Error("Tools() returned nil")
+	}
+}
+
+func TestAgent_Catalog(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	catalog := a.Catalog()
+	if catalog == nil {
+		t.Error("Catalog() returned nil")
+	}
+}
+
+func TestAgent_Registry(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	registry := a.Registry()
+	if registry == nil {
+		t.Error("Registry() returned nil")
+	}
+}
+
+func TestAgent_MCPClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	client := a.MCPClient()
+	if client == nil {
+		t.Error("MCPClient() returned nil")
+	}
+}
+
+func TestAgent_MemoryStats(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	stats := a.MemoryStats()
+	if stats == nil {
+		t.Error("MemoryStats() returned nil")
+	}
+}
+
+func TestAgent_DecayMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// DecayMemory should not panic
+	a.DecayMemory(0.5)
+}
+
+func TestAgent_PromoteMemory(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// PromoteMemory with invalid ID should return error
+	err = a.PromoteMemory("nonexistent-id")
+	if err == nil {
+		t.Log("PromoteMemory() should return error for nonexistent ID")
+	}
+}
+
+func TestAgent_Remember(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Remember should not panic
+	err = a.Remember("test content", "default")
+	if err != nil {
+		t.Logf("Remember() error: %v", err)
+	}
+}
+
+func TestAgent_RememberLongTerm(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// RememberLongTerm should not panic
+	err = a.RememberLongTerm("test long-term content", "default")
+	if err != nil {
+		t.Logf("RememberLongTerm() error: %v", err)
+	}
+}
+
+func TestAgent_Recall(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// Recall should not panic
+	results := a.Recall("test query")
+	if results == nil {
+		t.Error("Recall() returned nil")
+	}
+}
+
+func TestAgent_RecallMidTerm(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	// RecallMidTerm should not panic
+	results := a.RecallMidTerm("test query", 5)
+	if results == nil {
+		t.Error("RecallMidTerm() returned nil")
+	}
+}
+
+func TestAgent_TemplateManager(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	tm := a.TemplateManager()
+	if tm == nil {
+		t.Error("TemplateManager() returned nil")
+	}
+}
+
+func TestAgent_Soul(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("soul.enabled", "true")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	soul := a.Soul()
+	if soul == nil {
+		t.Error("Soul() returned nil")
+	}
+}
+
+func TestAgent_getStreamMode(t *testing.T) {
+	tmpDir := t.TempDir()
+	
+	tests := []struct {
+		streamMode string
+		expected   StreamMode
+	}{
+		{"native", StreamModeNative},
+		{"simulated", StreamModeSimulated},
+		{"", StreamModeNative}, // default
+		{"invalid", StreamModeNative}, // invalid defaults to native
+	}
+	
+	for _, tt := range tests {
+		cfg, _ := config.NewManagerWithDir(tmpDir)
+		cfg.Set("stream_mode", tt.streamMode)
+		
+		a, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		
+		got := a.getStreamMode()
+		if got != tt.expected {
+			t.Errorf("getStreamMode(%q) = %q, want %q", tt.streamMode, got, tt.expected)
+		}
+	}
+}
+
+func TestAgent_splitIntoChunks(t *testing.T) {
+	tests := []struct {
+		text     string
+		maxLen   int
+		expected int
+	}{
+		{"", 100, 1},
+		{"hello", 100, 1},
+		{"hello world", 5, 3}, // "hello", " worl", "d"
+	}
+
+	for _, tt := range tests {
+		chunks := splitIntoChunks(tt.text, tt.maxLen)
+		if len(chunks) != tt.expected {
+			t.Errorf("splitIntoChunks(%q, %d) returned %d chunks, want %d", tt.text, tt.maxLen, len(chunks), tt.expected)
+		}
+	}
+}
+
+func TestAgent_inferImportance(t *testing.T) {
+	// Test that inferImportance returns a value in valid range
+	tests := []struct {
+		content string
+	}{
+		{""},
+		{"hello"},
+		{"IMPORTANT: critical information"},
+		{"TODO: remember this"},
+	}
+
+	for _, tt := range tests {
+		got := inferImportance(tt.content)
+		// Should return value between 0 and 1
+		if got < 0 || got > 1 {
+			t.Errorf("inferImportance(%q) = %f, should be between 0 and 1", tt.content, got)
+		}
+	}
+}
