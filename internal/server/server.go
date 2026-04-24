@@ -627,17 +627,6 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		}
 	}
 
-	result, err := s.agent.RunLoop(ctx, req.Message, loopCfg)
-	if err != nil {
-		s.stats.mu.Lock()
-		s.stats.ErrorReqs++
-		s.stats.mu.Unlock()
-		s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	duration := time.Since(start)
-
 	// v0.24.1: 如果没有提供 session_id，创建新会话
 	sessionID := req.SessionID
 	var sess *session.Session
@@ -654,7 +643,11 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		}
 	}
 
-	// 使用 RunLoopWithSession 确保消息被保存
+	// 使用 RunLoopWithSession 确保消息被保存；无法创建/获取会话时降级为无会话 RunLoop
+	var (
+		result *agent.LoopResult
+		err    error
+	)
 	if sess != nil {
 		loopCfgWithSession := agent.LoopConfig{
 			MaxIterations: loopCfg.MaxIterations,
@@ -662,14 +655,18 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			AutoApprove:   loopCfg.AutoApprove,
 		}
 		result, err = s.agent.RunLoopWithSession(ctx, sess, req.Message, loopCfgWithSession)
-		if err != nil {
-			s.stats.mu.Lock()
-			s.stats.ErrorReqs++
-			s.stats.mu.Unlock()
-			s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
-			return
-		}
+	} else {
+		result, err = s.agent.RunLoop(ctx, req.Message, loopCfg)
 	}
+	if err != nil {
+		s.stats.mu.Lock()
+		s.stats.ErrorReqs++
+		s.stats.mu.Unlock()
+		s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	duration := time.Since(start)
 
 	resp := ChatResponse{
 		Response:   result.Response,

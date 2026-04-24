@@ -3,11 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // ConfigWatcher 监控配置文件变化并自动重载
@@ -18,8 +15,8 @@ type ConfigWatcher struct {
 	homeDir  string
 	interval time.Duration
 	stopCh   chan struct{}
-	onChange  func(oldCfg, newCfg *Config)
-	onError   func(err error)
+	onChange func(oldCfg, newCfg *Config)
+	onError  func(err error)
 	running  bool
 	lastMod  time.Time
 }
@@ -136,8 +133,8 @@ func (w *ConfigWatcher) checkAndReload() {
 		return
 	}
 
-	var newCfg Config
-	if err := yaml.Unmarshal(data, &newCfg); err != nil {
+	newCfg, err := parseConfigData(data)
+	if err != nil {
 		w.emitError(fmt.Errorf("parse config: %w", err))
 		return
 	}
@@ -150,13 +147,13 @@ func (w *ConfigWatcher) checkAndReload() {
 
 	// 更新配置
 	w.mu.Lock()
-	w.config = &newCfg
+	w.config = newCfg
 	w.lastMod = info.ModTime()
 	w.mu.Unlock()
 
 	// 触发回调
 	if onChange != nil {
-		onChange(&oldCfg, &newCfg)
+		onChange(&oldCfg, newCfg)
 	}
 }
 
@@ -180,14 +177,14 @@ func (w *ConfigWatcher) ForceReload() error {
 		return fmt.Errorf("read config: %w", err)
 	}
 
-	var newCfg Config
-	if err := yaml.Unmarshal(data, &newCfg); err != nil {
+	newCfg, err := parseConfigData(data)
+	if err != nil {
 		return fmt.Errorf("parse config: %w", err)
 	}
 
 	w.mu.Lock()
 	oldCfg := *w.config
-	w.config = &newCfg
+	w.config = newCfg
 	onChange := w.onChange
 	if info, err := os.Stat(w.cfgPath); err == nil {
 		w.lastMod = info.ModTime()
@@ -195,7 +192,7 @@ func (w *ConfigWatcher) ForceReload() error {
 	w.mu.Unlock()
 
 	if onChange != nil {
-		onChange(&oldCfg, &newCfg)
+		onChange(&oldCfg, newCfg)
 	}
 
 	return nil
@@ -288,6 +285,3 @@ func (m *Manager) ConfigFile() string {
 func (m *Manager) HomeDirPath() string {
 	return m.homeDir
 }
-
-// Ensure filepath import is used
-var _ = filepath.Base

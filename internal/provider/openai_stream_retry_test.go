@@ -77,3 +77,14 @@ func TestDoOpenAIRequestRetriesOnTransportError(t *testing.T) {
 		t.Fatal("retry attempt should force close connection")
 	}
 }
+
+func TestNewOpenAITransportKeepsHTTP2Enabled(t *testing.T) {
+	rt := newOpenAITransport()
+	tr, ok := rt.(*http.Transport)
+	if !ok {
+		t.Fatalf("expected *http.Transport, got %T", rt)
+	}
+	if !tr.ForceAttemptHTTP2 {
+		t.Fatal("expected ForceAttemptHTTP2 to be enabled")
+	}
+}

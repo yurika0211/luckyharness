@@ -124,12 +124,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 	} else {
 		// 单 provider 模式
 		pCfg := provider.Config{
-			Name:        c.Provider,
-			APIKey:      c.APIKey,
-			APIBase:     c.APIBase,
-			Model:       c.Model,
-			MaxTokens:   c.MaxTokens,
-			Temperature: c.Temperature,
+			Name:         c.Provider,
+			APIKey:       c.APIKey,
+			APIBase:      c.APIBase,
+			Model:        c.Model,
+			MaxTokens:    c.MaxTokens,
+			Temperature:  c.Temperature,
+			ExtraHeaders: c.ExtraHeaders,
 			Limits: provider.LimitsConfig{
 				MaxTokens:              c.Limits.MaxTokens,
 				Temperature:            c.Limits.Temperature,
@@ -1850,18 +1851,36 @@ func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Mess
 
 // applyWebSearchEnv 从环境变量覆盖 web_search 配置
 func applyWebSearchEnv(cfg *config.Manager) {
-	envMap := map[string]string{
-		"LH_WEB_SEARCH_PROVIDER":    "web_search.provider",
-		"LH_WEB_SEARCH_API_KEY":     "web_search.api_key",
-		"LH_WEB_SEARCH_BASE_URL":    "web_search.base_url",
-		"LH_WEB_SEARCH_MAX_RESULTS": "web_search.max_results",
-		"LH_WEB_SEARCH_PROXY":       "web_search.proxy",
-		"BRAVE_API_KEY":             "web_search.api_key",
-		"SEARXNG_BASE_URL":          "web_search.base_url",
+	cur := cfg.Get()
+
+	// 配置文件优先：仅在 config.json 对应字段为空时，才用环境变量补全。
+	if cur.WebSearch.Provider == "" {
+		if v := os.Getenv("LH_WEB_SEARCH_PROVIDER"); v != "" {
+			_ = cfg.Set("web_search.provider", v)
+		}
 	}
-	for envKey, cfgKey := range envMap {
-		if v := os.Getenv(envKey); v != "" {
-			cfg.Set(cfgKey, v)
+	if cur.WebSearch.APIKey == "" {
+		if v := os.Getenv("LH_WEB_SEARCH_API_KEY"); v != "" {
+			_ = cfg.Set("web_search.api_key", v)
+		} else if v := os.Getenv("BRAVE_API_KEY"); v != "" {
+			_ = cfg.Set("web_search.api_key", v)
+		}
+	}
+	if cur.WebSearch.BaseURL == "" {
+		if v := os.Getenv("LH_WEB_SEARCH_BASE_URL"); v != "" {
+			_ = cfg.Set("web_search.base_url", v)
+		} else if v := os.Getenv("SEARXNG_BASE_URL"); v != "" {
+			_ = cfg.Set("web_search.base_url", v)
+		}
+	}
+	if cur.WebSearch.MaxResults <= 0 {
+		if v := os.Getenv("LH_WEB_SEARCH_MAX_RESULTS"); v != "" {
+			_ = cfg.Set("web_search.max_results", v)
+		}
+	}
+	if cur.WebSearch.Proxy == "" {
+		if v := os.Getenv("LH_WEB_SEARCH_PROXY"); v != "" {
+			_ = cfg.Set("web_search.proxy", v)
 		}
 	}
 }

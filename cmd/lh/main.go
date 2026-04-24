@@ -764,7 +764,17 @@ func runChat(cmd *cobra.Command, args []string) error {
 	}
 
 	loopCfg := agent.DefaultLoopConfig()
-	loopCfg.AutoApprove = yolo
+	cfg := mgr.Get()
+	if cfg.Agent.MaxIterations > 0 {
+		loopCfg.MaxIterations = cfg.Agent.MaxIterations
+	}
+	if cfg.Agent.TimeoutSeconds > 0 {
+		loopCfg.Timeout = time.Duration(cfg.Agent.TimeoutSeconds) * time.Second
+	}
+	loopCfg.AutoApprove = cfg.Agent.AutoApprove
+	if cmd.Flags().Changed("yolo") {
+		loopCfg.AutoApprove = yolo
+	}
 
 	ctx := context.Background()
 	result, err := a.RunLoop(ctx, userInput, loopCfg)
@@ -1131,7 +1141,21 @@ func runBackupList(cmd *cobra.Command, args []string) error {
 // ===== v0.9.0: Dashboard 命令实现 =====
 
 func runDashboardStart(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+
 	addr, _ := cmd.Flags().GetString("addr")
+	if !cmd.Flags().Changed("addr") {
+		if cfgAddr := mgr.Get().Dashboard.Addr; cfgAddr != "" {
+			addr = cfgAddr
+		}
+	}
+
 	cfg := dashboard.Config{Addr: addr}
 	d := dashboard.New(cfg)
 
@@ -1322,6 +1346,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	cfg := a.Config().Get()
 
 	gm := a.MsgGateway()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1329,13 +1354,20 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 
 	// v0.36.0: 同时启动 HTTP API Server
 	apiAddr, _ := cmd.Flags().GetString("api-addr")
+	if !cmd.Flags().Changed("api-addr") && cfg.MsgGateway.APIAddr != "" {
+		apiAddr = cfg.MsgGateway.APIAddr
+	}
 	if apiAddr == "" {
 		apiAddr = "127.0.0.1:9090"
 	}
+	rateLimit := cfg.Server.RateLimit
+	if rateLimit <= 0 {
+		rateLimit = 60
+	}
 	srv := server.New(a, server.ServerConfig{
 		Addr:       apiAddr,
-		EnableCORS: false,
-		RateLimit:  60,
+		EnableCORS: cfg.Server.EnableCORS,
+		RateLimit:  rateLimit,
 	})
 	if err := srv.Start(); err != nil {
 		return fmt.Errorf("start http api server: %w", err)
@@ -1343,6 +1375,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	fmt.Printf("📡 HTTP API server starting on %s\n", apiAddr)
 
 	startAll, _ := cmd.Flags().GetBool("all")
+	if !cmd.Flags().Changed("all") {
+		startAll = cfg.MsgGateway.StartAll
+	}
 	if startAll {
 		if err := gm.StartAll(ctx); err != nil {
 			return err
@@ -1359,12 +1394,22 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	}
 
 	platform, _ := cmd.Flags().GetString("platform")
+	if !cmd.Flags().Changed("platform") && cfg.MsgGateway.Platform != "" {
+		platform = cfg.MsgGateway.Platform
+	}
 	token, _ := cmd.Flags().GetString("token")
+	if !cmd.Flags().Changed("token") {
+		if cfg.MsgGateway.Telegram.Token != "" {
+			token = cfg.MsgGateway.Telegram.Token
+		} else if cfg.MsgGateway.Token != "" {
+			token = cfg.MsgGateway.Token
+		}
+	}
 
 	switch platform {
 	case "telegram":
 		if token == "" {
-			return fmt.Errorf("telegram 需要 --token 参数")
+			return fmt.Errorf("telegram 需要 --token 参数（或在 config.json 里设置 msg_gateway.telegram.token）")
 		}
 		tgAdapter := telegram.NewAdapter(telegram.Config{Token: token})
 		handler := telegram.NewHandler(tgAdapter, a)
@@ -1383,15 +1428,36 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 
 	case "onebot":
 		apiBase, _ := cmd.Flags().GetString("onebot-api")
+		if !cmd.Flags().Changed("onebot-api") && cfg.MsgGateway.OneBot.APIBase != "" {
+			apiBase = cfg.MsgGateway.OneBot.APIBase
+		}
 		wsURL, _ := cmd.Flags().GetString("onebot-ws")
+		if !cmd.Flags().Changed("onebot-ws") && cfg.MsgGateway.OneBot.WSURL != "" {
+			wsURL = cfg.MsgGateway.OneBot.WSURL
+		}
 		obToken, _ := cmd.Flags().GetString("onebot-token")
+		if !cmd.Flags().Changed("onebot-token") && cfg.MsgGateway.OneBot.AccessToken != "" {
+			obToken = cfg.MsgGateway.OneBot.AccessToken
+		}
 		botID, _ := cmd.Flags().GetString("onebot-bot-id")
+		if !cmd.Flags().Changed("onebot-bot-id") && cfg.MsgGateway.OneBot.BotID != "" {
+			botID = cfg.MsgGateway.OneBot.BotID
+		}
 		showTyping, _ := cmd.Flags().GetBool("onebot-typing")
+		if !cmd.Flags().Changed("onebot-typing") {
+			showTyping = cfg.MsgGateway.OneBot.ShowTyping
+		}
 		autoLike, _ := cmd.Flags().GetBool("onebot-like")
+		if !cmd.Flags().Changed("onebot-like") {
+			autoLike = cfg.MsgGateway.OneBot.AutoLike
+		}
 		likeTimes, _ := cmd.Flags().GetInt("onebot-like-times")
+		if !cmd.Flags().Changed("onebot-like-times") && cfg.MsgGateway.OneBot.LikeTimes > 0 {
+			likeTimes = cfg.MsgGateway.OneBot.LikeTimes
+		}
 
 		if apiBase == "" {
-			return fmt.Errorf("onebot 需要 --onebot-api 参数")
+			return fmt.Errorf("onebot 需要 --onebot-api 参数（或在 config.json 里设置 msg_gateway.onebot.api_base）")
 		}
 
 		obAdapter := onebot.NewAdapter(onebot.Config{
@@ -1423,6 +1489,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		}
 
 	default:
+		if platform == "" {
+			return fmt.Errorf("请通过 --platform 指定平台，或在 config.json 设置 msg_gateway.platform")
+		}
 		return fmt.Errorf("不支持的平台: %s (支持: telegram, onebot)", platform)
 	}
 
@@ -1458,6 +1527,7 @@ func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("无法连接到消息网关 API (%s): %w\n提示: 先运行 `lh msg-gateway start ...`", baseURL, err)
 	}
 
+	// stop all running gateways
 	if len(args) == 0 {
 		if len(statuses) == 0 {
 			fmt.Println("📋 暂无已注册的消息网关")
@@ -1802,20 +1872,47 @@ func runServe(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("create agent: %w", err)
 	}
+	appCfg := mgr.Get()
 
 	addr, _ := cmd.Flags().GetString("addr")
+	if !cmd.Flags().Changed("addr") && appCfg.Server.Addr != "" {
+		addr = appCfg.Server.Addr
+	}
 	apiKeys, _ := cmd.Flags().GetStringSlice("api-keys")
+	if !cmd.Flags().Changed("api-keys") && len(appCfg.Server.APIKeys) > 0 {
+		apiKeys = append([]string(nil), appCfg.Server.APIKeys...)
+	}
 	noCORS, _ := cmd.Flags().GetBool("no-cors")
+	enableCORS := !noCORS
+	if !cmd.Flags().Changed("no-cors") {
+		enableCORS = appCfg.Server.EnableCORS
+	}
 	rateLimit, _ := cmd.Flags().GetInt("rate-limit")
+	if !cmd.Flags().Changed("rate-limit") && appCfg.Server.RateLimit > 0 {
+		rateLimit = appCfg.Server.RateLimit
+	}
 	metricsAddr, _ := cmd.Flags().GetString("metrics-addr")
+	if !cmd.Flags().Changed("metrics-addr") && appCfg.Server.MetricsAddr != "" {
+		metricsAddr = appCfg.Server.MetricsAddr
+	}
 	logLevel, _ := cmd.Flags().GetString("log-level")
+	if !cmd.Flags().Changed("log-level") && appCfg.Server.LogLevel != "" {
+		logLevel = appCfg.Server.LogLevel
+	}
 	logFormat, _ := cmd.Flags().GetString("log-format")
+	if !cmd.Flags().Changed("log-format") && appCfg.Server.LogFormat != "" {
+		logFormat = appCfg.Server.LogFormat
+	}
+	corsOrigins := []string{"*"}
+	if len(appCfg.Server.CORSOrigins) > 0 {
+		corsOrigins = append([]string(nil), appCfg.Server.CORSOrigins...)
+	}
 
 	cfg := server.ServerConfig{
 		Addr:        addr,
 		APIKeys:     apiKeys,
-		EnableCORS:  !noCORS,
-		CORSOrigins: []string{"*"},
+		EnableCORS:  enableCORS,
+		CORSOrigins: corsOrigins,
 		RateLimit:   rateLimit,
 		MetricsAddr: metricsAddr,
 		LogLevel:    logLevel,

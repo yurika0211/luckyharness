@@ -1,73 +1,105 @@
 {
-  "agents": {
-    "defaults": {
-      "model": "glm-5.1",
-      "provider": "openai",
-      "maxTokens": 102768,
-      "contextWindowTokens": 195536,
-      "temperature": 0.1,
-      "maxToolIterations": 500,
-      "reasoningEffort": null
-    }
+  "provider": "openai",
+  "api_key": "sk-your-api-key",
+  "api_base": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "soul_path": "/home/you/.luckyharness/SOUL.md",
+  "max_tokens": 4096,
+  "temperature": 0.7,
+  "extra_headers": {
+    "User-Agent": "luckyharness/0.64.0"
   },
-  "channels": {
-    "feishu": {
-      "allowFrom": [
-        "*"
-      ],
-      "appId": "YOUR_APP_ID_HERE",
-      "appSecret": "YOUR_APP_SECRET_HERE",
-      "enabled": false
-    },
-    "qq": {
-      "allowFrom": [
-        "*"
-      ],
-      "appId": "YOUR_APP_ID_HERE",
-      "appSecret": "YOUR_APP_SECRET_HERE",
-      "enabled": true,
-      "isPrivate": false,
-      "sandbox": true,
-      "secret": "YOUR_SECRET_HERE",
-      "streaming": true
-    },
+  "web_search": {
+    "provider": "brave",
+    "api_key": "",
+    "base_url": "",
+    "max_results": 5,
+    "proxy": ""
+  },
+  "stream_mode": "native",
+  "memory": {
+    "short_term_max_turns": 10,
+    "midterm_expire_days": 365,
+    "midterm_max_summaries": 100
+  },
+  "model_router": {
+    "enable": false,
+    "simple_model": "gpt-4o-mini",
+    "complex_model": "gpt-4o",
+    "local_model": "qwen2.5-coder-32b",
+    "local_base_url": "http://127.0.0.1:11434/v1",
+    "token_threshold": 500
+  },
+  "limits": {
+    "max_tokens": 4096,
+    "temperature": 0.7,
+    "timeout_seconds": 60,
+    "max_timeout_seconds": 600,
+    "max_tool_calls": 5,
+    "max_concurrent_tool_calls": 3
+  },
+  "retry": {
+    "enabled": true,
+    "max_attempts": 3,
+    "initial_delay_ms": 1000,
+    "max_delay_ms": 10000,
+    "retry_on_rate_limit": true,
+    "retry_on_timeout": true,
+    "retry_on_server_error": true
+  },
+  "circuit_breaker": {
+    "enabled": false,
+    "error_threshold": 5,
+    "window_seconds": 60,
+    "timeout_seconds": 30,
+    "half_open_max_requests": 1
+  },
+  "rate_limit": {
+    "enabled": true,
+    "requests_per_minute": 60,
+    "tokens_per_minute": 100000,
+    "burst_size": 10
+  },
+  "context": {
+    "max_history_turns": 50,
+    "max_context_tokens": 8000,
+    "compression_threshold": 0.8
+  },
+  "agent": {
+    "max_iterations": 10,
+    "timeout_seconds": 60,
+    "auto_approve": false
+  },
+  "server": {
+    "addr": "127.0.0.1:9090",
+    "api_keys": [],
+    "enable_cors": true,
+    "cors_origins": [
+      "*"
+    ],
+    "rate_limit": 60,
+    "metrics_addr": "",
+    "log_level": "info",
+    "log_format": "text"
+  },
+  "dashboard": {
+    "addr": ":8765"
+  },
+  "msg_gateway": {
+    "platform": "telegram",
+    "start_all": false,
+    "api_addr": "127.0.0.1:9090",
     "telegram": {
-      "allowFrom": [
-        "*"
-      ],
-      "connectionPoolSize": 32,
-      "enabled": true,
-      "groupPolicy": "mention",
-      "poolTimeout": 5,
-      "privacy_mode": false,
-      "proxy": null,
-      "reactEmoji": "\ud83d\udc40",
-      "replyToMessage": false,
-      "streamEditInterval": 0.6,
-      "streaming": true,
-      "token": "YOUR_TOKEN_HERE",
-      "model": "glm-5.1",
-      "api_base": "http://maas.icompify.com:32788/v1",
-      "api_key": "YOUR_API_KEY_HERE"
+      "token": ""
+    },
+    "onebot": {
+      "api_base": "",
+      "ws_url": "",
+      "access_token": "",
+      "bot_id": "",
+      "show_typing": true,
+      "auto_like": true,
+      "like_times": 1
     }
-  },
-  "providers": {
-    "openai": {
-      "apiKey": "YOUR_API_KEY_HERE",
-      "apiBase": "http://maas.icompify.com:32788/v1",
-      "extraHeaders": {
-        "User-Agent": "nanobot/1.0",
-        "X-Stainless-Arch": "x",
-        "X-Stainless-Lang": "x",
-        "X-Stainless-Os": "x",
-        "X-Stainless-Package-Version": "x",
-        "X-Stainless-Runtime": "x",
-        "X-Stainless-Runtime-Version": "x"
-      }
-    }
-  },
-  "gateway": {
-    "host": "0.0.0.0",
-    "port": 18790
   }
 }

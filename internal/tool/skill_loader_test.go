@@ -145,3 +145,46 @@ func TestParseToolEntry(t *testing.T) {
 		}
 	}
 }
+
+func TestSkillLoaderAutoGenerateToolsFromScripts(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "script-skill")
+	scriptsDir := filepath.Join(skillDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+
+	// 不提供 Tools section，触发 autoGenerateTools
+	skillContent := "# Script Skill\n\nSkill with script only.\n"
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "calc.sh"), []byte("#!/bin/sh\necho ok\n"), 0755); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	loader := NewSkillLoader(tmpDir)
+	skills, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+
+	var hasRun, hasCalc bool
+	for _, tool := range skills[0].Tools {
+		if tool.Name == "run" {
+			hasRun = true
+		}
+		if tool.Name == "calc" {
+			hasCalc = true
+		}
+	}
+	if !hasRun {
+		t.Fatal("expected auto-generated run tool")
+	}
+	if !hasCalc {
+		t.Fatal("expected auto-generated script tool 'calc'")
+	}
+}

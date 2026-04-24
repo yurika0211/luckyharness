@@ -108,13 +108,13 @@ func newOpenAITransport() http.RoundTripper {
 	base, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return &http.Transport{
-			ForceAttemptHTTP2: false,
+			ForceAttemptHTTP2: true,
 		}
 	}
 	t := base.Clone()
-	// 某些 OpenAI-compatible 代理在 HTTP/2 长连接下会出现 tls: bad record MAC。
-	// 退回 HTTP/1.1 并在重试时主动断开空闲连接，稳定性更高。
-	t.ForceAttemptHTTP2 = false
+	// 保持 HTTP/2 可用：部分 OpenAI-compatible 网关在强制 HTTP/1.1 时会直接返回 HTTP/2 帧，
+	// 触发 malformed HTTP response。连接稳定性问题由 doOpenAIRequest 的重试与断开空闲连接兜底。
+	t.ForceAttemptHTTP2 = true
 	if t.MaxIdleConnsPerHost < 8 {
 		t.MaxIdleConnsPerHost = 8
 	}

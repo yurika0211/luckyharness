@@ -2632,6 +2632,39 @@ func (m *mockConfigProvider) Get() agentConfigSnapshot {
 	return m.snap
 }
 
+type mockStreamSender struct {
+	content  strings.Builder
+	result   string
+	finished bool
+}
+
+func (m *mockStreamSender) Append(content string) error {
+	m.content.WriteString(content)
+	return nil
+}
+
+func (m *mockStreamSender) SetThinking(label string) error {
+	return nil
+}
+
+func (m *mockStreamSender) SetToolCall(name, args string) error {
+	return nil
+}
+
+func (m *mockStreamSender) SetResult(content string) error {
+	m.result = content
+	return nil
+}
+
+func (m *mockStreamSender) Finish() error {
+	m.finished = true
+	return nil
+}
+
+func (m *mockStreamSender) MessageID() string {
+	return "mock-msg-id"
+}
+
 // newHandlerWithMockAgent creates a Handler with a mock agent for testing.
 func newHandlerWithMockAgent(t *testing.T) (*Handler, *httptest.Server) {
 	t.Helper()
@@ -3525,6 +3558,40 @@ func TestV054HandleChatStreamWithToolCall(t *testing.T) {
 	err := handler.handleChat(ctx, msg, "search for test")
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamUnexpectedClose(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 2)
+		ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "thinking..."}
+		ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "partial response"}
+		close(ch)
+		return ch, nil
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "hello",
+	}
+	sender := &mockStreamSender{}
+
+	err := handler.handleChatStream(context.Background(), sender, msg, "hello", handler.getSessionID("12345"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !sender.finished {
+		t.Fatal("expected stream sender to be finished when event channel closes unexpectedly")
+	}
+	if sender.result != "partial response" {
+		t.Fatalf("expected fallback result from partial content, got: %q", sender.result)
 	}
 }
 
