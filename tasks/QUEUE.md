@@ -11,6 +11,32 @@
 
 ## 任务队列
 
+### v0.76.0: tool 包覆盖率冲刺 75% (70.4%→73.4%) ✅
+
+**状态**: Done
+**进度**: 2026-04-24 08:35
+**tool 包覆盖率**: 70.4% → 73.4% (+3.0pp) 🎉
+**总体覆盖率**: 68.9% → 69.2% (+0.3pp)
+
+- [x] 分析 tool 包测试缺口 (delegate.go、gateway.go 多个 0% 函数)
+- [x] 创建 tool_v076_test.go 补充 DelegateManager 和 Gateway 测试
+- [x] 测试 DelegateParallel (并行委派、并发限制、超时处理)
+- [x] 测试 ExecuteWithShellContext (权限、订阅、shell 上下文)
+- [x] 运行测试验证覆盖率 → 73.4%
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增 tool_v076_test.go 共约 230 行测试代码
+- 覆盖 15+ 个测试用例 (DelegateManager 8 个 + Gateway 7 个)
+- tool 包 73.4%，距离 75% 目标还差 1.6pp
+- 剩余低覆盖率函数：builtin.go (Brave API 相关，需 API key)
+
+**提交记录**:
+- fbc0ced: test(tool): v0.76.0 tool 包覆盖率达 73.1% (+2.7pp)
+- 380ecc4: test(tool): v0.76.0 tool 包覆盖率达 73.4% (+3.0pp)
+
+---
+
 ### v0.75.0: server 包覆盖率冲刺 70% (69.7%→71.4%) ✅
 
 **状态**: Done
