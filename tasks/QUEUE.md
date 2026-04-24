@@ -233,23 +233,26 @@
 ### v0.72.0: websocket 包覆盖率提升 (64.7%→75%) ✅
 
 **状态**: Done
-**进度**: 2026-04-24 04:15
-**websocket 包覆盖率**: 64.7% → 71.9% (+7.2pp)
-**总体覆盖率**: 69.0% → 69.1% (+0.1pp)
+**进度**: 2026-04-24 04:45
+**websocket 包覆盖率**: 64.7% → 78.1% (+13.4pp) 🎉
+**总体覆盖率**: 69.0% → 69.2% (+0.2pp)
 
-- [x] 分析 websocket 包未覆盖函数 (syncChat 0.0%, streamChat 0.0%)
+- [x] 分析 websocket 包未覆盖函数 (syncChat 0.0%, streamChat 0.0%, handleChat 22.7%)
 - [x] 编写 syncChat 测试 (同步聊天流程 + 错误处理)
 - [x] 编写 streamChat 测试 (流式聊天流程 + 错误处理)
+- [x] 编写 handleChat 测试 (同步/流式/错误/取消 pending)
 - [x] 运行测试验证覆盖率
 - [x] 提交并推送代码
 
 **备注**: 
-- 新增 websocket_v072_test.go 覆盖 handler.go 核心函数
-- syncChat: 测试 executing → result → idle 完整流程
-- streamChat: 测试流式消息推送和错误处理
-- websocket 包 71.9%，距离 75% 目标还有 3.1pp
+- 新增 websocket_v072_test.go 共 298 行测试代码
+- handleChat: 22.7% → 86.4% (+63.7pp)
+- syncChat: 0.0% → 61.5%
+- streamChat: 0.0% → 42.1%
+- websocket 包 78.1% 已超越 75% 目标 (+3.1pp)
 
 **提交记录**:
 - 8e8db40: test(websocket): v0.72.0 补全 syncChat 和 streamChat 测试 (+7.2pp)
+- 4249390: test(websocket): v0.72.0 补全 handleChat 测试 (+6.2pp)
 
 ---
