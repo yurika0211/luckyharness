@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.38.3 — Gateway Control & Telegram Command Runtime (2026-04-24)
+
+### 🐛 Fixes
+
+- `lh msg-gateway status/stop` now controls the running gateway process via HTTP API instead of local in-memory state.
+  - Added `--api-addr` for both commands (defaults to `msg_gateway.api_addr`, then `127.0.0.1:9090`).
+  - Improved API error propagation with structured fallback parsing.
+- Implemented Telegram `/stop` real task cancellation:
+  - Added per-chat cancellable task tracking.
+  - `/stop` now cancels active request and returns immediate feedback.
+- Implemented Telegram `/restart` runtime reconnect:
+  - Added adapter stop/start reconnect flow with anti-reentry guard.
+  - Bot reports reconnect result in-chat after restart attempt.
+- Decoupled Telegram message handling from update loop by dispatching chat processing asynchronously.
+  - Prevents long-running chat from blocking command handling.
+
 ## v0.38.2 — Provider Resilience & Config Wiring (2026-04-24)
 
 ### 🐛 Fixes

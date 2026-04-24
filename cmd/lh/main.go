@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -334,11 +335,13 @@ func main() {
 		Args:  cobra.MaximumNArgs(1),
 		RunE:  runMsgGatewayStop,
 	}
+	msgGatewayStopCmd.Flags().String("api-addr", "", "消息网关 API 地址（默认读取 msg_gateway.api_addr）")
 	msgGatewayStatusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "查看消息网关状态",
 		RunE:  runMsgGatewayStatus,
 	}
+	msgGatewayStatusCmd.Flags().String("api-addr", "", "消息网关 API 地址（默认读取 msg_gateway.api_addr）")
 	msgGatewayCmd.AddCommand(msgGatewayStartCmd, msgGatewayStopCmd, msgGatewayStatusCmd)
 
 	// ===== v0.10.0: Subscription 命令 =====
@@ -1433,23 +1436,52 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+type msgGatewayListResponse struct {
+	Gateways []gateway.GatewayStatus `json:"gateways"`
+	Count    int                     `json:"count"`
+}
+
+type msgGatewayErrorResponse struct {
+	Error   string `json:"error"`
+	Code    int    `json:"code"`
+	Details string `json:"details"`
+}
+
 func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
-	a, err := getAgent()
+	baseURL, err := resolveMsgGatewayAPIBase(cmd)
 	if err != nil {
 		return err
 	}
 
-	gm := a.MsgGateway()
+	statuses, err := fetchMsgGatewayStatuses(baseURL)
+	if err != nil {
+		return fmt.Errorf("无法连接到消息网关 API (%s): %w\n提示: 先运行 `lh msg-gateway start ...`", baseURL, err)
+	}
 
 	if len(args) == 0 {
-		if err := gm.StopAll(); err != nil {
-			return err
+		if len(statuses) == 0 {
+			fmt.Println("📋 暂无已注册的消息网关")
+			return nil
 		}
-		fmt.Println("✅ 所有消息网关已停止")
+		stopped := 0
+		for _, st := range statuses {
+			if !st.Running {
+				continue
+			}
+			if err := stopMsgGateway(baseURL, st.Name); err != nil {
+				return err
+			}
+			stopped++
+		}
+		if stopped == 0 {
+			fmt.Println("ℹ️ 没有运行中的消息网关")
+			return nil
+		}
+		fmt.Printf("✅ 已停止 %d 个消息网关\n", stopped)
 		return nil
 	}
 
-	if err := gm.Stop(args[0]); err != nil {
+	if err := stopMsgGateway(baseURL, args[0]); err != nil {
 		return err
 	}
 	fmt.Printf("✅ 消息网关 %s 已停止\n", args[0])
@@ -1457,13 +1489,15 @@ func runMsgGatewayStop(cmd *cobra.Command, args []string) error {
 }
 
 func runMsgGatewayStatus(cmd *cobra.Command, args []string) error {
-	a, err := getAgent()
+	baseURL, err := resolveMsgGatewayAPIBase(cmd)
 	if err != nil {
 		return err
 	}
 
-	gm := a.MsgGateway()
-	statuses := gm.Status()
+	statuses, err := fetchMsgGatewayStatuses(baseURL)
+	if err != nil {
+		return fmt.Errorf("无法连接到消息网关 API (%s): %w\n提示: 先运行 `lh msg-gateway start ...`", baseURL, err)
+	}
 
 	if len(statuses) == 0 {
 		fmt.Println("📋 暂无已注册的消息网关")
@@ -1480,6 +1514,86 @@ func runMsgGatewayStatus(cmd *cobra.Command, args []string) error {
 			running, s.Name, s.Stats.MessagesSent, s.Stats.MessagesReceived, s.Stats.Errors)
 	}
 	return nil
+}
+
+func resolveMsgGatewayAPIBase(cmd *cobra.Command) (string, error) {
+	addr, _ := cmd.Flags().GetString("api-addr")
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		mgr, err := config.NewManager()
+		if err != nil {
+			return "", err
+		}
+		if err := mgr.Load(); err != nil {
+			return "", err
+		}
+		addr = strings.TrimSpace(mgr.Get().MsgGateway.APIAddr)
+	}
+	if addr == "" {
+		addr = "127.0.0.1:9090"
+	}
+	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+		addr = "http://" + addr
+	}
+	return strings.TrimRight(addr, "/"), nil
+}
+
+func fetchMsgGatewayStatuses(baseURL string) ([]gateway.GatewayStatus, error) {
+	client := &http.Client{Timeout: 8 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, baseURL+"/api/v1/gateways", nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeMsgGatewayAPIError(resp)
+	}
+
+	var data msgGatewayListResponse
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return nil, fmt.Errorf("解析网关状态失败: %w", err)
+	}
+	return data.Gateways, nil
+}
+
+func stopMsgGateway(baseURL, name string) error {
+	client := &http.Client{Timeout: 8 * time.Second}
+	reqURL := fmt.Sprintf("%s/api/v1/gateways/%s/stop", baseURL, url.PathEscape(name))
+	req, err := http.NewRequest(http.MethodPost, reqURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return decodeMsgGatewayAPIError(resp)
+	}
+	return nil
+}
+
+func decodeMsgGatewayAPIError(resp *http.Response) error {
+	body, _ := io.ReadAll(resp.Body)
+
+	var apiErr msgGatewayErrorResponse
+	if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Error != "" {
+		if apiErr.Details != "" {
+			return fmt.Errorf("%s: %s (HTTP %d)", apiErr.Error, apiErr.Details, resp.StatusCode)
+		}
+		return fmt.Errorf("%s (HTTP %d)", apiErr.Error, resp.StatusCode)
+	}
+	if len(body) == 0 {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return fmt.Errorf("HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 }
 
 // ===== v0.10.0: Subscription 命令实现 =====

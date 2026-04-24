@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -120,12 +121,20 @@ type Handler struct {
 	adapter *Adapter
 	agent   agentProvider
 
-	mu       sync.RWMutex
-	sessions map[string]string // chatID → sessionID
+	mu         sync.RWMutex
+	sessions   map[string]string // chatID → sessionID
+	tasks      map[string]*chatTask
+	restarting bool
 
 	// v0.44.0: chatID→sessionID 映射持久化
 	dataDir string
 }
+
+type chatTask struct {
+	cancel context.CancelFunc
+}
+
+const defaultChatStreamTimeout = 2 * time.Minute
 
 // chatSessionsData 是持久化的 chatID→sessionID 映射
 type chatSessionsData struct {
@@ -142,6 +151,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		adapter:  adapter,
 		agent:    ap,
 		sessions: make(map[string]string),
+		tasks:    make(map[string]*chatTask),
 		dataDir:  "", // 默认不持久化，需 SetDataDir 启用
 	}
 }
@@ -271,6 +281,72 @@ func (h *Handler) setSessionID(chatID, sessionID string) {
 	h.mu.Unlock()
 }
 
+func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, inputText string) error {
+	msgCopy := *msg
+	go func() {
+		if err := h.handleChat(ctx, &msgCopy, inputText); err != nil {
+			fmt.Printf("[telegram] chat error: %v\n", err)
+		}
+	}()
+	return nil
+}
+
+func (h *Handler) beginChatTask(chatID string, parent context.Context) (context.Context, *chatTask) {
+	h.mu.Lock()
+	if h.tasks == nil {
+		h.tasks = make(map[string]*chatTask)
+	}
+	if old := h.tasks[chatID]; old != nil {
+		old.cancel()
+	}
+	taskCtx, cancel := context.WithCancel(parent)
+	task := &chatTask{cancel: cancel}
+	h.tasks[chatID] = task
+	h.mu.Unlock()
+	return taskCtx, task
+}
+
+func (h *Handler) finishChatTask(chatID string, task *chatTask) {
+	if task == nil {
+		return
+	}
+	h.mu.Lock()
+	if cur, ok := h.tasks[chatID]; ok && cur == task {
+		delete(h.tasks, chatID)
+	}
+	h.mu.Unlock()
+	task.cancel()
+}
+
+func (h *Handler) cancelChatTask(chatID string) bool {
+	h.mu.Lock()
+	if h.tasks == nil {
+		h.mu.Unlock()
+		return false
+	}
+	task, ok := h.tasks[chatID]
+	if ok {
+		delete(h.tasks, chatID)
+	}
+	h.mu.Unlock()
+	if !ok || task == nil {
+		return false
+	}
+	task.cancel()
+	return true
+}
+
+func isTaskCanceledError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context canceled") || strings.Contains(msg, "context deadline exceeded")
+}
+
 // HandleMessage processes an incoming gateway message.
 func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error {
 	if msg.IsCommand {
@@ -303,11 +379,11 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 
 	// Regular text in private chats → forward to Agent
 	if msg.Chat.Type == gateway.ChatPrivate {
-		return h.handleChat(ctx, msg, inputText)
+		return h.dispatchChatAsync(ctx, msg, inputText)
 	}
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
-	return h.handleChat(ctx, msg, inputText)
+	return h.dispatchChatAsync(ctx, msg, inputText)
 }
 
 // handleCommand dispatches bot commands.
@@ -318,7 +394,7 @@ func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error
 	case "help":
 		return h.handleHelp(ctx, msg)
 	case "chat":
-		return h.handleChat(ctx, msg, msg.Args)
+		return h.dispatchChatAsync(ctx, msg, msg.Args)
 	case "model":
 		return h.handleModel(ctx, msg)
 	case "soul":
@@ -423,6 +499,9 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 		return h.adapter.Send(ctx, msg.Chat.ID, "Please provide a message. Usage: /chat <message>")
 	}
 
+	taskCtx, task := h.beginChatTask(msg.Chat.ID, ctx)
+	defer h.finishChatTask(msg.Chat.ID, task)
+
 	// 收到消息后给用户点赞 👍
 	go h.adapter.ReactToMessage(msg.Chat.ID, msg.ID, "👍")
 
@@ -435,14 +514,14 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	}
 
 	// 尝试流式输出（Adapter 已实现 StreamGateway）
-	sender, err := h.adapter.SendStream(ctx, msg.Chat.ID, msg.ID)
+	sender, err := h.adapter.SendStream(taskCtx, msg.Chat.ID, msg.ID)
 	if err == nil {
-		return h.handleChatStream(ctx, sender, msg, inputText, sessionID)
+		return h.handleChatStream(taskCtx, sender, msg, inputText, sessionID)
 	}
 	// SendStream 失败，回退到非流式
 
 	// 回退到非流式
-	return h.handleChatSync(ctx, msg, inputText, sessionID)
+	return h.handleChatSync(taskCtx, msg, inputText, sessionID)
 }
 
 // handleChatStream 流式对话处理（Telegram 专用）
@@ -452,16 +531,24 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	defer typingCancel()
 	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
 
+	chatCtx, chatCancel := context.WithTimeout(ctx, defaultChatStreamTimeout)
+	defer chatCancel()
+
 	// 启动流式对话
-	events, err := h.agent.ChatWithSessionStream(ctx, sessionID, text)
+	events, err := h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
 	if err != nil {
 		// session 可能坏了，重试
 		if strings.Contains(err.Error(), "session not found") {
 			h.resetSession(msg.Chat.ID)
 			sessionID = h.getSessionID(msg.Chat.ID)
-			events, err = h.agent.ChatWithSessionStream(ctx, sessionID, text)
+			events, err = h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
 		}
 		if err != nil {
+			if isTaskCanceledError(err) {
+				sender.SetResult("🛑 当前任务已停止")
+				sender.Finish()
+				return nil
+			}
 			sender.SetResult(fmt.Sprintf("❌ Error: %s", truncateString(err.Error(), 200)))
 			sender.Finish()
 			return nil
@@ -470,43 +557,82 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 	var finalContent strings.Builder
 	toolCallCount := 0
+	ended := false
+	sentResult := false
 
-	for evt := range events {
-		switch evt.Type {
-		case agent.ChatEventThinking:
-			// 思考状态作为消息前缀展示，不清空已有内容
-			sender.SetThinking(evt.Content)
+	for !ended {
+		select {
+		case <-chatCtx.Done():
+			sender.SetResult("🛑 当前任务已停止")
+			sender.Finish()
+			sentResult = true
+			ended = true
+		case evt, ok := <-events:
+			if !ok {
+				ended = true
+				break
+			}
+			switch evt.Type {
+			case agent.ChatEventThinking:
+				// 思考状态作为消息前缀展示，不清空已有内容
+				sender.SetThinking(evt.Content)
 
-		case agent.ChatEventToolCall:
-			toolCallCount++
-			// 工具调用作为消息前缀展示
-			sender.SetToolCall(evt.Name, evt.Args)
+			case agent.ChatEventToolCall:
+				toolCallCount++
+				// 工具调用作为消息前缀展示
+				sender.SetToolCall(evt.Name, evt.Args)
 
-		case agent.ChatEventToolResult:
-			// 工具结果展示后切回思考状态
-			sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
+			case agent.ChatEventToolResult:
+				// 工具结果展示后切回思考状态
+				sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
 
-		case agent.ChatEventContent:
-			// 内容流式追加
-			finalContent.WriteString(evt.Content)
-			sender.Append(evt.Content)
-
-		case agent.ChatEventDone:
-			if finalContent.Len() == 0 {
+			case agent.ChatEventContent:
+				// 内容流式追加
 				finalContent.WriteString(evt.Content)
-			}
-			// 最终结果替换整个消息
-			sender.SetResult(finalContent.String())
-			sender.Finish()
+				sender.Append(evt.Content)
 
-		case agent.ChatEventError:
-			errMsg := evt.Err.Error()
-			if len(errMsg) > 200 {
-				errMsg = errMsg[:197] + "..."
+			case agent.ChatEventDone:
+				if finalContent.Len() == 0 {
+					finalContent.WriteString(evt.Content)
+				}
+				// 最终结果替换整个消息
+				sender.SetResult(finalContent.String())
+				sender.Finish()
+				sentResult = true
+				ended = true
+
+			case agent.ChatEventError:
+				if isTaskCanceledError(evt.Err) {
+					sender.SetResult("🛑 当前任务已停止")
+					sender.Finish()
+					sentResult = true
+					ended = true
+					break
+				}
+				errMsg := evt.Err.Error()
+				if len(errMsg) > 200 {
+					errMsg = errMsg[:197] + "..."
+				}
+				sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
+				sender.Finish()
+				sentResult = true
+				ended = true
 			}
-			sender.SetResult(fmt.Sprintf("❌ Error: %s", errMsg))
-			sender.Finish()
 		}
+	}
+
+	if !sentResult {
+		switch {
+		case finalContent.Len() > 0:
+			sender.SetResult(finalContent.String())
+		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
+			sender.SetResult("❌ Error: request timed out while waiting for model response")
+		case errors.Is(chatCtx.Err(), context.Canceled):
+			sender.SetResult("🛑 当前任务已停止")
+		default:
+			sender.SetResult("❌ Error: stream ended unexpectedly, please retry")
+		}
+		sender.Finish()
 	}
 
 	return nil
@@ -536,6 +662,9 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 			response, err = h.agent.ChatWithSession(ctx, sessionID, text)
 		}
 		if err != nil {
+			if isTaskCanceledError(err) {
+				return h.adapter.Send(context.Background(), msg.Chat.ID, "🛑 当前任务已停止")
+			}
 			errMsg := fmt.Sprintf("❌ Error: %s", err.Error())
 			if len(errMsg) > 200 {
 				errMsg = errMsg[:200] + "..."
@@ -882,51 +1011,53 @@ func (h *Handler) handleHealth(ctx context.Context, msg *gateway.Message) error 
 // handleNew 开启新对话（创建新会话）
 func (h *Handler) handleNew(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	
+
 	// 创建新会话
 	newSess := h.agent.Sessions().New()
-	
+
 	h.mu.Lock()
 	oldSessionID, hadOld := h.sessions[chatID]
 	h.sessions[chatID] = newSess.ID
 	h.mu.Unlock()
-	
+
 	h.saveChatSessions()
-	
+
 	info := ""
 	if hadOld {
 		info = fmt.Sprintf("旧会话：%s\n", oldSessionID)
 	}
-	
+
 	return h.adapter.Send(ctx, chatID, fmt.Sprintf("✅ New session started.\n%s新会话 ID: `%s`", info, newSess.ID))
 }
 
-// handleStop 停止当前任务（占位实现）
+// handleStop 停止当前任务
 func (h *Handler) handleStop(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	// TODO: 实现真正的任务取消
-	return h.adapter.Send(ctx, chatID, "ℹ️ Stop command received. Task cancellation not yet implemented.")
+	if !h.cancelChatTask(chatID) {
+		return h.adapter.Send(ctx, chatID, "ℹ️ 当前没有运行中的任务")
+	}
+	return h.adapter.Send(ctx, chatID, "🛑 已停止当前任务")
 }
 
 // handleStatus 查看状态
 func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
 	sessionID := h.getSessionID(chatID)
-	
+
 	var sb strings.Builder
 	sb.WriteString("📊 *LuckyHarness Status*\n\n")
-	
+
 	// 版本
 	sb.WriteString(fmt.Sprintf("• Version: v%s\n", "0.55.0"))
-	
+
 	// 模型
 	cfg := h.agent.Config().Get()
 	sb.WriteString(fmt.Sprintf("• Model: %s\n", cfg.Model))
-	
+
 	// 运行时间
 	uptime := time.Since(h.agent.Metrics().StartTime)
 	sb.WriteString(fmt.Sprintf("• Uptime: %s\n", formatDuration(uptime)))
-	
+
 	// 会话历史
 	sess, ok := h.agent.Sessions().Get(sessionID)
 	msgCount := 0
@@ -934,30 +1065,52 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 		msgCount = sess.MessageCount()
 	}
 	sb.WriteString(fmt.Sprintf("• Session messages: %d\n", msgCount))
-	
+
 	// 指标
 	m := h.agent.Metrics()
 	snapshot := m.Snapshot()
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
-	
+
 	return h.adapter.Send(ctx, chatID, sb.String())
 }
 
 // handleRestart 重启 bot
 func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error {
 	chatID := msg.Chat.ID
-	
-	// 发送重启消息
-	_ = h.adapter.Send(ctx, chatID, "🔄 Restarting...")
-	
-	// 延迟 1 秒后重启
+
+	h.mu.Lock()
+	if h.restarting {
+		h.mu.Unlock()
+		return h.adapter.Send(ctx, chatID, "ℹ️ Bot 正在重启中，请稍候")
+	}
+	h.restarting = true
+	h.mu.Unlock()
+
+	// 先通知，再执行重连
+	_ = h.adapter.Send(ctx, chatID, "🔄 Restarting bot gateway...")
+
 	go func() {
-		time.Sleep(1 * time.Second)
-		// TODO: 实现重启逻辑（需要访问主进程）
-		// 目前只能提示用户手动重启
-		_ = h.adapter.Send(ctx, chatID, "⚠️ Auto-restart not implemented. Please restart manually.")
+		defer func() {
+			h.mu.Lock()
+			h.restarting = false
+			h.mu.Unlock()
+		}()
+
+		// 停止当前 chat 的任务，避免重启期间残留 goroutine
+		h.cancelChatTask(chatID)
+
+		if err := h.adapter.Stop(); err != nil {
+			fmt.Printf("[telegram] restart stop failed: %v\n", err)
+		}
+		time.Sleep(1200 * time.Millisecond)
+
+		if err := h.adapter.Start(context.Background()); err != nil {
+			fmt.Printf("[telegram] restart start failed: %v\n", err)
+			return
+		}
+		_ = h.adapter.Send(context.Background(), chatID, "✅ Bot 已重连并恢复轮询")
 	}()
-	
+
 	return nil
 }
 
@@ -966,7 +1119,7 @@ func formatDuration(d time.Duration) string {
 	days := int(d.Hours() / 24)
 	hours := int(d.Hours()) % 24
 	mins := int(d.Minutes()) % 60
-	
+
 	if days > 0 {
 		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
 	}
