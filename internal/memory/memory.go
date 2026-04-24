@@ -340,14 +340,6 @@ func (s *Store) SearchParallel(query string, limit int) []Entry {
 				}
 				totalScore := matchScore * e.Weight(now) * tierMultiplier
 				scored = append(scored, entryScore{entry: *e, score: totalScore})
-
-				// 更新访问计数（异步，不阻塞）
-				go func(entry *Entry) {
-					s.mu.Lock()
-					entry.AccessCount++
-					entry.AccessedAt = time.Now()
-					s.mu.Unlock()
-				}(e)
 			}
 		}
 		resultCh <- tierResult{tier: tier, entries: scored}

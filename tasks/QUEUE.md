@@ -11,6 +11,23 @@
 
 ## 任务队列
 
+### v0.81.0: collab 包覆盖率冲刺 70% (63.6%→70%+) ⏸️
+
+**状态**: Blocked
+**优先级**: Medium
+**目标**: collab 包 63.6% → 70%+ (+6.4pp)
+
+**阻塞原因**: 
+- collab 包 API 复杂，需要深入研究结构体和方法签名
+- 多个 0% 覆盖率函数 (`SetScorer`, `ListTasks`, `executeDebate`, `WithCorrelation`)
+- 需要更多时间理解包架构
+
+**下一步**: 
+- 先阅读 collab 包源码理解 API
+- 或选择其他更简单的包（如 contextx 68.4%, backup 73.6%）
+
+---
+
 ### v0.80.0: config 包覆盖率冲刺 80% (77.0%→78.7%) ✅
 
 **状态**: Done
