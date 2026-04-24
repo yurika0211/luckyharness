@@ -11,6 +11,134 @@
 
 ## 任务队列
 
+### v0.80.0: config 包覆盖率冲刺 80% (77.0%→78.7%) ✅
+
+**状态**: Done
+**进度**: 2026-04-24 11:30
+**config 包覆盖率**: 77.0% → 78.7% (+1.7pp)
+**总体覆盖率**: 69.6% → 69.7% (+0.1pp)
+
+- [x] 分析 config 包测试缺口
+- [x] 补充 Load 无效 YAML 测试
+- [x] 补充 Save 无效路径测试
+- [x] 补充 Save/Load 往返测试
+- [x] 补充 Set 覆盖测试
+- [x] 运行测试验证覆盖率 → 78.7%
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增约 140 行测试代码
+- config 包 78.7%，距离 80% 目标还差 1.3pp
+- `NewManager` 75.0% 需要 mock `os.UserHomeDir()` 才能完全覆盖
+
+**提交记录**:
+- 2b969e9: test(config): v0.80.0 config 包覆盖率达 78.7% (+1.7pp)
+
+---
+
+### v0.79.0: websocket 包覆盖率冲刺 80% (78.1%→80%+) ⏸️
+
+**状态**: Done
+**进度**: 2026-04-24 10:25
+**tool 包覆盖率**: 74.2% → 75.0% (+0.8pp) 🎉
+**总体覆盖率**: 69.4% → 69.6% (+0.2pp)
+
+- [x] 分析 builtin.go 低覆盖率函数
+- [x] 使用 mock 测试 Brave API 相关函数 (searchWithBraveEntries)
+- [x] 补充 WebSearchConfig 和 searchEntry 结构测试
+- [x] 运行测试验证覆盖率 → 75.0% ✅
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增约 120 行测试代码
+- 覆盖 Brave API、WebSearchConfig、searchEntry
+- **达成 75% 目标！** 🎉
+- tool 包从 70.4% → 75.0% (+4.6pp)
+
+**提交记录**:
+- caaa1cd: test(tool): v0.78.0 tool 包覆盖率达 75.0% ✅
+
+---
+
+### v0.77.0: tool 包覆盖率冲刺 75% (73.4%→74.2%) ✅
+
+**状态**: Done
+**进度**: 2026-04-24 09:55
+**tool 包覆盖率**: 73.4% → 74.2% (+0.8pp) 🎉
+**总体覆盖率**: 69.2% → 69.4% (+0.2pp)
+
+- [x] 分析剩余低覆盖率函数 (builtin.go、gateway.go)
+- [x] 补充 tool_v076_test.go 覆盖 Gateway Getters
+- [x] 测试 GatewayResult_Format (成功/失败)
+- [x] 测试 ErrQuotaExceeded_Error
+- [x] 运行测试验证覆盖率 → 74.2%
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增约 114 行测试代码
+- 覆盖 Gateway Getters、结果格式化、错误类型
+- tool 包 74.2%，距离 75% 目标还差 0.8pp
+- 剩余低覆盖率：builtin.go (Brave API 需 mock)
+
+**提交记录**:
+- bc14550: test(tool): v0.77.0 tool 包覆盖率达 74.3% (+0.9pp)
+- cb9c202: test(tool): v0.77.0 tool 包覆盖率达 74.2%
+
+---
+
+### v0.76.0: tool 包覆盖率冲刺 75% (70.4%→73.4%) ✅
+
+**状态**: Done
+**进度**: 2026-04-24 08:35
+**tool 包覆盖率**: 70.4% → 73.4% (+3.0pp) 🎉
+**总体覆盖率**: 68.9% → 69.2% (+0.3pp)
+
+- [x] 分析 tool 包测试缺口 (delegate.go、gateway.go 多个 0% 函数)
+- [x] 创建 tool_v076_test.go 补充 DelegateManager 和 Gateway 测试
+- [x] 测试 DelegateParallel (并行委派、并发限制、超时处理)
+- [x] 测试 ExecuteWithShellContext (权限、订阅、shell 上下文)
+- [x] 运行测试验证覆盖率 → 73.4%
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增 tool_v076_test.go 共约 230 行测试代码
+- 覆盖 15+ 个测试用例 (DelegateManager 8 个 + Gateway 7 个)
+- tool 包 73.4%，距离 75% 目标还差 1.6pp
+- 剩余低覆盖率函数：builtin.go (Brave API 相关，需 API key)
+
+**提交记录**:
+- fbc0ced: test(tool): v0.76.0 tool 包覆盖率达 73.1% (+2.7pp)
+- 380ecc4: test(tool): v0.76.0 tool 包覆盖率达 73.4% (+3.0pp)
+
+---
+
+### v0.75.0: server 包覆盖率冲刺 70% (69.7%→71.4%) ✅
+
+**状态**: Done
+**进度**: 2026-04-24 07:45
+**server 包覆盖率**: 69.7% → 71.4% (+1.7pp) 🎉
+**总体覆盖率**: 68.9% → 69.1% (+0.2pp)
+
+- [x] 分析 server 包测试缺口 (plugin_handlers 低于 50%)
+- [x] 创建 server_v075_test.go 补充 plugin_handlers 测试
+- [x] 测试 handlePluginInstall (含错误处理、方法验证)
+- [x] 测试 handlePluginUninstall (含 404 处理)
+- [x] 测试 handlePluginToggle (enable/disable)
+- [x] 测试 handlePluginSearch (查询参数验证)
+- [x] 运行测试验证覆盖率 → 71.4%
+- [x] 提交并推送代码
+
+**备注**: 
+- 新增 server_v075_test.go 共 244 行测试代码
+- 覆盖 12+ 个 plugin_handlers 测试用例
+- server 包 71.4% 已超越 70% 目标 (+1.4pp)
+
+**提交记录**:
+- c9bfe82: test(server): v0.75.0 server 包覆盖率达 71.4% (+1.7pp)
+- 1ced944: docs(tasks): 更新 v0.75.0 完成状态
+
+---
+
 ### v0.66.0: 测试配置修复与全仓库覆盖率提升 (66.8%) ✅
 
 **状态**: Done

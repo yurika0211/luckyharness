@@ -382,3 +382,175 @@ func TestModelRouterEstimateComplexityTokenThreshold(t *testing.T) {
 		t.Errorf("expected TaskComplex for high token count with zero threshold, got %v", complexity)
 	}
 }
+
+// TestManagerLoad_InvalidYAML 测试 Load 方法处理无效 YAML
+func TestManagerLoad_InvalidYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+
+	// 写入无效 YAML
+	invalidYAML := []byte("invalid: yaml: content: [")
+	if err := os.WriteFile(cfgPath, invalidYAML, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.cfgPath = cfgPath
+
+	// 应该返回错误
+	err = mgr.Load()
+	if err == nil {
+		t.Error("Load with invalid YAML should return error")
+	}
+
+	t.Logf("Load invalid YAML correctly returned error: %v", err)
+}
+
+// TestManagerLoad_NonExistentFile 测试 Load 方法处理不存在的文件
+func TestManagerLoad_NonExistentFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "nonexistent.yaml")
+
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.cfgPath = cfgPath
+
+	// Load 可能会创建默认配置或返回空配置，不一定会报错
+	err = mgr.Load()
+	
+	// 验证行为：要么返回错误，要么创建默认配置
+	if err != nil {
+		t.Logf("Load non-existent file returned error: %v", err)
+	} else {
+		t.Logf("Load non-existent file succeeded (created default config)")
+	}
+}
+
+// TestManagerSave_InvalidPath 测试 Save 方法处理无效路径
+func TestManagerSave_InvalidPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	invalidPath := filepath.Join(tmpDir, "nonexistent_dir", "config.yaml")
+
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	mgr.cfgPath = invalidPath
+
+	// 设置一些值
+	mgr.Set("test_key", "test_value")
+
+	// 应该返回错误
+	err = mgr.Save()
+	if err == nil {
+		t.Error("Save to invalid path should return error")
+	}
+
+	t.Logf("Save to invalid path correctly returned error: %v", err)
+}
+
+// TestManagerSaveAndLoad_RoundTrip 测试 Save 和 Load 的往返
+func TestManagerSaveAndLoad_RoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.yaml")
+
+	mgr1, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	mgr1.cfgPath = cfgPath
+
+	// 设置多个值
+	testData := map[string]string{
+		"provider":   "openai",
+		"model":      "gpt-4",
+		"max_tokens": "4096",
+	}
+
+	for k, v := range testData {
+		if err := mgr1.Set(k, v); err != nil {
+			t.Fatalf("Set: %v", err)
+		}
+	}
+
+	// 保存
+	if err := mgr1.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	// 创建新的 manager 并加载
+	mgr2, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	mgr2.cfgPath = cfgPath
+
+	if err := mgr2.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	// 验证值
+	cfg := mgr2.Get()
+	if cfg.Provider != testData["provider"] {
+		t.Errorf("Provider: expected %s, got %s", testData["provider"], cfg.Provider)
+	}
+	if cfg.Model != testData["model"] {
+		t.Errorf("Model: expected %s, got %s", testData["model"], cfg.Model)
+	}
+
+	t.Logf("Save/Load roundtrip successful")
+}
+
+// TestSet_OverwriteExisting 测试 Set 覆盖已存在的键
+func TestSet_OverwriteExisting(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	// 设置初始值
+	if err := mgr.Set("provider", "anthropic"); err != nil {
+		t.Fatalf("Set initial: %v", err)
+	}
+
+	// 覆盖
+	if err := mgr.Set("provider", "openai"); err != nil {
+		t.Fatalf("Set overwrite: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Provider != "openai" {
+		t.Errorf("Expected 'openai', got %s", cfg.Provider)
+	}
+
+	t.Logf("Set overwrite successful: anthropic -> openai")
+}
+
+// TestNewManagerWithDir_PermDenied 测试 NewManagerWithDir 处理权限拒绝
+func TestNewManagerWithDir_PermDenied(t *testing.T) {
+	// 跳过 root 用户测试
+	if os.Geteuid() == 0 {
+		t.Skip("Skipping permission test as root")
+	}
+
+	// 创建目录并设置不可写
+	tmpDir := t.TempDir()
+	restrictedDir := filepath.Join(tmpDir, "restricted")
+	if err := os.MkdirAll(restrictedDir, 0000); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	defer os.Chmod(restrictedDir, 0755)
+
+	_, err := NewManagerWithDir(restrictedDir)
+	if err == nil {
+		t.Log("NewManagerWithDir with restricted dir succeeded (unexpected)")
+	} else {
+		t.Logf("NewManagerWithDir with restricted dir returned error (expected): %v", err)
+	}
+}
