@@ -576,3 +576,117 @@ func TestMCPClient_MultipleOperations(t *testing.T) {
 
 	t.Logf("Final server count: %d", len(servers))
 }
+
+// TestGateway_Getters 测试 Gateway 的 Getter 方法
+func TestGateway_Getters(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 测试 Tracker
+	tracker := gw.Tracker()
+	if tracker == nil {
+		t.Error("Tracker should not be nil")
+	}
+
+	// 测试 Subscriptions
+	sub := gw.Subscriptions()
+	if sub == nil {
+		t.Error("Subscriptions should not be nil")
+	}
+
+	// 测试 Router
+	router := gw.Router()
+	if router == nil {
+		t.Error("Router should not be nil")
+	}
+
+	t.Logf("Gateway getters: tracker=%v, sub=%v, router=%v", tracker != nil, sub != nil, router != nil)
+}
+
+// TestGatewayResult_Format 测试结果格式化
+func TestGatewayResult_Format(t *testing.T) {
+	// 测试结果格式化
+	result := &GatewayResult{
+		ToolName:  "test_tool",
+		Output:    "success",
+		Duration:  100 * time.Millisecond,
+		Success:   true,
+		Timestamp: time.Now(),
+	}
+
+	formatted := result.Format()
+	if formatted == "" {
+		t.Error("Expected non-empty formatted result")
+	}
+
+	t.Logf("Formatted result: %s", formatted)
+}
+
+// TestGatewayResult_FormatFailure 测试失败结果格式化
+func TestGatewayResult_FormatFailure(t *testing.T) {
+	result := &GatewayResult{
+		ToolName:  "failed_tool",
+		Output:    "error message",
+		Duration:  50 * time.Millisecond,
+		Success:   false,
+		Timestamp: time.Now(),
+	}
+
+	formatted := result.Format()
+	if formatted == "" {
+		t.Error("Expected non-empty formatted result")
+	}
+
+	// 应该包含 ❌
+	if !contains(formatted, "❌") {
+		t.Error("Expected failure indicator in formatted result")
+	}
+
+	t.Logf("Formatted failure: %s", formatted)
+}
+
+// TestErrQuotaExceeded_Error 测试配额超限错误
+func TestErrQuotaExceeded_Error(t *testing.T) {
+	err := ErrQuotaExceeded{
+		Tool:   "test_tool",
+		UserID: "user123",
+		Reason: "daily limit exceeded",
+	}
+
+	errStr := err.Error()
+	if errStr == "" {
+		t.Error("Expected non-empty error string")
+	}
+
+	// 应该包含关键信息
+	if !contains(errStr, "test_tool") {
+		t.Error("Error should contain tool name")
+	}
+	if !contains(errStr, "user123") {
+		t.Error("Error should contain user ID")
+	}
+
+	t.Logf("ErrQuotaExceeded: %s", errStr)
+}
+
+// TestErrQuotaExceeded_ErrorEmptyFields 测试空字段
+func TestErrQuotaExceeded_ErrorEmptyFields(t *testing.T) {
+	err := ErrQuotaExceeded{
+		Tool:   "unknown",
+		UserID: "",
+		Reason: "unknown reason",
+	}
+
+	errStr := err.Error()
+	if errStr == "" {
+		t.Error("Expected non-empty error string")
+	}
+
+	t.Logf("ErrQuotaExceeded (empty user): %s", errStr)
+}
