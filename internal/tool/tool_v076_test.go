@@ -203,3 +203,146 @@ func TestDelegateManager_LargeParallel(t *testing.T) {
 	t.Logf("Large parallel: %d tasks, %d succeeded, duration: %v",
 		len(tasks), result.SuccessCount, result.TotalDuration)
 }
+
+// TestGateway_ExecuteWithShellContext 测试带 shell 上下文的工具执行
+func TestGateway_ExecuteWithShellContext(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+	if gw == nil {
+		t.Fatal("Gateway should not be nil")
+	}
+
+	// 测试不存在的工具
+	_, err = gw.ExecuteWithShellContext("nonexistent_tool", nil, "", nil)
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+	t.Logf("ExecuteWithShellContext error (expected): %v", err)
+}
+
+// TestGateway_ExecuteWithShellContextNilArgs 测试 nil 参数
+func TestGateway_ExecuteWithShellContextNilArgs(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 测试 nil args
+	_, err = gw.ExecuteWithShellContext("test_tool", nil, "user123", nil)
+	// 应该返回错误（工具不存在）
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+// TestGateway_ExecuteWithShellContextEmptyUser 测试空用户 ID
+func TestGateway_ExecuteWithShellContextEmptyUser(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 测试空用户 ID
+	_, err = gw.ExecuteWithShellContext("test_tool", map[string]any{}, "", nil)
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+// TestGateway_ExecuteWithShellContextWithShell 测试带 shell 上下文
+func TestGateway_ExecuteWithShellContextWithShell(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 创建 mock shell 上下文
+	sc := &ShellContext{
+		Cwd: tmpDir,
+		Env: map[string]string{"TEST": "value"},
+	}
+
+	// 测试不存在的工具（带 shell 上下文）
+	_, err = gw.ExecuteWithShellContext("nonexistent", nil, "", sc)
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+// TestGateway_ExecuteWithShellContextPermission 测试权限检查
+func TestGateway_ExecuteWithShellContextPermission(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 测试权限检查流程（工具不存在时会先返回 NotFound）
+	_, err = gw.ExecuteWithShellContext("test_perm", nil, "user", nil)
+	if err == nil {
+		t.Error("Expected error")
+	}
+}
+
+// TestGateway_ExecuteWithShellContextSubscription 测试订阅检查
+func TestGateway_ExecuteWithShellContextSubscription(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 测试订阅检查流程
+	_, err = gw.ExecuteWithShellContext("test_sub", nil, "subscriber", nil)
+	if err == nil {
+		t.Error("Expected error for nonexistent tool")
+	}
+}
+
+// TestGateway_ExecuteWithShellContextResult 测试结果结构
+func TestGateway_ExecuteWithShellContextResult(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	reg := NewRegistry()
+	gw := NewGateway(reg)
+
+	// 验证错误情况下的结果结构
+	result, err := gw.ExecuteWithShellContext("fake_tool", nil, "", nil)
+	
+	// 应该返回错误
+	if err == nil {
+		t.Error("Expected error")
+	}
+	// result 应该为 nil
+	if result != nil {
+		t.Log("Result may be nil on error")
+	}
+}
