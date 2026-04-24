@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.38.2 — Provider Resilience & Config Wiring (2026-04-24)
+
+### 🐛 Fixes
+
+- Wired runtime provider safety configs from app config to provider layer:
+  - limits / retry / circuit_breaker / rate_limit / context are now propagated when creating provider config.
+- Hardened OpenAI-compatible HTTP request path:
+  - Added dedicated HTTP client/transport for OpenAI calls.
+  - Disabled HTTP/2 attempt on this path to reduce flaky proxy behavior.
+  - Added transport-level retry with exponential backoff for retryable network/TLS failures.
+  - Retries force fresh connection on subsequent attempts (`req.Close = true` + close idle conns).
+- Added retry classification for common transient failures:
+  - `tls: bad record mac`, timeout-like errors, connection reset/lost/unexpected EOF variants.
+
+### 🧪 Tests
+
+- Added `openai_stream_retry_test.go` to verify:
+  - retryable TLS error detection
+  - request retries are attempted and second attempt forces new connection
+
 ## v0.38.1 — Stability & Gateway Reliability (2026-04-24)
 
 ### 🐛 Fixes

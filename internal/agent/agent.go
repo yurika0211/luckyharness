@@ -130,6 +130,41 @@ func New(cfg *config.Manager) (*Agent, error) {
 			Model:       c.Model,
 			MaxTokens:   c.MaxTokens,
 			Temperature: c.Temperature,
+			Limits: provider.LimitsConfig{
+				MaxTokens:              c.Limits.MaxTokens,
+				Temperature:            c.Limits.Temperature,
+				TimeoutSeconds:         c.Limits.TimeoutSeconds,
+				MaxTimeoutSeconds:      c.Limits.MaxTimeoutSeconds,
+				MaxToolCalls:           c.Limits.MaxToolCalls,
+				MaxConcurrentToolCalls: c.Limits.MaxConcurrentToolCalls,
+			},
+			Retry: provider.RetryConfig{
+				Enabled:            c.Retry.Enabled,
+				MaxAttempts:        c.Retry.MaxAttempts,
+				InitialDelayMs:     c.Retry.InitialDelayMs,
+				MaxDelayMs:         c.Retry.MaxDelayMs,
+				RetryOnRateLimit:   c.Retry.RetryOnRateLimit,
+				RetryOnTimeout:     c.Retry.RetryOnTimeout,
+				RetryOnServerError: c.Retry.RetryOnServerError,
+			},
+			CircuitBreaker: provider.CircuitBreakerConfig{
+				Enabled:         c.CircuitBreaker.Enabled,
+				ErrorThreshold:  c.CircuitBreaker.ErrorThreshold,
+				WindowSeconds:   c.CircuitBreaker.WindowSeconds,
+				TimeoutSeconds:  c.CircuitBreaker.TimeoutSeconds,
+				HalfOpenMaxReqs: c.CircuitBreaker.HalfOpenMaxReqs,
+			},
+			RateLimit: provider.RateLimitConfig{
+				Enabled:           c.RateLimit.Enabled,
+				RequestsPerMinute: c.RateLimit.RequestsPerMinute,
+				TokensPerMinute:   c.RateLimit.TokensPerMinute,
+				BurstSize:         c.RateLimit.BurstSize,
+			},
+			Context: provider.ContextConfig{
+				MaxHistoryTurns:      c.Context.MaxHistoryTurns,
+				MaxContextTokens:     c.Context.MaxContextTokens,
+				CompressionThreshold: c.Context.CompressionThreshold,
+			},
 		}
 		p, err = registry.Resolve(pCfg)
 		if err != nil {
