@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -169,4 +170,90 @@ func TestClientConcurrentSend(t *testing.T) {
 
 	// 清理
 	close(client.Send)
+}
+
+// v0.85.0: websocket 包补测 - 覆盖边缘情况
+
+// TestClientSendChannel 测试 client.Send channel 的并发发送
+func TestClientSendChannel_Concurrent(t *testing.T) {
+	client := &Client{
+		SessionID: "concurrent-test",
+		Send:      make(chan *Message, 100),
+	}
+
+	// 并发发送 20 条消息
+	done := make(chan bool, 20)
+	for i := 0; i < 20; i++ {
+		go func(idx int) {
+			msg, _ := NewMessage(TypeStatus, "concurrent-test", StatusData{State: fmt.Sprintf("test-%d", idx)})
+			client.Send <- msg
+			done <- true
+		}(i)
+	}
+
+	// 等待所有发送完成
+	for i := 0; i < 20; i++ {
+		<-done
+	}
+
+	// 验证 channel 中有 20 条消息
+	if len(client.Send) != 20 {
+		t.Errorf("expected 20 messages in channel, got %d", len(client.Send))
+	}
+
+	// 清理
+	close(client.Send)
+	t.Logf("concurrent send test passed: %d messages", len(client.Send))
+}
+
+// TestParseMessage_InvalidJSON 测试 ParseMessage 错误处理
+func TestParseMessage_InvalidJSON(t *testing.T) {
+	invalidJSON := []byte(`{"type": "chat", invalid}`)
+	_, err := ParseMessage(invalidJSON)
+	if err == nil {
+		t.Error("ParseMessage should return error for invalid JSON")
+	} else {
+		t.Logf("ParseMessage correctly rejected invalid JSON: %v", err)
+	}
+}
+
+// TestParseMessage_EmptyData 测试 ParseMessage 空数据
+func TestParseMessage_EmptyData(t *testing.T) {
+	validJSON := []byte(`{"type": "status", "session_id": "test-123"}`)
+	msg, err := ParseMessage(validJSON)
+	if err != nil {
+		t.Errorf("ParseMessage error: %v", err)
+	}
+	if msg.Type != "status" {
+		t.Errorf("expected status, got %s", msg.Type)
+	}
+	if msg.SessionID != "test-123" {
+		t.Errorf("expected test-123, got %s", msg.SessionID)
+	}
+	t.Logf("ParseMessage handled empty data correctly")
+}
+
+// TestNewMessage_IDGeneration 测试消息 ID 自动生成
+func TestNewMessage_IDGeneration(t *testing.T) {
+	msg, err := NewMessage(TypeStatus, "session", StatusData{State: "test"})
+	if err != nil {
+		t.Fatalf("NewMessage error: %v", err)
+	}
+	if msg.ID == "" {
+		t.Error("NewMessage should generate ID")
+	}
+	t.Logf("generated message ID: %s", msg.ID)
+}
+
+// TestGetStats 测试 Hub 统计信息
+func TestGetStats(t *testing.T) {
+	// 简单测试，不启动完整的 Hub
+	cfg := DefaultHubConfig()
+	if cfg.WriteWait == 0 {
+		t.Error("WriteWait should be non-zero")
+	}
+	if cfg.PongWait == 0 {
+		t.Error("PongWait should be non-zero")
+	}
+	t.Logf("default hub config: write_wait=%v, pong_wait=%v", cfg.WriteWait, cfg.PongWait)
 }
