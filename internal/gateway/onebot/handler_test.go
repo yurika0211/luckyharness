@@ -239,3 +239,72 @@ func TestHandleCommandUnknown(t *testing.T) {
 	// 未知命令应该返回错误或者忽略，不应该 panic
 	t.Logf("Unknown command result: %v", err)
 }
+
+// TestHandleMessageCommandModel 测试 /model 命令
+func TestHandleMessageCommandModel(t *testing.T) {
+	a := createTestAgentForOnebot(t)
+	cfg := DefaultConfig()
+	cfg.APIBase = "http://127.0.0.1:9999"
+	adapter := NewAdapter(cfg)
+	adapter.running = true
+	h := NewHandler(adapter, a)
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		Chat:      gateway.Chat{ID: "test_chat"},
+		Text:      "/model",
+		IsCommand: true,
+		Command:   "model",
+	}
+
+	err := h.HandleMessage(ctx, msg)
+	if err != nil && !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("HandleMessage with /model command failed: %v", err)
+	}
+}
+
+// TestHandleMessageCommandSoul 测试 /soul 命令
+func TestHandleMessageCommandSoul(t *testing.T) {
+	a := createTestAgentForOnebot(t)
+	cfg := DefaultConfig()
+	cfg.APIBase = "http://127.0.0.1:9999"
+	adapter := NewAdapter(cfg)
+	adapter.running = true
+	h := NewHandler(adapter, a)
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		Chat:      gateway.Chat{ID: "test_chat"},
+		Text:      "/soul",
+		IsCommand: true,
+		Command:   "soul",
+	}
+
+	err := h.HandleMessage(ctx, msg)
+	if err != nil && !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("HandleMessage with /soul command failed: %v", err)
+	}
+}
+
+// TestHandleMessageCommandHealth 测试 /health 命令
+func TestHandleMessageCommandHealth(t *testing.T) {
+	a := createTestAgentForOnebot(t)
+	cfg := DefaultConfig()
+	cfg.APIBase = "http://127.0.0.1:9999"
+	adapter := NewAdapter(cfg)
+	adapter.running = true
+	h := NewHandler(adapter, a)
+
+	ctx := context.Background()
+	msg := &gateway.Message{
+		Chat:      gateway.Chat{ID: "test_chat"},
+		Text:      "/health",
+		IsCommand: true,
+		Command:   "health",
+	}
+
+	err := h.HandleMessage(ctx, msg)
+	if err != nil && !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("HandleMessage with /health command failed: %v", err)
+	}
+}
