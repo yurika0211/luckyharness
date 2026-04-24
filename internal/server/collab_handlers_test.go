@@ -224,3 +224,123 @@ func TestHandleAgentsCancel(t *testing.T) {
 		t.Errorf("status: got %d, want %d", w.Code, http.StatusOK)
 	}
 }
+
+// TestHandleAgentsRegister_Errors 测试 handleAgentsRegister 错误分支
+func TestHandleAgentsRegister_Errors(t *testing.T) {
+	reg := collab.NewRegistry()
+	dm := collab.NewDelegateManager(reg, nil)
+
+	s := &Server{
+		collabRegistry:  reg,
+		delegateManager: dm,
+	}
+
+	// 测试 1: 方法不允许 (GET instead of POST)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/register", nil)
+	w := httptest.NewRecorder()
+	s.handleAgentsRegister(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("method not allowed: got %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+
+	// 测试 2: 无效 JSON
+	body := []byte(`{invalid json}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsRegister(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid json: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// 测试 3: 缺少 agent id
+	body = []byte(`{"name": "No ID Agent"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsRegister(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing id: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// 测试 4: 重复注册
+	_ = reg.Register(&collab.AgentProfile{ID: "duplicate-agent", Name: "Duplicate"})
+	body = []byte(`{"id": "duplicate-agent", "name": "Another Duplicate"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/register", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsRegister(w, req)
+	if w.Code != http.StatusConflict {
+		t.Errorf("duplicate registration: got %d, want %d", w.Code, http.StatusConflict)
+	}
+}
+
+// TestHandleAgentsDeregister_Errors 测试 handleAgentsDeregister 错误分支
+func TestHandleAgentsDeregister_Errors(t *testing.T) {
+	reg := collab.NewRegistry()
+	dm := collab.NewDelegateManager(reg, nil)
+
+	s := &Server{
+		collabRegistry:  reg,
+		delegateManager: dm,
+	}
+
+	// 测试 1: 方法不允许 (GET instead of DELETE)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/deregister?id=agent-1", nil)
+	w := httptest.NewRecorder()
+	s.handleAgentsDeregister(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("method not allowed: got %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+
+	// 测试 2: 缺少 agent id
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/agents/deregister", nil)
+	w = httptest.NewRecorder()
+	s.handleAgentsDeregister(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing id: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// 测试 3: 注销不存在的 agent
+	req = httptest.NewRequest(http.MethodDelete, "/api/v1/agents/deregister?id=nonexistent", nil)
+	w = httptest.NewRecorder()
+	s.handleAgentsDeregister(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("not found: got %d, want %d", w.Code, http.StatusNotFound)
+	}
+}
+
+// TestHandleAgentsDelegate_Errors 测试 handleAgentsDelegate 错误分支
+func TestHandleAgentsDelegate_Errors(t *testing.T) {
+	reg := collab.NewRegistry()
+	_ = reg.Register(&collab.AgentProfile{ID: "agent-1", Name: "Agent 1"})
+	dm := collab.NewDelegateManager(reg, nil)
+
+	s := &Server{
+		collabRegistry:  reg,
+		delegateManager: dm,
+	}
+
+	// 测试 1: 方法不允许 (GET instead of POST)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/agents/delegate", nil)
+	w := httptest.NewRecorder()
+	s.handleAgentsDelegate(w, req)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("method not allowed: got %d, want %d", w.Code, http.StatusMethodNotAllowed)
+	}
+
+	// 测试 2: 无效 JSON
+	body := []byte(`{invalid json}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/delegate", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsDelegate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid json: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// 测试 3: 缺少 agent_ids
+	body = []byte(`{"mode": "parallel", "description": "test", "input": "hello"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/delegate", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsDelegate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("missing agent_ids: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
