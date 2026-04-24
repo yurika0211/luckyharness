@@ -11,6 +11,31 @@
 
 ## 任务队列
 
+### v0.75.0: server 包覆盖率冲刺 70% (64.5%→70%+)
+
+**状态**: Ready
+**优先级**: High
+**目标**: server 包 64.5% → 70%+ (+5.5pp)
+**预计耗时**: 30-45 分钟
+
+**待覆盖函数** (server.go 低覆盖率):
+- `server.go:1594`: 12.5% - 需补充测试
+- `server.go:559`: 26.5% - 需补充测试
+- `plugin_handlers.go:139`: 45.5% - 插件相关 handler
+- `plugin_handlers.go:189`: 46.7% - 插件相关 handler
+- `plugin_handlers.go:271`: 48.4% - 插件相关 handler
+
+**任务列表**:
+- [ ] 分析 server 包测试缺口
+- [ ] 创建 server_v075_test.go 补充低覆盖率函数测试
+- [ ] 重点覆盖 plugin_handlers、collab_handlers
+- [ ] 运行测试验证覆盖率 → 目标 70%+
+- [ ] 提交并推送代码
+
+**备注**: server 包当前 64.5%，距离 70% 还有 5.5pp 差距
+
+---
+
 ### v0.66.0: 测试配置修复与全仓库覆盖率提升 (66.8%) ✅
 
 **状态**: Done
