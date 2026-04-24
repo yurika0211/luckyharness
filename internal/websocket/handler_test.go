@@ -257,3 +257,33 @@ func TestGetStats(t *testing.T) {
 	}
 	t.Logf("default hub config: write_wait=%v, pong_wait=%v", cfg.WriteWait, cfg.PongWait)
 }
+
+// TestHandleMessage_UnknownType 测试 HandleMessage 处理未知消息类型
+func TestHandleMessage_UnknownType(t *testing.T) {
+	a := createTestAgentForWS(t)
+	h := NewAgentHandler(a)
+
+	client := &Client{
+		SessionID: "unknown-type-test",
+		ID:        "client-123",
+		Send:      make(chan *Message, 10),
+	}
+
+	// 构造未知类型的消息
+	unknownMsg := &Message{
+		Type:      "UNKNOWN_TYPE_XYZ",
+		SessionID: "unknown-type-test",
+		Data:      json.RawMessage(`{}`),
+	}
+
+	// 调用 HandleMessage
+	h.HandleMessage(client, unknownMsg)
+
+	// 验证没有发送错误消息（未知类型只记录日志，不回复）
+	select {
+	case msg := <-client.Send:
+		t.Errorf("HandleMessage should not send message for unknown type, got: %v", msg)
+	default:
+		t.Logf("HandleMessage correctly handled unknown type (logged only)")
+	}
+}
