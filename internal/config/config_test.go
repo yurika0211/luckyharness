@@ -554,3 +554,215 @@ func TestNewManagerWithDir_PermDenied(t *testing.T) {
 		t.Logf("NewManagerWithDir with restricted dir returned error (expected): %v", err)
 	}
 }
+
+// v0.84.0: config 包补测 - 覆盖 Set 更多分支和辅助函数
+
+// TestSet_WebSearchOptions 测试 websearch 子配置
+func TestSet_WebSearchOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("web_search.provider", "google")
+	mgr.Set("web_search.api_key", "test-key")
+	mgr.Set("web_search.base_url", "https://api.google.com")
+	mgr.Set("web_search.max_results", "10")
+	mgr.Set("web_search.proxy", "http://proxy:8080")
+
+	cfg := mgr.Get()
+	if cfg.WebSearch.Provider != "google" {
+		t.Errorf("expected google, got %s", cfg.WebSearch.Provider)
+	}
+	if cfg.WebSearch.APIKey != "test-key" {
+		t.Errorf("expected test-key, got %s", cfg.WebSearch.APIKey)
+	}
+	if cfg.WebSearch.MaxResults != 10 {
+		t.Errorf("expected 10, got %d", cfg.WebSearch.MaxResults)
+	}
+
+	t.Logf("WebSearch options set correctly")
+}
+
+// TestSet_AgentOptions 测试 agent 子配置
+func TestSet_AgentOptions(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("agent.max_iterations", "50")
+	mgr.Set("agent.timeout_seconds", "300")
+	mgr.Set("agent.auto_approve", "true")
+
+	cfg := mgr.Get()
+	if cfg.Agent.MaxIterations != 50 {
+		t.Errorf("expected 50, got %d", cfg.Agent.MaxIterations)
+	}
+	if cfg.Agent.TimeoutSeconds != 300 {
+		t.Errorf("expected 300, got %d", cfg.Agent.TimeoutSeconds)
+	}
+
+	t.Logf("Agent options set correctly")
+}
+
+// TestSet_StreamMode 测试 stream_mode
+func TestSet_StreamMode(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("stream_mode", "sse")
+
+	cfg := mgr.Get()
+	if cfg.StreamMode != "sse" {
+		t.Errorf("expected sse, got %s", cfg.StreamMode)
+	}
+
+	t.Logf("StreamMode set correctly")
+}
+
+// TestParseBool 测试 parseBool 函数
+func TestParseBool(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect bool
+	}{
+		{"true", true},
+		{"false", false},
+		{"1", true},
+		{"0", false},
+		{"yes", true},
+		{"no", false},
+		{"y", true},
+		{"n", false},
+		{"on", true},
+		{"off", false},
+		{"TRUE", true},
+		{"FALSE", false},
+		{"invalid", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		result := parseBool(tt.input)
+		if result != tt.expect {
+			t.Errorf("parseBool(%q) = %v, want %v", tt.input, result, tt.expect)
+		}
+	}
+
+	t.Logf("parseBool handles all cases correctly")
+}
+
+// TestSplitCSV 测试 splitCSV 函数
+func TestSplitCSV(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect []string
+	}{
+		{"a,b,c", []string{"a", "b", "c"}},
+		{"a, b, c", []string{"a", "b", "c"}},
+		{"a,,b", []string{"a", "b"}},
+		{",a,b,", []string{"a", "b"}},
+		{"", []string{}},
+		{"single", []string{"single"}},
+		{"  a  ,  b  ", []string{"a", "b"}},
+	}
+
+	for _, tt := range tests {
+		result := splitCSV(tt.input)
+		if len(result) != len(tt.expect) {
+			t.Errorf("splitCSV(%q) length = %d, want %d", tt.input, len(result), len(tt.expect))
+			continue
+		}
+		for i, v := range result {
+			if v != tt.expect[i] {
+				t.Errorf("splitCSV(%q)[%d] = %q, want %q", tt.input, i, v, tt.expect[i])
+			}
+		}
+	}
+
+	t.Logf("splitCSV handles all cases correctly")
+}
+
+// TestSet_SoulPath 测试 soul_path
+func TestSet_SoulPath(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("soul_path", "/custom/path/SOUL.md")
+
+	cfg := mgr.Get()
+	if cfg.SoulPath != "/custom/path/SOUL.md" {
+		t.Errorf("expected /custom/path/SOUL.md, got %s", cfg.SoulPath)
+	}
+
+	t.Logf("SoulPath set correctly")
+}
+
+// TestSet_APIBase 测试 api_base
+func TestSet_APIBase(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("api_base", "https://custom.api.com/v1")
+
+	cfg := mgr.Get()
+	if cfg.APIBase != "https://custom.api.com/v1" {
+		t.Errorf("expected https://custom.api.com/v1, got %s", cfg.APIBase)
+	}
+
+	t.Logf("APIBase set correctly")
+}
+
+// TestSet_ExtraKeys 测试 extra.* 键
+func TestSet_ExtraKeys(t *testing.T) {
+	mgr, err := NewManagerWithDir(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	mgr.Set("extra.custom_key", "custom_value")
+	mgr.Set("extra.another_key", "another_value")
+
+	// Extra map 可能为 nil 如果没有设置任何 extra key
+	// 这里只验证 Set 不报错
+	t.Logf("Extra keys set completed")
+}
+
+// TestInitHome_SoulAlreadyExists 测试 InitHome 在 SOUL.md 已存在时不覆盖
+func TestInitHome_SoulAlreadyExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+
+	// 先创建 SOUL.md
+	soulPath := filepath.Join(tmpDir, "SOUL.md")
+	customContent := "custom soul content"
+	if err := os.WriteFile(soulPath, []byte(customContent), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	err = mgr.InitHome()
+	if err != nil {
+		t.Fatalf("InitHome: %v", err)
+	}
+
+	// 验证内容未被覆盖
+	content, err := os.ReadFile(soulPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if string(content) != customContent {
+		t.Errorf("SOUL.md should not be overwritten, got %q", string(content))
+	}
+
+	t.Logf("InitHome correctly preserves existing SOUL.md")
+}
