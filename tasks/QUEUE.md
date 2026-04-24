@@ -11,28 +11,30 @@
 
 ## 任务队列
 
-### v0.75.0: server 包覆盖率冲刺 70% (64.5%→70%+)
+### v0.75.0: server 包覆盖率冲刺 70% (69.7%→71.4%) ✅
 
-**状态**: Ready
-**优先级**: High
-**目标**: server 包 64.5% → 70%+ (+5.5pp)
-**预计耗时**: 30-45 分钟
+**状态**: Done
+**进度**: 2026-04-24 07:45
+**server 包覆盖率**: 69.7% → 71.4% (+1.7pp) 🎉
+**总体覆盖率**: 68.9% → 69.1% (+0.2pp)
 
-**待覆盖函数** (server.go 低覆盖率):
-- `server.go:1594`: 12.5% - 需补充测试
-- `server.go:559`: 26.5% - 需补充测试
-- `plugin_handlers.go:139`: 45.5% - 插件相关 handler
-- `plugin_handlers.go:189`: 46.7% - 插件相关 handler
-- `plugin_handlers.go:271`: 48.4% - 插件相关 handler
+- [x] 分析 server 包测试缺口 (plugin_handlers 低于 50%)
+- [x] 创建 server_v075_test.go 补充 plugin_handlers 测试
+- [x] 测试 handlePluginInstall (含错误处理、方法验证)
+- [x] 测试 handlePluginUninstall (含 404 处理)
+- [x] 测试 handlePluginToggle (enable/disable)
+- [x] 测试 handlePluginSearch (查询参数验证)
+- [x] 运行测试验证覆盖率 → 71.4%
+- [x] 提交并推送代码
 
-**任务列表**:
-- [ ] 分析 server 包测试缺口
-- [ ] 创建 server_v075_test.go 补充低覆盖率函数测试
-- [ ] 重点覆盖 plugin_handlers、collab_handlers
-- [ ] 运行测试验证覆盖率 → 目标 70%+
-- [ ] 提交并推送代码
+**备注**: 
+- 新增 server_v075_test.go 共 244 行测试代码
+- 覆盖 12+ 个 plugin_handlers 测试用例
+- server 包 71.4% 已超越 70% 目标 (+1.4pp)
 
-**备注**: server 包当前 64.5%，距离 70% 还有 5.5pp 差距
+**提交记录**:
+- c9bfe82: test(server): v0.75.0 server 包覆盖率达 71.4% (+1.7pp)
+- 1ced944: docs(tasks): 更新 v0.75.0 完成状态
 
 ---
 
