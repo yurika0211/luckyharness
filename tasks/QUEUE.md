@@ -230,29 +230,28 @@
 
 ---
 
-### v0.73.0: onebot 包测试补全 (44.3%→62.4%) ✅
+### v0.74.0: onebot 包覆盖率冲刺 75% (62.4%→76.5%) ✅
 
 **状态**: Done
-**进度**: 2026-04-24 05:45
-**onebot 包覆盖率**: 44.3% → 62.4% (+18.1pp)
-**总体覆盖率**: 69.2% → 69.4% (+0.2pp)
+**进度**: 2026-04-24 06:45
+**onebot 包覆盖率**: 62.4% → 76.5% (+14.1pp) 🎉
+**总体覆盖率**: 68.7% → 69.0% (+0.3pp)
 
-- [x] 分析 onebot 包未覆盖函数 (handler.go 全 0%, adapter.go 多个 <30%)
-- [x] 创建 handler_test.go 覆盖核心消息处理逻辑
-- [x] 测试 getSessionID (100%)
-- [x] 测试 resetSession (100%)
-- [x] 测试 HandleMessage (68.4%)
-- [x] 测试 handleCommand (25.0%)
-- [x] 运行测试验证覆盖率
+- [x] 分析 onebot 包未覆盖函数 (Start 18.2%, SendWithReply 25%, listenWebSocket 0%, startWebhookServer 0%)
+- [x] 创建 adapter_v074_test.go 覆盖核心适配器功能
+- [x] 测试 Start/Stop 流程 (含 mock HTTP server)
+- [x] 测试 SendWithReply (带回复发送、长消息分割)
+- [x] 补充 handler_test.go 命令测试 (/model /soul /health)
+- [x] 运行测试验证覆盖率 → 76.5%
 - [x] 提交并推送代码
 
 **备注**: 
-- 新增 handler_test.go 共 241 行测试代码
-- 覆盖 9 个测试用例 (session 管理、命令处理、消息处理)
-- handler.go 核心函数覆盖率大幅提升
-- onebot 包 62.4%，距离 75% 目标还有 12.6pp
+- 新增 adapter_v074_test.go 共 207 行测试代码
+- 新增 3 个命令测试用例
+- onebot 包 76.5% 已超越 75% 目标 (+1.5pp)
+- listenWebSocket 和 startWebhookServer 仍为 0% (需复杂 mock，暂不追求)
 
 **提交记录**:
-- b2c2a98: test(onebot): v0.73.0 补全 handler 测试 (+18.1pp)
+- 68cb318: test(onebot): v0.74.0 onebot 包覆盖率达 76.5% (+14.1pp)
 
 ---
