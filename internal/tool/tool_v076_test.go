@@ -346,3 +346,233 @@ func TestGateway_ExecuteWithShellContextResult(t *testing.T) {
 		t.Log("Result may be nil on error")
 	}
 }
+
+// TestDelegateManager_DelegateParallelTool 测试 DelegateParallelTool
+func TestDelegateManager_DelegateParallelTool(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	cfg := DelegateConfig{}
+	dm := NewDelegateManager(cfg)
+
+	tool := dm.DelegateParallelTool()
+
+	if tool == nil {
+		t.Fatal("DelegateParallelTool should not be nil")
+	}
+
+	if tool.Name != "delegate_parallel" {
+		t.Errorf("Expected name 'delegate_parallel', got: %s", tool.Name)
+	}
+
+	if tool.Permission != PermApprove {
+		t.Errorf("Expected permission PermApprove, got: %v", tool.Permission)
+	}
+
+	// 验证参数
+	if _, ok := tool.Parameters["tasks"]; !ok {
+		t.Error("Expected 'tasks' parameter")
+	}
+
+	t.Logf("DelegateParallelTool created: %s", tool.Name)
+}
+
+// TestDelegateManager_HandleDelegateParallel 测试 handleDelegateParallel
+func TestDelegateManager_HandleDelegateParallel(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	cfg := DelegateConfig{}
+	dm := NewDelegateManager(cfg)
+
+	// 测试空 tasks
+	args := map[string]any{
+		"tasks": []any{},
+	}
+
+	// handleDelegateParallel 应该能处理空 tasks
+	// 由于实际实现可能不同，这里只验证不 panic
+	result, err := dm.handleDelegateParallel(args)
+	t.Logf("handleDelegateParallel result: %s, err: %v", result, err)
+}
+
+// TestDelegateManager_HandleDelegateParallelWithTasks 测试带任务的处理
+func TestDelegateManager_HandleDelegateParallelWithTasks(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	cfg := DelegateConfig{}
+	dm := NewDelegateManager(cfg)
+
+	args := map[string]any{
+		"tasks":   []any{"task 1", "task 2"},
+		"context": "test context",
+		"timeout": 60,
+	}
+
+	result, err := dm.handleDelegateParallel(args)
+	t.Logf("handleDelegateParallel with tasks: %s, err: %v", result, err)
+}
+
+// TestMCPClient_NewMCPClient 测试创建 MCP 客户端
+func TestMCPClient_NewMCPClient(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	if client == nil {
+		t.Fatal("NewMCPClient should not return nil")
+	}
+
+	if client.servers == nil {
+		t.Error("servers map should be initialized")
+	}
+
+	if client.client == nil {
+		t.Error("http client should be initialized")
+	}
+}
+
+// TestMCPClient_AddServer 测试添加服务器
+func TestMCPClient_AddServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	cfg := MCPServerConfig{
+		Name: "test-server",
+		URL:  "http://localhost:8080",
+	}
+
+	client.AddServer(cfg)
+
+	// 验证服务器已添加
+	client.mu.RLock()
+	_, exists := client.servers["test-server"]
+	client.mu.RUnlock()
+
+	if !exists {
+		t.Error("Server should be added")
+	}
+}
+
+// TestMCPClient_RemoveServer 测试移除服务器
+func TestMCPClient_RemoveServer(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	// 先添加
+	cfg := MCPServerConfig{
+		Name: "to-remove",
+		URL:  "http://localhost:8080",
+	}
+	client.AddServer(cfg)
+
+	// 再移除
+	client.RemoveServer("to-remove")
+
+	// 验证已移除
+	client.mu.RLock()
+	_, exists := client.servers["to-remove"]
+	client.mu.RUnlock()
+
+	if exists {
+		t.Error("Server should be removed")
+	}
+}
+
+// TestMCPClient_ListServers 测试列出服务器
+func TestMCPClient_ListServers(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	// 添加两个服务器
+	client.AddServer(MCPServerConfig{Name: "server1", URL: "http://localhost:8081"})
+	client.AddServer(MCPServerConfig{Name: "server2", URL: "http://localhost:8082"})
+
+	servers := client.ListServers()
+
+	if len(servers) != 2 {
+		t.Errorf("Expected 2 servers, got %d", len(servers))
+	}
+
+	t.Logf("Listed %d servers", len(servers))
+}
+
+// TestMCPClient_RemoveNonexistent 测试移除不存在的服务器
+func TestMCPClient_RemoveNonexistent(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	// 移除不存在的服务器不应 panic
+	client.RemoveServer("nonexistent")
+	t.Log("RemoveServer on nonexistent server completed without panic")
+}
+
+// TestMCPClient_MultipleOperations 测试多个操作
+func TestMCPClient_MultipleOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+	_, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to create config manager: %v", err)
+	}
+
+	client := NewMCPClient()
+
+	// 添加多个服务器
+	for i := 0; i < 5; i++ {
+		client.AddServer(MCPServerConfig{
+			Name: fmt.Sprintf("server-%d", i),
+			URL:  fmt.Sprintf("http://localhost:%d", 8080+i),
+		})
+	}
+
+	// 列出现在应该有 5 个
+	servers := client.ListServers()
+	if len(servers) != 5 {
+		t.Errorf("Expected 5 servers, got %d", len(servers))
+	}
+
+	// 移除一个
+	client.RemoveServer("server-2")
+
+	// 再列出应该有 4 个
+	servers = client.ListServers()
+	if len(servers) != 4 {
+		t.Errorf("Expected 4 servers after removal, got %d", len(servers))
+	}
+
+	t.Logf("Final server count: %d", len(servers))
+}
