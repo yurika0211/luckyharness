@@ -14,22 +14,22 @@ import (
 
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openaiMessage     `json:"messages"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Temperature float64             `json:"temperature,omitempty"`
-	Stream      bool                `json:"stream"`
-	Tools       []openaiTool        `json:"tools,omitempty"`
-	ToolChoice  any                 `json:"tool_choice,omitempty"`
+	Model       string          `json:"model"`
+	Messages    []openaiMessage `json:"messages"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature float64         `json:"temperature,omitempty"`
+	Stream      bool            `json:"stream"`
+	Tools       []openaiTool    `json:"tools,omitempty"`
+	ToolChoice  any             `json:"tool_choice,omitempty"`
 }
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
-	Role       string              `json:"role"`
-	Content    string              `json:"content,omitempty"`
+	Role       string               `json:"role"`
+	Content    string               `json:"content,omitempty"`
 	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
-	Name       string              `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
+	ToolCallID string               `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
+	Name       string               `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
 }
 
 // openaiToolCallResp 是 OpenAI 响应中的工具调用格式
@@ -57,21 +57,21 @@ type toolFunction struct {
 
 // openaiChatResponse 是 OpenAI API 的响应体
 type openaiChatResponse struct {
-	ID      string          `json:"id"`
-	Choices []openaiChoice  `json:"choices"`
-	Usage   *openaiUsage    `json:"usage,omitempty"`
+	ID      string         `json:"id"`
+	Choices []openaiChoice `json:"choices"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
 }
 
 type openaiChoice struct {
-	Index        int            `json:"index"`
-	Message      openaiMessage  `json:"message"`
-	Delta        *openaiDelta   `json:"delta,omitempty"`
-	FinishReason string         `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openaiMessage `json:"message"`
+	Delta        *openaiDelta  `json:"delta,omitempty"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openaiDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
 	ToolCalls []deltaToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -136,7 +136,7 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	
+
 	// v0.56.0: 添加额外请求头（如 User-Agent）
 	for k, v := range cfg.ExtraHeaders {
 		req.Header.Set(k, v)
@@ -325,7 +325,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	
+
 	// v0.56.0: 添加额外请求头（如 User-Agent）
 	for k, v := range cfg.ExtraHeaders {
 		req.Header.Set(k, v)
@@ -391,9 +391,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				deltas := make([]StreamToolCallDelta, 0, len(choice.Delta.ToolCalls))
 				for _, dtc := range choice.Delta.ToolCalls {
 					deltas = append(deltas, StreamToolCallDelta{
-						Index:    dtc.Index,
-						ID:       dtc.ID,
-						Name:     dtc.Function.Name,
+						Index:     dtc.Index,
+						ID:        dtc.ID,
+						Name:      dtc.Function.Name,
 						Arguments: dtc.Function.Arguments,
 					})
 				}
@@ -423,6 +423,23 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 func toOpenAIMessages(messages []Message) []openaiMessage {
 	result := make([]openaiMessage, 0, len(messages))
 	for _, m := range messages {
+		// 兼容旧会话：tool 消息缺失 tool_call_id 时，不能以 role=tool 发送。
+		// 否则部分 API 网关会返回 400（Invalid input[*].call_id）。
+		if m.Role == "tool" && strings.TrimSpace(m.ToolCallID) == "" {
+			content := strings.TrimSpace(m.Content)
+			if content == "" {
+				continue
+			}
+			if m.Name != "" && !strings.HasPrefix(content, "[Tool:") {
+				content = fmt.Sprintf("[Tool: %s] %s", m.Name, content)
+			}
+			result = append(result, openaiMessage{
+				Role:    "assistant",
+				Content: content,
+			})
+			continue
+		}
+
 		msg := openaiMessage{
 			Role:       m.Role,
 			Content:    m.Content,

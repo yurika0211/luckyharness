@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sync"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -26,6 +25,8 @@ import (
 	dbg "github.com/yurika0211/luckyharness/internal/debug"
 	"github.com/yurika0211/luckyharness/internal/eval"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
+	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/profile"
@@ -34,15 +35,13 @@ import (
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/gateway/onebot"
-	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 )
 
 var (
 	soulFile  string
 	provider_ string
-	model_   string
-	yolo     bool
+	model_    string
+	yolo      bool
 	// eval command flags
 	evalFormat    string
 	evalThreshold float64
@@ -134,7 +133,7 @@ func main() {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.38.0")
+			fmt.Println("🍀 LuckyHarness v0.38.1")
 		},
 	}
 
@@ -1325,9 +1324,6 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// WaitGroup to ensure all goroutines complete before exiting
-	var wg sync.WaitGroup
-
 	// v0.36.0: 同时启动 HTTP API Server
 	apiAddr, _ := cmd.Flags().GetString("api-addr")
 	if apiAddr == "" {
@@ -1338,12 +1334,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		EnableCORS: false,
 		RateLimit:  60,
 	})
-	go func() {
-		if err := srv.Start(); err != nil {
-		defer wg.Done()
-			fmt.Printf("[server] HTTP API error: %v\n", err)
-		}
-	}()
+	if err := srv.Start(); err != nil {
+		return fmt.Errorf("start http api server: %w", err)
+	}
 	fmt.Printf("📡 HTTP API server starting on %s\n", apiAddr)
 
 	startAll, _ := cmd.Flags().GetBool("all")
@@ -1359,7 +1352,6 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		fmt.Println("\n🛑 正在停止所有消息网关...")
 		_ = gm.StopAll()
 		_ = srv.Stop()
-		wg.Wait()
 		return nil
 	}
 
@@ -1374,8 +1366,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		tgAdapter := telegram.NewAdapter(telegram.Config{Token: token})
 		handler := telegram.NewHandler(tgAdapter, a)
 		// 持久化 chatID→sessionID 映射，重启后恢复会话
-		home, _ := os.UserHomeDir()
-		handler.SetDataDir(filepath.Join(home, ".luckyharness", "data", "telegram"))
+		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "telegram"))
 		tgAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
 			return handler.HandleMessage(ctx, msg)
 		})
@@ -1401,13 +1392,13 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		}
 
 		obAdapter := onebot.NewAdapter(onebot.Config{
-			APIBase:      apiBase,
-			WSURL:        wsURL,
-			AccessToken:  obToken,
-			BotQQID:      botID,
-			ShowTyping:   showTyping,
-			AutoLike:     autoLike,
-			LikeTimes:    likeTimes,
+			APIBase:       apiBase,
+			WSURL:         wsURL,
+			AccessToken:   obToken,
+			BotQQID:       botID,
+			ShowTyping:    showTyping,
+			AutoLike:      autoLike,
+			LikeTimes:     likeTimes,
 			MaxMessageLen: 4000,
 		})
 		obHandler := onebot.NewHandler(obAdapter, a)
@@ -1563,7 +1554,7 @@ func runSubInfo(cmd *cobra.Command, args []string) error {
 
 	// 显示等级配置
 	config := a.Gateway().Subscriptions().GetTierConfig(sub.Tier)
-	fmt.Printf("  每日限额: ", )
+	fmt.Printf("  每日限额: ")
 	if config.MaxCallsPerDay == 0 {
 		fmt.Println("无限")
 	} else {

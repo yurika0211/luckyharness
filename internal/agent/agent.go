@@ -29,34 +29,34 @@ import (
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg          *config.Manager
-	soul         *soul.Soul
-	tmplMgr      *soul.TemplateManager // v0.19.0: SOUL 模板管理器
-	provider     provider.Provider       // 当前活跃 provider (可能是 FallbackChain)
-	registry     *provider.Registry     // provider 注册表
-	catalog      *provider.ModelCatalog  // 模型目录
-	tokenStore   *provider.TokenStore    // token 存储
-	memory       *memory.Store
-	shortTerm    *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
-	midTerm      *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
-	sessions     *session.Manager
-	tools        *tool.Registry
-	gateway      *tool.Gateway          // 统一工具网关
-	msgGateway   *gateway.GatewayManager // v0.6.0: 消息平台网关
-	mcpClient    *tool.MCPClient         // MCP 客户端
-	delegate     *tool.DelegateManager   // 子代理委派管理器
-	contextWin   *contextx.ContextWindow // 上下文窗口管理器
-	ragManager   *rag.RAGManager         // RAG 知识库管理器
-	ragPersist   *rag.Persistence        // RAG 持久化
-	streamIndexer *rag.StreamIndexer     // v0.23.0: 流式索引器
-	embedderReg  *embedder.Registry      // v0.21.0: 嵌入模型注册表
-	collabReg    *collab.Registry        // v0.22.0: Agent 协作注册表
-	collabMgr    *collab.DelegateManager // v0.22.0: 协作任务管理器
-	skills       []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
-	metrics      *metrics.Metrics        // v0.36.0: 指标收集器
-	cronEngine   *cron.Engine            // v0.36.0: 定时任务引擎
-	autonomy     *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
-	chatCount    int // 对话计数，用于触发自动摘要
+	cfg           *config.Manager
+	soul          *soul.Soul
+	tmplMgr       *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
+	provider      provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	registry      *provider.Registry     // provider 注册表
+	catalog       *provider.ModelCatalog // 模型目录
+	tokenStore    *provider.TokenStore   // token 存储
+	memory        *memory.Store
+	shortTerm     *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
+	midTerm       *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
+	sessions      *session.Manager
+	tools         *tool.Registry
+	gateway       *tool.Gateway           // 统一工具网关
+	msgGateway    *gateway.GatewayManager // v0.6.0: 消息平台网关
+	mcpClient     *tool.MCPClient         // MCP 客户端
+	delegate      *tool.DelegateManager   // 子代理委派管理器
+	contextWin    *contextx.ContextWindow // 上下文窗口管理器
+	ragManager    *rag.RAGManager         // RAG 知识库管理器
+	ragPersist    *rag.Persistence        // RAG 持久化
+	streamIndexer *rag.StreamIndexer      // v0.23.0: 流式索引器
+	embedderReg   *embedder.Registry      // v0.21.0: 嵌入模型注册表
+	collabReg     *collab.Registry        // v0.22.0: Agent 协作注册表
+	collabMgr     *collab.DelegateManager // v0.22.0: 协作任务管理器
+	skills        []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
+	metrics       *metrics.Metrics        // v0.36.0: 指标收集器
+	cronEngine    *cron.Engine            // v0.36.0: 定时任务引擎
+	autonomy      *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
+	chatCount     int                     // 对话计数，用于触发自动摘要
 }
 
 // New 创建 Agent
@@ -192,12 +192,12 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// 创建上下文窗口管理器
 	contextWin := contextx.NewContextWindow(contextx.WindowConfig{
 		MaxTokens:            c.MaxTokens,
-		ReservedTokens:      c.MaxTokens / 4, // 为回复预留 1/4
+		ReservedTokens:       c.MaxTokens / 4, // 为回复预留 1/4
 		Strategy:             contextx.TrimLowPriority,
 		SlidingWindowSize:    10,
 		MaxConversationTurns: 50,
 		MemoryBudget:         800,
-		SummarizeThreshold:  0.8,
+		SummarizeThreshold:   0.8,
 	})
 
 	// 创建 RAG 知识库管理器
@@ -373,32 +373,32 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 
 	a := &Agent{
-		cfg:        cfg,
-		soul:       s,
-		tmplMgr:    tmplMgr,
-		provider:   p,
-		registry:   registry,
-		catalog:    catalog,
-		tokenStore: tokenStore,
-		memory:     mem,
-		shortTerm:  shortTerm,
-		midTerm:    midTerm,
-		sessions:   sessions,
-		tools:      tools,
-		gateway:    toolGateway,
-		msgGateway: gateway.NewGatewayManager(),
-		mcpClient:  mcpClient,
-		delegate:   delegateMgr,
-		contextWin: contextWin,
-		ragManager:  ragManager,
-		ragPersist:  ragPersist,
+		cfg:           cfg,
+		soul:          s,
+		tmplMgr:       tmplMgr,
+		provider:      p,
+		registry:      registry,
+		catalog:       catalog,
+		tokenStore:    tokenStore,
+		memory:        mem,
+		shortTerm:     shortTerm,
+		midTerm:       midTerm,
+		sessions:      sessions,
+		tools:         tools,
+		gateway:       toolGateway,
+		msgGateway:    gateway.NewGatewayManager(),
+		mcpClient:     mcpClient,
+		delegate:      delegateMgr,
+		contextWin:    contextWin,
+		ragManager:    ragManager,
+		ragPersist:    ragPersist,
 		streamIndexer: streamIndexer,
-		embedderReg: embedderReg,
-		collabReg:   collabReg,
-		collabMgr:   collabMgr,
-		metrics:     m,
-		cronEngine:  cronEngine,
-		autonomy:    autonomyKit,
+		embedderReg:   embedderReg,
+		collabReg:     collabReg,
+		collabMgr:     collabMgr,
+		metrics:       m,
+		cronEngine:    cronEngine,
+		autonomy:      autonomyKit,
 	}
 
 	// v0.35.0: 自动加载 skills 目录
@@ -618,12 +618,12 @@ type ChatEvent struct {
 type ChatEventType int
 
 const (
-	ChatEventThinking  ChatEventType = iota // 🧠 思考中
-	ChatEventToolCall                       // 🔧 工具调用
-	ChatEventToolResult                     // 📋 工具结果
-	ChatEventContent                        // 📝 内容片段
-	ChatEventDone                           // ✅ 完成
-	ChatEventError                          // ❌ 错误
+	ChatEventThinking   ChatEventType = iota // 🧠 思考中
+	ChatEventToolCall                        // 🔧 工具调用
+	ChatEventToolResult                      // 📋 工具结果
+	ChatEventContent                         // 📝 内容片段
+	ChatEventDone                            // ✅ 完成
+	ChatEventError                           // ❌ 错误
 )
 
 // StreamMode 流式输出模式
@@ -687,24 +687,18 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		loopCfg := DefaultLoopConfig()
 		loopCfg.AutoApprove = true
 
-		for i := 0; i < loopCfg.MaxIterations; i++ {
-			// 🧠 思考阶段
-			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", i+1)}
+		// 🧠 思考阶段（第一轮）
+		events <- ChatEvent{Type: ChatEventThinking, Content: "Thinking... (round 1)"}
 
-			mode := a.getStreamMode()
-
-			if mode == StreamModeNative {
-				// === 真流式路径 ===
-				a.streamNative(ctx, events, messages, callOpts, sess, userInput, i)
-				return
-			}
-
-			// === 模拟流式路径 ===
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+		mode := a.getStreamMode()
+		if mode == StreamModeNative {
+			// === 真流式路径 ===
+			a.streamNative(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations)
 			return
 		}
 
-		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+		// === 模拟流式路径 ===
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations)
 	}()
 
 	return events, nil
@@ -712,7 +706,12 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 // streamNative 真流式：直接使用 provider 的 ChatStream，逐 chunk 推送
 // tool_calls 通过流式增量拼接处理
-func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int) {
+func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int) {
+	if remaining <= 0 {
+		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+		return
+	}
+
 	// 尝试流式调用
 	var ch <-chan provider.StreamChunk
 	var err error
@@ -883,10 +882,15 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
-			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", round+2)}
+			if remaining <= 1 {
+				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+				return
+			}
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
 
 			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1)
 			return
 		}
 	}
@@ -896,7 +900,8 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 	// 如果流式没产出内容，回退到非流式
 	if response == "" {
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+		// 同一轮回退，不消耗额外迭代次数
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, round, remaining)
 		return
 	}
 
@@ -904,7 +909,12 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
-func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string) {
+func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int) {
+	if remaining <= 0 {
+		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+		return
+	}
+
 	var resp *provider.Response
 	var err error
 	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
@@ -1022,8 +1032,13 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
-		events <- ChatEvent{Type: ChatEventThinking, Content: "Continuing..."}
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput)
+		if remaining <= 1 {
+			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
+			return
+		}
+		nextRound := round + 1
+		events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1)
 		return
 	}
 
@@ -1778,7 +1793,7 @@ func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Messag
 		result[i] = contextx.Message{
 			Role:      msg.Role,
 			Content:   msg.Content,
-			Priority: priority,
+			Priority:  priority,
 			Category:  category,
 			Timestamp: time.Now(),
 		}

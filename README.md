@@ -888,6 +888,51 @@ lh models
 /models
 ```
 
+### 本地接入 Telegram（含代理）
+
+如果你是源码运行（`go run ./cmd/lh ...`），推荐按下面流程配置：
+
+```bash
+# 可选：把数据目录放到项目内，避免 ~/.luckyharness 不可写
+export HOME="$PWD/.lh-home"
+mkdir -p "$HOME"
+
+# 初始化与 LLM 配置
+go run ./cmd/lh init
+go run ./cmd/lh config set provider openai
+go run ./cmd/lh config set api_key sk-xxx
+go run ./cmd/lh config set model gpt-4o
+go run ./cmd/lh config set api_base https://api.openai.com/v1
+go run ./cmd/lh config get api_base
+```
+
+`api_base` 存在配置文件中：
+- 默认路径：`~/.luckyharness/config.json`
+- 若设置 `HOME="$PWD/.lh-home"`：`./.lh-home/.luckyharness/config.json`
+
+先验证 Telegram API 连通性（示例使用本地代理 `127.0.0.1:7897`）：
+
+```bash
+export TG_TOKEN="123456:ABC-DEF"
+curl -x http://127.0.0.1:7897 -m 20 "https://api.telegram.org/bot${TG_TOKEN}/getMe"
+```
+
+返回 `{"ok":true,...}` 后再启动网关：
+
+```bash
+export HTTPS_PROXY=http://127.0.0.1:7897
+export HTTP_PROXY=http://127.0.0.1:7897
+export NO_PROXY=127.0.0.1,localhost
+go run ./cmd/lh msg-gateway start --platform telegram --token "$TG_TOKEN" --api-addr=127.0.0.1:19090
+```
+
+常见问题：
+
+- `flag needs an argument: --api-addr`：命令被换行拆断，建议使用 `--api-addr=127.0.0.1:19090`。
+- `Conflict: terminated by other getUpdates request`：同一 Bot 有多个实例同时在轮询，关闭其他实例，仅保留一个进程。
+- `Connection timed out`（`api.telegram.org`）：当前网络不可达，需配置可用代理后重试。
+- Token 泄露后请立刻到 `@BotFather` 重新生成新 Token。
+
 ## v0.3.0 新特性
 
 ### Provider 自动降级链

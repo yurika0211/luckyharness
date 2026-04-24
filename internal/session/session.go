@@ -101,8 +101,8 @@ func NewSession(id, dir string) *Session {
 	}
 }
 
-// AddMessage 添加消息
-func (s *Session) AddMessage(role, content string) {
+// AddProviderMessage 添加完整 provider 消息（保留 tool_calls / tool_call_id 等结构化字段）
+func (s *Session) AddProviderMessage(msg provider.Message) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -112,13 +112,13 @@ func (s *Session) AddMessage(role, content string) {
 		s.messagesLoaded = true
 	}
 
-	s.Messages = append(s.Messages, provider.Message{Role: role, Content: content})
+	s.Messages = append(s.Messages, msg)
 	s.messageCount = len(s.Messages)
 	s.UpdatedAt = time.Now()
 
 	// 自动生成标题：取第一条用户消息的前 50 字符
-	if s.Title == "" && role == "user" {
-		title := content
+	if s.Title == "" && msg.Role == "user" {
+		title := msg.Content
 		if len(title) > 50 {
 			title = title[:50] + "..."
 		}
@@ -126,23 +126,28 @@ func (s *Session) AddMessage(role, content string) {
 	}
 }
 
+// AddMessage 添加消息
+func (s *Session) AddMessage(role, content string) {
+	s.AddProviderMessage(provider.Message{Role: role, Content: content})
+}
+
 // AddToolMessage 添加工具结果消息
 func (s *Session) AddToolMessage(toolName, result string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// 确保消息已加载
-	if !s.messagesLoaded {
-		s.Messages = make([]provider.Message, 0)
-		s.messagesLoaded = true
-	}
-
-	s.Messages = append(s.Messages, provider.Message{
+	s.AddProviderMessage(provider.Message{
 		Role:    "tool",
 		Content: fmt.Sprintf("[Tool: %s] %s", toolName, result),
+		Name:    toolName,
 	})
-	s.messageCount = len(s.Messages)
-	s.UpdatedAt = time.Now()
+}
+
+// AddToolMessageWithCallID 添加带 tool_call_id 的工具结果消息（function calling 兼容）
+func (s *Session) AddToolMessageWithCallID(callID, toolName, result string) {
+	s.AddProviderMessage(provider.Message{
+		Role:       "tool",
+		Content:    result,
+		ToolCallID: callID,
+		Name:       toolName,
+	})
 }
 
 // GetMessages 获取消息（懒加载 + 滑动窗口）
@@ -240,12 +245,12 @@ func (s *Session) Save() error {
 
 // sessionData 是 JSON 序列化格式
 type sessionData struct {
-	ID           string            `json:"id"`
-	Title        string            `json:"title"`
+	ID           string             `json:"id"`
+	Title        string             `json:"title"`
 	Messages     []provider.Message `json:"messages"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
-	ShellContext ShellContext      `json:"shell_context"`
+	CreatedAt    time.Time          `json:"created_at"`
+	UpdatedAt    time.Time          `json:"updated_at"`
+	ShellContext ShellContext       `json:"shell_context"`
 }
 
 // sessionMeta 是仅元数据的轻量格式（用于启动时批量加载）
@@ -255,7 +260,7 @@ type sessionMeta struct {
 	MessageCount int          `json:"message_count"`
 	CreatedAt    time.Time    `json:"created_at"`
 	UpdatedAt    time.Time    `json:"updated_at"`
-	ShellContext ShellContext  `json:"shell_context"`
+	ShellContext ShellContext `json:"shell_context"`
 }
 
 // SessionInfo 是会话的摘要信息（用于列表展示）

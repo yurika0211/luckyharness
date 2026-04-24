@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/golang/mock/gomock"
@@ -21,9 +22,9 @@ func TestAgentChatWithMockProvider(t *testing.T) {
 
 	// 设置期望：Chat 被调用一次，返回预设响应
 	expectedResp := &provider.Response{
-		Content: "Hello from mock provider!",
+		Content:    "Hello from mock provider!",
 		TokensUsed: 30,
-		Model: "gpt-3.5-turbo",
+		Model:      "gpt-3.5-turbo",
 	}
 	mockProvider.EXPECT().
 		Chat(gomock.Any(), gomock.Any()).
@@ -70,9 +71,9 @@ func TestAgentChatWithMockProviderError(t *testing.T) {
 
 	// 设置期望：Chat 被调用（RunLoop 回退到 chatStreamSimple 时会调用）
 	expectedResp := &provider.Response{
-		Content: "Fallback response",
+		Content:    "Fallback response",
 		TokensUsed: 20,
-		Model: "gpt-3.5-turbo",
+		Model:      "gpt-3.5-turbo",
 	}
 	mockProvider.EXPECT().
 		Chat(gomock.Any(), gomock.Any()).
@@ -201,9 +202,9 @@ func TestAgentChatWithSessionMockProvider(t *testing.T) {
 	mockProvider := mocks.NewMockProvider(ctrl)
 
 	expectedResp := &provider.Response{
-		Content: "Session response",
+		Content:    "Session response",
 		TokensUsed: 40,
-		Model: "gpt-3.5-turbo",
+		Model:      "gpt-3.5-turbo",
 	}
 	mockProvider.EXPECT().
 		Chat(gomock.Any(), gomock.Any()).
@@ -292,5 +293,76 @@ func TestAgentChatWithSessionStreamMockProvider(t *testing.T) {
 	// 验证至少收到一些事件
 	if len(events) == 0 {
 		t.Error("ChatWithSessionStream() returned no events")
+	}
+}
+
+// TestAgentChatWithSessionStreamRespectsMaxIterations 验证流式路径不会无限递归
+func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+
+	// 第一轮（native stream）返回 tool call，触发进入 simulated 路径
+	streamChan := make(chan provider.StreamChunk, 2)
+	streamChan <- provider.StreamChunk{
+		ToolCallDeltas: []provider.StreamToolCallDelta{
+			{
+				Index:     0,
+				ID:        "call_stream_1",
+				Name:      "missing_tool",
+				Arguments: "{}",
+			},
+		},
+	}
+	streamChan <- provider.StreamChunk{Done: true}
+	close(streamChan)
+
+	mockProvider.EXPECT().
+		ChatStream(gomock.Any(), gomock.Any()).
+		Return(streamChan, nil).
+		Times(1)
+
+	// 后续 simulated 路径持续返回 tool call，直到触发 max iterations
+	loopResp := &provider.Response{
+		Content: "",
+		ToolCalls: []provider.ToolCall{
+			{ID: "call_loop", Name: "missing_tool", Arguments: "{}"},
+		},
+	}
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		Return(loopResp, nil).
+		AnyTimes()
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "native")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sessionID := a.sessions.New().ID
+	eventChan, err := a.ChatWithSessionStream(context.Background(), sessionID, "loop test")
+	if err != nil {
+		t.Fatalf("ChatWithSessionStream() error = %v", err)
+	}
+
+	foundMaxIterationErr := false
+	for event := range eventChan {
+		if event.Type == ChatEventError && event.Err != nil &&
+			strings.Contains(event.Err.Error(), "max iterations reached") {
+			foundMaxIterationErr = true
+		}
+	}
+
+	if !foundMaxIterationErr {
+		t.Fatal("expected max iterations reached error event")
 	}
 }

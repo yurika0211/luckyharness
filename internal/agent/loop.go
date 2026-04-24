@@ -28,8 +28,8 @@ var (
 type LoopState int
 
 const (
-	StateReason LoopState = iota // 推理：分析用户意图，决定下一步
-	StateAct                     // 行动：调用工具或生成回复
+	StateReason  LoopState = iota // 推理：分析用户意图，决定下一步
+	StateAct                      // 行动：调用工具或生成回复
 	StateObserve                  // 观察：处理工具结果，决定是否继续
 	StateDone                     // 完成：输出最终结果
 )
@@ -86,11 +86,11 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 
 // LoopResult 是 Agent Loop 的执行结果
 type LoopResult struct {
-	Response    string        // 最终回复
-	Iterations  int           // 实际循环次数
-	ToolCalls   []toolCallLog // 工具调用记录
-	State       LoopState     // 结束状态
-	TokensUsed  int           // 总 token 消耗
+	Response   string        // 最终回复
+	Iterations int           // 实际循环次数
+	ToolCalls  []toolCallLog // 工具调用记录
+	State      LoopState     // 结束状态
+	TokensUsed int           // 总 token 消耗
 }
 
 type toolCallLog struct {
@@ -174,7 +174,11 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 			// 写入 session：assistant 的 tool_calls
 			if sess != nil {
-				sess.AddMessage("assistant", resp.Content)
+				sess.AddProviderMessage(provider.Message{
+					Role:      "assistant",
+					Content:   resp.Content,
+					ToolCalls: resp.ToolCalls,
+				})
 			}
 
 			// Act: 执行工具调用（并发优化：无依赖的工具并行执行）
@@ -186,8 +190,8 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 			// 分析依赖：shell/file_write/remember 等有状态工具必须串行
 			// 无状态工具（web_search, web_fetch, file_read, current_time, recall）可并发
-			var parallelGroup []int  // 可并发的工具索引
-			var serialGroup []int    // 必须串行的工具索引
+			var parallelGroup []int // 可并发的工具索引
+			var serialGroup []int   // 必须串行的工具索引
 
 			for i, tc := range resp.ToolCalls {
 				if a.isToolParallelSafe(tc.Name) {
@@ -279,23 +283,23 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
 				messages = append(messages, r.ToolMessage)
 				if sess != nil {
-					sess.AddToolMessage(r.ToolMessage.Name, r.ToolMessage.Content)
+					sess.AddProviderMessage(r.ToolMessage)
 				}
 			}
 
-	// 每轮工具调用后裁剪上下文窗口
-	messages = a.fitContextWindow(messages)
+			// 每轮工具调用后裁剪上下文窗口
+			messages = a.fitContextWindow(messages)
 
-	result.State = StateObserve
-	
-	// v0.24.1: 工具调用后保存会话
-	if sess != nil {
-		if saveErr := sess.Save(); saveErr != nil {
-			fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
-		}
-	}
-	
-	continue // 继续循环，让 LLM 处理工具结果
+			result.State = StateObserve
+
+			// v0.24.1: 工具调用后保存会话
+			if sess != nil {
+				if saveErr := sess.Save(); saveErr != nil {
+					fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+				}
+			}
+
+			continue // 继续循环，让 LLM 处理工具结果
 		}
 
 		// 没有工具调用，LLM 直接给出最终回复
@@ -326,14 +330,14 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	// 达到最大循环次数
 	result.Response = "Max iterations reached, last response may be incomplete"
 	result.State = StateDone
-	
+
 	// v0.24.1: 保存会话到磁盘
 	if sess != nil {
 		if saveErr := sess.Save(); saveErr != nil {
 			fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
 		}
 	}
-	
+
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
 }
 
@@ -435,10 +439,10 @@ type EventType int
 const (
 	EventReason  EventType = iota // 推理阶段
 	EventAct                      // 行动阶段
-	EventObserve                   // 观察阶段
-	EventContent                   // 内容片段
-	EventDone                      // 完成
-	EventError                     // 错误
+	EventObserve                  // 观察阶段
+	EventContent                  // 内容片段
+	EventDone                     // 完成
+	EventError                    // 错误
 )
 
 // executeTool 执行工具调用（通过 Gateway）
@@ -677,7 +681,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 
 	// 并发摘要两半对话
 	ctx := context.Background()
-	
+
 	// 第一部分
 	go func() {
 		prompt := summarizePrompt(firstHalf, "(first part)")
@@ -685,7 +689,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
 			{Role: "user", Content: prompt},
 		}
-		
+
 		resp, err := a.provider.Chat(ctx, messages)
 		if err != nil {
 			resultCh <- summarizeResult{summary: "", err: err}
@@ -701,7 +705,7 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 			{Role: "system", Content: "You are a helpful assistant that summarizes conversations."},
 			{Role: "user", Content: prompt},
 		}
-		
+
 		resp, err := a.provider.Chat(ctx, messages)
 		if err != nil {
 			resultCh <- summarizeResult{summary: "", err: err}
@@ -734,16 +738,16 @@ func (a *Agent) ParallelSummarize(messages []provider.Message) ([]provider.Messa
 
 	// 构建新的消息列表：system + 摘要 + 最近少量原始消息
 	newMessages := make([]provider.Message, 0, len(systemMsgs)+1+5)
-	
+
 	// 添加 system 消息
 	newMessages = append(newMessages, systemMsgs...)
-	
+
 	// 添加摘要消息
 	newMessages = append(newMessages, provider.Message{
 		Role:    "system",
 		Content: summaryContent.String(),
 	})
-	
+
 	// 保留最后 5 条原始对话作为上下文
 	keepCount := 5
 	if keepCount > len(conversationMsgs) {

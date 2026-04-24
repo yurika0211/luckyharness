@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.38.1 — Stability & Gateway Reliability (2026-04-24)
+
+### 🐛 Fixes
+
+- Fixed Telegram `msg-gateway` startup concurrency bug in CLI path
+  - Removed invalid `WaitGroup` usage (`Done` without matching `Add`)
+  - API server startup now returns explicit startup errors
+- Unified Telegram chat-session persistence path between CLI and HTTP API
+  - Both now use `Config().HomeDir()/data/telegram`
+- Fixed legacy tool-history compatibility for OpenAI-compatible gateways
+  - Prevent `Invalid input[*].call_id: empty string` by downgrading invalid legacy `tool` messages before request encoding
+- Persisted structured tool-call metadata in session history
+  - Preserve `assistant.tool_calls` and `tool.tool_call_id` instead of flattening to plain text
+- Enforced max-iteration boundary in streaming conversation path
+  - Native/simulated streaming recursion now decrements remaining iterations and exits with `max iterations reached`
+
+### 🧪 Tests
+
+- Added regression test for stream path max-iteration enforcement
+- Added provider/session tests for tool-call metadata and legacy compatibility
+
 ## v0.38.0 — Agent Autonomy Kit (2026-04-21)
 
 ### 🧠 New: `internal/autonomy` — Native Agent Autonomy Kit
