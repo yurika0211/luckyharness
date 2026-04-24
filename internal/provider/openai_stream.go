@@ -17,13 +17,14 @@ import (
 
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openaiMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Temperature float64         `json:"temperature,omitempty"`
-	Stream      bool            `json:"stream"`
-	Tools       []openaiTool    `json:"tools,omitempty"`
-	ToolChoice  any             `json:"tool_choice,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []openaiMessage `json:"messages"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         float64         `json:"temperature,omitempty"`
+	Stream              bool            `json:"stream"`
+	Tools               []openaiTool    `json:"tools,omitempty"`
+	ToolChoice          any             `json:"tool_choice,omitempty"`
 }
 
 // openaiMessage 是 OpenAI API 的消息格式
@@ -270,11 +271,12 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 // 支持文本响应和工具调用解析
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
 	reqBody := openaiChatRequest{
-		Model:       cfg.Model,
-		Messages:    toOpenAIMessages(messages),
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		Stream:      false,
+		Model:               cfg.Model,
+		Messages:            toOpenAIMessages(messages),
+		MaxTokens:           cfg.MaxTokens,
+		MaxCompletionTokens: cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		Stream:              false,
 	}
 
 	// v0.16.0: 添加 function calling 工具定义
@@ -446,11 +448,12 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 // 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
 	reqBody := openaiChatRequest{
-		Model:       cfg.Model,
-		Messages:    toOpenAIMessages(messages),
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		Stream:      true,
+		Model:               cfg.Model,
+		Messages:            toOpenAIMessages(messages),
+		MaxTokens:           cfg.MaxTokens,
+		MaxCompletionTokens: cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		Stream:              true,
 	}
 
 	// v0.16.0: 添加 function calling 工具定义

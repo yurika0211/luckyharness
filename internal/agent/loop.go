@@ -113,6 +113,12 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	result := &LoopResult{
 		State: StateReason,
 	}
+	toolCallRepeatCount := make(map[string]int)
+	toolCallLastResult := make(map[string]string)
+	consecutiveToolOnlyIters := 0
+	toolCallSig := func(name, arguments string) string {
+		return name + "|" + arguments
+	}
 
 	// 构建初始消息
 	messages := a.buildMessages(userInput)
@@ -136,6 +142,18 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	callOpts := provider.CallOptions{
 		Tools:      fcMgr.BuildTools(),
 		ToolChoice: "auto",
+	}
+	// 若用户显式在输入中点名工具（如“必须调用 file_read”），优先只暴露这些工具，提升可控性。
+	if required := a.extractRequiredToolNames(userInput); len(required) > 0 {
+		filtered := make([]map[string]any, 0, len(required))
+		for _, name := range required {
+			if t, ok := a.tools.Get(name); ok && t.Enabled {
+				filtered = append(filtered, t.ToOpenAIFormat())
+			}
+		}
+		if len(filtered) > 0 {
+			callOpts.Tools = filtered
+		}
 	}
 
 	for i := 0; i < loopCfg.MaxIterations; i++ {
@@ -164,6 +182,43 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
 			result.State = StateAct
+			if strings.TrimSpace(resp.Content) == "" {
+				consecutiveToolOnlyIters++
+			} else {
+				consecutiveToolOnlyIters = 0
+			}
+
+			// 防止模型陷入重复工具调用死循环（尤其是 skill_read 反复触发）。
+			repeatedSigs := make([]string, 0, len(resp.ToolCalls))
+			allRepeated := true
+			for _, tc := range resp.ToolCalls {
+				sig := toolCallSig(tc.Name, tc.Arguments)
+				repeatedSigs = append(repeatedSigs, sig)
+				toolCallRepeatCount[sig]++
+				if toolCallRepeatCount[sig] < 3 {
+					allRepeated = false
+				}
+			}
+			if (allRepeated && strings.TrimSpace(resp.Content) == "") || consecutiveToolOnlyIters >= 3 {
+				var b strings.Builder
+				b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
+				b.WriteString("Latest tool outputs:\n")
+				for _, sig := range repeatedSigs {
+					parts := strings.SplitN(sig, "|", 2)
+					name := parts[0]
+					out := strings.TrimSpace(toolCallLastResult[sig])
+					if out == "" {
+						out = "(no cached output)"
+					}
+					if len(out) > 240 {
+						out = out[:240] + "...(truncated)"
+					}
+					b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
+				}
+				result.Response = b.String()
+				result.State = StateDone
+				return result, nil
+			}
 
 			// 将 assistant 消息（含 tool_calls）加入历史
 			messages = append(messages, provider.Message{
@@ -282,6 +337,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			for _, r := range allResults {
 				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
 				messages = append(messages, r.ToolMessage)
+				toolCallLastResult[toolCallSig(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
 				if sess != nil {
 					sess.AddProviderMessage(r.ToolMessage)
 				}
@@ -339,6 +395,39 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	}
 
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
+}
+
+// extractRequiredToolNames 从用户输入中提取显式点名的工具（按出现顺序）。
+func (a *Agent) extractRequiredToolNames(input string) []string {
+	type hit struct {
+		name string
+		pos  int
+	}
+
+	var hits []hit
+	for _, t := range a.tools.ListEnabled() {
+		if idx := strings.Index(input, t.Name); idx >= 0 {
+			hits = append(hits, hit{name: t.Name, pos: idx})
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+
+	sort.SliceStable(hits, func(i, j int) bool {
+		return hits[i].pos < hits[j].pos
+	})
+
+	seen := make(map[string]struct{}, len(hits))
+	result := make([]string, 0, len(hits))
+	for _, h := range hits {
+		if _, ok := seen[h.name]; ok {
+			continue
+		}
+		seen[h.name] = struct{}{}
+		result = append(result, h.name)
+	}
+	return result
 }
 
 // fitContextWindow 裁剪消息列表到上下文窗口内
