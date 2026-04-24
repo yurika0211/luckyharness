@@ -88,3 +88,74 @@ func TestNewOpenAITransportKeepsHTTP2Enabled(t *testing.T) {
 		t.Fatal("expected ForceAttemptHTTP2 to be enabled")
 	}
 }
+
+func TestShouldPreferStreamFirst(t *testing.T) {
+	if !shouldPreferStreamFirst("gpt-5.4-mini") {
+		t.Fatal("expected gpt-5.4-mini to prefer stream-first")
+	}
+	if shouldPreferStreamFirst("gpt-4o") {
+		t.Fatal("did not expect gpt-4o to prefer stream-first")
+	}
+}
+
+func TestCallOpenAIUsesStreamFirstForMiniModel(t *testing.T) {
+	orig := openAIHTTPClient
+	t.Cleanup(func() {
+		openAIHTTPClient = orig
+	})
+
+	streamCalls := 0
+	nonStreamCalls := 0
+	openAIHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			bodyBytes, _ := io.ReadAll(req.Body)
+			body := string(bodyBytes)
+
+			if strings.Contains(body, `"stream":true`) {
+				streamCalls++
+				sse := strings.Join([]string{
+					`data: {"choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":""}]}`,
+					`data: [DONE]`,
+					"",
+				}, "\n")
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(sse)),
+					Request:    req,
+				}, nil
+			}
+
+			nonStreamCalls++
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"index":0,"message":{"role":"assistant","content":"fallback"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)),
+				Request:    req,
+			}, nil
+		}),
+	}
+
+	cfg := Config{
+		APIBase: "https://api.openai.com/v1",
+		APIKey:  "sk-test",
+		Model:   "gpt-5.4-mini",
+	}
+
+	resp, err := callOpenAI(context.Background(), cfg, []Message{{Role: "user", Content: "hi"}}, CallOptions{})
+	if err != nil {
+		t.Fatalf("callOpenAI returned error: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+	if resp.Content != "hello" {
+		t.Fatalf("expected streamed content 'hello', got %q", resp.Content)
+	}
+	if streamCalls != 1 {
+		t.Fatalf("expected exactly 1 stream call, got %d", streamCalls)
+	}
+	if nonStreamCalls != 0 {
+		t.Fatalf("expected non-stream not called, got %d", nonStreamCalls)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -270,6 +271,21 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
+	// 部分模型/网关组合（如 gpt-5.4-mini）非流式会返回空 content 但计费已发生。
+	// 这类模型优先走 stream 聚合，避免一次非流式空响应 + 二次 stream 重试。
+	if shouldPreferStreamFirst(cfg.Model) {
+		streamResult, err := retryWithStream(ctx, cfg, messages, opts)
+		if err == nil && streamResult != nil && (streamResult.Content != "" || len(streamResult.ToolCalls) > 0) {
+			log.Printf("[provider] stream-first OK (model=%s): content_len=%d, tool_calls=%d", cfg.Model, len(streamResult.Content), len(streamResult.ToolCalls))
+			return streamResult, nil
+		}
+		if err != nil {
+			log.Printf("[provider] stream-first failed, fallback to non-stream (model=%s): %v", cfg.Model, err)
+		} else {
+			log.Printf("[provider] stream-first empty, fallback to non-stream (model=%s)", cfg.Model)
+		}
+	}
+
 	reqBody := openaiChatRequest{
 		Model:               cfg.Model,
 		Messages:            toOpenAIMessages(messages),
@@ -301,17 +317,22 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	capture := newUpstreamCapture("chat_completions_non_stream", cfg, body)
 
 	resp, err := doOpenAIRequest(ctx, cfg, body)
 	if err != nil {
+		capture.writeError("do_request", err)
 		return nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		capture.writeError("read_response", err)
 		return nil, fmt.Errorf("read response: %w", err)
 	}
+	capture.writeResponseMeta(resp.StatusCode, resp.Header)
+	capture.writeResponseBody(respBody)
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
@@ -371,6 +392,18 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 	}
 
 	return result, nil
+}
+
+func shouldPreferStreamFirst(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	// 当前实测最常见问题模型，后续可扩展为配置化策略。
+	if strings.Contains(m, "gpt-5.4-mini") {
+		return true
+	}
+	return false
 }
 
 // retryWithStream 非流式返回空 content 时，用流式重试获取完整响应
@@ -478,17 +511,22 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
+	capture := newUpstreamCapture("chat_completions_stream", cfg, body)
 
 	resp, err := doOpenAIRequest(ctx, cfg, body)
 	if err != nil {
+		capture.writeError("do_request", err)
 		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		capture.writeResponseMeta(resp.StatusCode, resp.Header)
+		capture.writeResponseBody(respBody)
 		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
 	}
+	capture.writeResponseMeta(resp.StatusCode, resp.Header)
 
 	ch := make(chan StreamChunk, 128)
 
@@ -496,7 +534,22 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		defer close(ch)
 		defer resp.Body.Close()
 
-		scanner := bufio.NewScanner(resp.Body)
+		bodyReader := io.Reader(resp.Body)
+		var captureFile *os.File
+		if capture != nil && capture.enabled {
+			f, fileErr := os.OpenFile(capture.prefix+".response.sse.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+			if fileErr != nil {
+				capture.writeError("open_sse_capture", fileErr)
+			} else {
+				captureFile = f
+				bodyReader = io.TeeReader(resp.Body, f)
+			}
+		}
+		if captureFile != nil {
+			defer captureFile.Close()
+		}
+
+		scanner := bufio.NewScanner(bodyReader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 		for scanner.Scan() {
@@ -561,6 +614,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				ch <- StreamChunk{Done: true, Model: cfg.Model}
 				return
 			}
+		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			capture.writeError("scan_sse", scanErr)
 		}
 	}()
 
