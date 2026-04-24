@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sync"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -1324,6 +1325,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// WaitGroup to ensure all goroutines complete before exiting
+	var wg sync.WaitGroup
+
 	// v0.36.0: 同时启动 HTTP API Server
 	apiAddr, _ := cmd.Flags().GetString("api-addr")
 	if apiAddr == "" {
@@ -1336,6 +1340,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	})
 	go func() {
 		if err := srv.Start(); err != nil {
+		defer wg.Done()
 			fmt.Printf("[server] HTTP API error: %v\n", err)
 		}
 	}()
@@ -1354,6 +1359,7 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		fmt.Println("\n🛑 正在停止所有消息网关...")
 		_ = gm.StopAll()
 		_ = srv.Stop()
+		wg.Wait()
 		return nil
 	}
 
