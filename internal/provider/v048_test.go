@@ -963,9 +963,9 @@ func TestModelCatalogRegisterOverwrite(t *testing.T) {
 
 	// Register custom model with same ID as default
 	custom := ModelInfo{
-		ID:          "gpt-4o",
-		Provider:    "custom",
-		DisplayName: "Custom GPT-4o",
+		ID:           "gpt-4o",
+		Provider:     "custom",
+		DisplayName:  "Custom GPT-4o",
 		Capabilities: []string{"chat"},
 	}
 	catalog.Register(custom)
@@ -1054,6 +1054,22 @@ func TestToOpenAIMessagesWithToolCallIDAndName(t *testing.T) {
 	}
 	if result[0].Name != "get_weather" {
 		t.Errorf("expected name 'get_weather', got %s", result[0].Name)
+	}
+}
+
+func TestToOpenAIMessagesToolWithoutCallIDFallbackToAssistant(t *testing.T) {
+	msgs := []Message{
+		{Role: "tool", Content: "legacy tool result", Name: "web_search"},
+	}
+	result := toOpenAIMessages(msgs)
+	if len(result) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(result))
+	}
+	if result[0].Role != "assistant" {
+		t.Fatalf("expected fallback role assistant, got %s", result[0].Role)
+	}
+	if result[0].ToolCallID != "" {
+		t.Fatalf("expected empty tool_call_id in fallback message, got %q", result[0].ToolCallID)
 	}
 }
 
@@ -1576,7 +1592,7 @@ func TestProviderValidatePartial(t *testing.T) {
 func TestOpenAIProviderName(t *testing.T) {
 	cfg := Config{
 		Name:   "openai",
-		APIKey : "sk-test",
+		APIKey: "sk-test",
 		Model:  "gpt-4",
 	}
 	prov := NewOpenAIProvider(cfg)

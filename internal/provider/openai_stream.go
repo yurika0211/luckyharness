@@ -5,31 +5,35 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // openaiChatRequest 是发送给 OpenAI API 的请求体
 type openaiChatRequest struct {
-	Model       string              `json:"model"`
-	Messages    []openaiMessage     `json:"messages"`
-	MaxTokens   int                 `json:"max_tokens,omitempty"`
-	Temperature float64             `json:"temperature,omitempty"`
-	Stream      bool                `json:"stream"`
-	Tools       []openaiTool        `json:"tools,omitempty"`
-	ToolChoice  any                 `json:"tool_choice,omitempty"`
+	Model               string          `json:"model"`
+	Messages            []openaiMessage `json:"messages"`
+	MaxTokens           int             `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int             `json:"max_completion_tokens,omitempty"`
+	Temperature         float64         `json:"temperature,omitempty"`
+	Stream              bool            `json:"stream"`
+	Tools               []openaiTool    `json:"tools,omitempty"`
+	ToolChoice          any             `json:"tool_choice,omitempty"`
 }
 
 // openaiMessage 是 OpenAI API 的消息格式
 type openaiMessage struct {
-	Role       string              `json:"role"`
-	Content    string              `json:"content,omitempty"`
+	Role       string               `json:"role"`
+	Content    string               `json:"content,omitempty"`
 	ToolCalls  []openaiToolCallResp `json:"tool_calls,omitempty"`
-	ToolCallID string              `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
-	Name       string              `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
+	ToolCallID string               `json:"tool_call_id,omitempty"` // v0.16.0: tool 消息的 call ID
+	Name       string               `json:"name,omitempty"`         // v0.16.0: tool 消息的函数名
 }
 
 // openaiToolCallResp 是 OpenAI 响应中的工具调用格式
@@ -57,21 +61,21 @@ type toolFunction struct {
 
 // openaiChatResponse 是 OpenAI API 的响应体
 type openaiChatResponse struct {
-	ID      string          `json:"id"`
-	Choices []openaiChoice  `json:"choices"`
-	Usage   *openaiUsage    `json:"usage,omitempty"`
+	ID      string         `json:"id"`
+	Choices []openaiChoice `json:"choices"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
 }
 
 type openaiChoice struct {
-	Index        int            `json:"index"`
-	Message      openaiMessage  `json:"message"`
-	Delta        *openaiDelta   `json:"delta,omitempty"`
-	FinishReason string         `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openaiMessage `json:"message"`
+	Delta        *openaiDelta  `json:"delta,omitempty"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openaiDelta struct {
-	Role      string     `json:"role,omitempty"`
-	Content   string     `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
 	ToolCalls []deltaToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -96,15 +100,183 @@ type openaiSSEEvent struct {
 	Data string
 }
 
+// openAIHTTPClient 使用独立 transport，避免 http.DefaultTransport 在某些代理链路上复用连接导致 TLS 记录损坏。
+var openAIHTTPClient = &http.Client{
+	Transport: newOpenAITransport(),
+}
+
+func newOpenAITransport() http.RoundTripper {
+	base, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return &http.Transport{
+			ForceAttemptHTTP2: true,
+		}
+	}
+	t := base.Clone()
+	// 保持 HTTP/2 可用：部分 OpenAI-compatible 网关在强制 HTTP/1.1 时会直接返回 HTTP/2 帧，
+	// 触发 malformed HTTP response。连接稳定性问题由 doOpenAIRequest 的重试与断开空闲连接兜底。
+	t.ForceAttemptHTTP2 = true
+	if t.MaxIdleConnsPerHost < 8 {
+		t.MaxIdleConnsPerHost = 8
+	}
+	return t
+}
+
+type openAIRetrySettings struct {
+	MaxAttempts  int
+	InitialDelay time.Duration
+	MaxDelay     time.Duration
+}
+
+func resolveOpenAIRetrySettings(cfg Config) openAIRetrySettings {
+	// 默认对传输层抖动做轻量兜底重试；如果显式启用 retry，则使用配置覆盖。
+	out := openAIRetrySettings{
+		MaxAttempts:  2,
+		InitialDelay: 300 * time.Millisecond,
+		MaxDelay:     2 * time.Second,
+	}
+
+	if cfg.Retry.Enabled {
+		if cfg.Retry.MaxAttempts > 0 {
+			out.MaxAttempts = cfg.Retry.MaxAttempts
+		}
+		if cfg.Retry.InitialDelayMs > 0 {
+			out.InitialDelay = time.Duration(cfg.Retry.InitialDelayMs) * time.Millisecond
+		}
+		if cfg.Retry.MaxDelayMs > 0 {
+			out.MaxDelay = time.Duration(cfg.Retry.MaxDelayMs) * time.Millisecond
+		}
+	}
+
+	if out.MaxAttempts < 1 {
+		out.MaxAttempts = 1
+	}
+	if out.InitialDelay <= 0 {
+		out.InitialDelay = 300 * time.Millisecond
+	}
+	if out.MaxDelay < out.InitialDelay {
+		out.MaxDelay = out.InitialDelay
+	}
+
+	return out
+}
+
+func shouldRetryTransportError(err error, cfg Config) bool {
+	if err == nil {
+		return false
+	}
+	// 外层 context 被取消/超时，通常代表调用方主动结束，不应继续重试。
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		// 如果配置了 retry 规则，尊重 retry_on_timeout；否则默认对网络超时重试。
+		if cfg.Retry.Enabled {
+			return cfg.Retry.RetryOnTimeout
+		}
+		return true
+	}
+
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "tls: bad record mac") {
+		return true
+	}
+	if strings.Contains(s, "local error: tls") {
+		return true
+	}
+	if strings.Contains(s, "connection reset") ||
+		strings.Contains(s, "connection refused") ||
+		strings.Contains(s, "broken pipe") ||
+		strings.Contains(s, "http2: client connection lost") ||
+		strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "unexpected eof") {
+		return true
+	}
+	if strings.Contains(s, "timeout") {
+		if cfg.Retry.Enabled {
+			return cfg.Retry.RetryOnTimeout
+		}
+		return true
+	}
+	return false
+}
+
+func retryDelay(settings openAIRetrySettings, attempt int) time.Duration {
+	delay := settings.InitialDelay
+	// attempt=1 对应第一次重试延迟；attempt>1 指数退避。
+	for i := 1; i < attempt; i++ {
+		delay *= 2
+		if delay >= settings.MaxDelay {
+			return settings.MaxDelay
+		}
+	}
+	if delay > settings.MaxDelay {
+		return settings.MaxDelay
+	}
+	return delay
+}
+
+func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Response, error) {
+	settings := resolveOpenAIRetrySettings(cfg)
+	url := strings.TrimRight(cfg.APIBase, "/") + "/chat/completions"
+
+	var lastErr error
+	for attempt := 1; attempt <= settings.MaxAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+		for k, v := range cfg.ExtraHeaders {
+			req.Header.Set(k, v)
+		}
+
+		// 重试时强制新连接，避免复用潜在损坏的 TLS/HTTP2 长连接。
+		if attempt > 1 {
+			req.Close = true
+			if tr, ok := openAIHTTPClient.Transport.(*http.Transport); ok {
+				tr.CloseIdleConnections()
+			}
+		}
+
+		resp, err := openAIHTTPClient.Do(req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+		if attempt == settings.MaxAttempts || !shouldRetryTransportError(err, cfg) {
+			return nil, fmt.Errorf("send request: %w", err)
+		}
+
+		delay := retryDelay(settings, attempt)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, fmt.Errorf("send request: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+
+	return nil, fmt.Errorf("send request: %w", lastErr)
+}
+
 // callOpenAI 执行 OpenAI API 调用（非流式）
 // 支持文本响应和工具调用解析
 func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (*Response, error) {
 	reqBody := openaiChatRequest{
-		Model:       cfg.Model,
-		Messages:    toOpenAIMessages(messages),
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		Stream:      false,
+		Model:               cfg.Model,
+		Messages:            toOpenAIMessages(messages),
+		MaxTokens:           cfg.MaxTokens,
+		MaxCompletionTokens: cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		Stream:              false,
 	}
 
 	// v0.16.0: 添加 function calling 工具定义
@@ -130,21 +302,9 @@ func callOpenAI(ctx context.Context, cfg Config, messages []Message, opts CallOp
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", cfg.APIBase+"/chat/completions", bytes.NewReader(body))
+	resp, err := doOpenAIRequest(ctx, cfg, body)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	
-	// v0.56.0: 添加额外请求头（如 User-Agent）
-	for k, v := range cfg.ExtraHeaders {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
@@ -288,11 +448,12 @@ func retryWithStream(ctx context.Context, cfg Config, messages []Message, opts C
 // 支持文本内容和工具调用的流式解析
 func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts CallOptions) (<-chan StreamChunk, error) {
 	reqBody := openaiChatRequest{
-		Model:       cfg.Model,
-		Messages:    toOpenAIMessages(messages),
-		MaxTokens:   cfg.MaxTokens,
-		Temperature: cfg.Temperature,
-		Stream:      true,
+		Model:               cfg.Model,
+		Messages:            toOpenAIMessages(messages),
+		MaxTokens:           cfg.MaxTokens,
+		MaxCompletionTokens: cfg.MaxTokens,
+		Temperature:         cfg.Temperature,
+		Stream:              true,
 	}
 
 	// v0.16.0: 添加 function calling 工具定义
@@ -318,22 +479,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", cfg.APIBase+"/chat/completions", bytes.NewReader(body))
+	resp, err := doOpenAIRequest(ctx, cfg, body)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req = req.WithContext(ctx)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	
-	// v0.56.0: 添加额外请求头（如 User-Agent）
-	for k, v := range cfg.ExtraHeaders {
-		req.Header.Set(k, v)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("send request: %w", err)
+		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -391,9 +539,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 				deltas := make([]StreamToolCallDelta, 0, len(choice.Delta.ToolCalls))
 				for _, dtc := range choice.Delta.ToolCalls {
 					deltas = append(deltas, StreamToolCallDelta{
-						Index:    dtc.Index,
-						ID:       dtc.ID,
-						Name:     dtc.Function.Name,
+						Index:     dtc.Index,
+						ID:        dtc.ID,
+						Name:      dtc.Function.Name,
 						Arguments: dtc.Function.Arguments,
 					})
 				}
@@ -423,6 +571,23 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 func toOpenAIMessages(messages []Message) []openaiMessage {
 	result := make([]openaiMessage, 0, len(messages))
 	for _, m := range messages {
+		// 兼容旧会话：tool 消息缺失 tool_call_id 时，不能以 role=tool 发送。
+		// 否则部分 API 网关会返回 400（Invalid input[*].call_id）。
+		if m.Role == "tool" && strings.TrimSpace(m.ToolCallID) == "" {
+			content := strings.TrimSpace(m.Content)
+			if content == "" {
+				continue
+			}
+			if m.Name != "" && !strings.HasPrefix(content, "[Tool:") {
+				content = fmt.Sprintf("[Tool: %s] %s", m.Name, content)
+			}
+			result = append(result, openaiMessage{
+				Role:    "assistant",
+				Content: content,
+			})
+			continue
+		}
+
 		msg := openaiMessage{
 			Role:       m.Role,
 			Content:    m.Content,

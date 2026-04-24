@@ -3,8 +3,10 @@ package server
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,6 +310,61 @@ func TestHandleChatSyncInvalidBody(t *testing.T) {
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
+	}
+}
+
+func TestHandleChatSyncRunsLoopOncePerRequest(t *testing.T) {
+	var callCount atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	tmpDir := t.TempDir()
+	mgr, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("create config manager: %v", err)
+	}
+	if err := mgr.Set("provider", "openai"); err != nil {
+		t.Fatalf("set provider: %v", err)
+	}
+	if err := mgr.Set("api_key", "sk-test"); err != nil {
+		t.Fatalf("set api_key: %v", err)
+	}
+	if err := mgr.Set("api_base", upstream.URL); err != nil {
+		t.Fatalf("set api_base: %v", err)
+	}
+	if err := mgr.Set("model", "gpt-4o-mini"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+
+	a, err := agent.New(mgr)
+	if err != nil {
+		t.Fatalf("create agent: %v", err)
+	}
+	s := New(a, DefaultServerConfig())
+
+	body := map[string]any{
+		"message": "hello",
+	}
+	data, _ := json.Marshal(body)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/chat/sync", bytes.NewReader(data))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.handleChatSync(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d, body=%s", w.Code, w.Body.String())
+	}
+	if got := callCount.Load(); got != 1 {
+		t.Fatalf("expected exactly 1 upstream call, got %d", got)
 	}
 }
 

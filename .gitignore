@@ -6,3 +6,7 @@ tasks/bangumi_published.json
 lh-new
 coverage.out
 cover.out
+tmp
+.env
+.codex
+.lh-home*

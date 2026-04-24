@@ -63,6 +63,13 @@ func startREPL(mgr *config.Manager) error {
 	fmt.Println()
 
 	loopCfg := agent.DefaultLoopConfig()
+	if cfg.Agent.MaxIterations > 0 {
+		loopCfg.MaxIterations = cfg.Agent.MaxIterations
+	}
+	if cfg.Agent.TimeoutSeconds > 0 {
+		loopCfg.Timeout = time.Duration(cfg.Agent.TimeoutSeconds) * time.Second
+	}
+	loopCfg.AutoApprove = cfg.Agent.AutoApprove
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 
@@ -179,12 +186,12 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /serve [addr]      启动 API Server")
 		fmt.Println("  /context           上下文窗口状态")
 		fmt.Println("  /context fit       手动触发上下文裁剪")
-fmt.Println("  /rag index <path>  索引文件/目录到知识库")
-	fmt.Println("  /rag search <q>    搜索知识库")
-	fmt.Println("  /rag stats         知识库统计")
-	fmt.Println("  /rag store         存储后端信息")
-	fmt.Println("  /rag list          列出文档")
-	fmt.Println("  /rag remove <id>   删除文档")
+		fmt.Println("  /rag index <path>  索引文件/目录到知识库")
+		fmt.Println("  /rag search <q>    搜索知识库")
+		fmt.Println("  /rag stats         知识库统计")
+		fmt.Println("  /rag store         存储后端信息")
+		fmt.Println("  /rag list          列出文档")
+		fmt.Println("  /rag remove <id>   删除文档")
 		fmt.Println("  /fc tools          列出 Function Calling 工具")
 		fmt.Println("  /fc history        查看调用历史")
 		fmt.Println("  /fc clear          清除调用历史")
@@ -857,10 +864,10 @@ func handleContextCommand(arg string, a *agent.Agent) bool {
 			return true
 		}
 		strategyMap := map[string]contextx.TrimStrategy{
-			"oldest_first":      contextx.TrimOldest,
+			"oldest_first":       contextx.TrimOldest,
 			"low_priority_first": contextx.TrimLowPriority,
-			"sliding_window":    contextx.TrimSlidingWindow,
-			"summarize":         contextx.TrimSummarize,
+			"sliding_window":     contextx.TrimSlidingWindow,
+			"summarize":          contextx.TrimSummarize,
 		}
 		if strategy, ok := strategyMap[parts[1]]; ok {
 			fmt.Printf("✅ 裁剪策略: %s (重启后生效)\n", strategy.String())

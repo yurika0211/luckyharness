@@ -2,6 +2,8 @@ package session
 
 import (
 	"testing"
+
+	"github.com/yurika0211/luckyharness/internal/provider"
 )
 
 func TestNewSession(t *testing.T) {
@@ -53,6 +55,27 @@ func TestAddToolMessage(t *testing.T) {
 	}
 	if msgs[0].Role != "tool" {
 		t.Errorf("expected tool role, got %s", msgs[0].Role)
+	}
+}
+
+func TestAddProviderMessagePreservesToolCallFields(t *testing.T) {
+	s := NewSession("test-provider-message", t.TempDir())
+	s.AddProviderMessage(provider.Message{
+		Role:       "tool",
+		Content:    "42",
+		ToolCallID: "call_abc123",
+		Name:       "calculator",
+	})
+
+	msgs := s.GetMessages()
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+	if msgs[0].ToolCallID != "call_abc123" {
+		t.Fatalf("expected tool_call_id call_abc123, got %q", msgs[0].ToolCallID)
+	}
+	if msgs[0].Name != "calculator" {
+		t.Fatalf("expected name calculator, got %q", msgs[0].Name)
 	}
 }
 

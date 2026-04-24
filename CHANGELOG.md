@@ -1,5 +1,62 @@
 # Changelog
 
+## v0.38.3 — Gateway Control & Telegram Command Runtime (2026-04-24)
+
+### 🐛 Fixes
+
+- `lh msg-gateway status/stop` now controls the running gateway process via HTTP API instead of local in-memory state.
+  - Added `--api-addr` for both commands (defaults to `msg_gateway.api_addr`, then `127.0.0.1:9090`).
+  - Improved API error propagation with structured fallback parsing.
+- Implemented Telegram `/stop` real task cancellation:
+  - Added per-chat cancellable task tracking.
+  - `/stop` now cancels active request and returns immediate feedback.
+- Implemented Telegram `/restart` runtime reconnect:
+  - Added adapter stop/start reconnect flow with anti-reentry guard.
+  - Bot reports reconnect result in-chat after restart attempt.
+- Decoupled Telegram message handling from update loop by dispatching chat processing asynchronously.
+  - Prevents long-running chat from blocking command handling.
+
+## v0.38.2 — Provider Resilience & Config Wiring (2026-04-24)
+
+### 🐛 Fixes
+
+- Wired runtime provider safety configs from app config to provider layer:
+  - limits / retry / circuit_breaker / rate_limit / context are now propagated when creating provider config.
+- Hardened OpenAI-compatible HTTP request path:
+  - Added dedicated HTTP client/transport for OpenAI calls.
+  - Disabled HTTP/2 attempt on this path to reduce flaky proxy behavior.
+  - Added transport-level retry with exponential backoff for retryable network/TLS failures.
+  - Retries force fresh connection on subsequent attempts (`req.Close = true` + close idle conns).
+- Added retry classification for common transient failures:
+  - `tls: bad record mac`, timeout-like errors, connection reset/lost/unexpected EOF variants.
+
+### 🧪 Tests
+
+- Added `openai_stream_retry_test.go` to verify:
+  - retryable TLS error detection
+  - request retries are attempted and second attempt forces new connection
+
+## v0.38.1 — Stability & Gateway Reliability (2026-04-24)
+
+### 🐛 Fixes
+
+- Fixed Telegram `msg-gateway` startup concurrency bug in CLI path
+  - Removed invalid `WaitGroup` usage (`Done` without matching `Add`)
+  - API server startup now returns explicit startup errors
+- Unified Telegram chat-session persistence path between CLI and HTTP API
+  - Both now use `Config().HomeDir()/data/telegram`
+- Fixed legacy tool-history compatibility for OpenAI-compatible gateways
+  - Prevent `Invalid input[*].call_id: empty string` by downgrading invalid legacy `tool` messages before request encoding
+- Persisted structured tool-call metadata in session history
+  - Preserve `assistant.tool_calls` and `tool.tool_call_id` instead of flattening to plain text
+- Enforced max-iteration boundary in streaming conversation path
+  - Native/simulated streaming recursion now decrements remaining iterations and exits with `max iterations reached`
+
+### 🧪 Tests
+
+- Added regression test for stream path max-iteration enforcement
+- Added provider/session tests for tool-call metadata and legacy compatibility
+
 ## v0.38.0 — Agent Autonomy Kit (2026-04-21)
 
 ### 🧠 New: `internal/autonomy` — Native Agent Autonomy Kit

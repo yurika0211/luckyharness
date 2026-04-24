@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -15,13 +16,13 @@ import (
 	"github.com/yurika0211/luckyharness/internal/collab"
 	"github.com/yurika0211/luckyharness/internal/contextx"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/health"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
-	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/websocket"
 	"github.com/yurika0211/luckyharness/internal/workflow"
 )
@@ -48,8 +49,8 @@ type Server struct {
 	wsHub *websocket.Hub
 
 	// v0.22.0: 多 Agent 协作
-	collabRegistry   *collab.Registry
-	delegateManager  *collab.DelegateManager
+	collabRegistry  *collab.Registry
+	delegateManager *collab.DelegateManager
 
 	// v0.24.0: Workflow Engine
 	workflowEngine *workflow.WorkflowEngine
@@ -62,9 +63,9 @@ type ServerConfig struct {
 	EnableCORS  bool     `yaml:"enable_cors,omitempty"`  // 启用 CORS，默认 true
 	CORSOrigins []string `yaml:"cors_origins,omitempty"` // CORS 允许的源
 	RateLimit   int      `yaml:"rate_limit,omitempty"`   // 每分钟请求限制，默认 60
-	MetricsAddr string   `yaml:"metrics_addr,omitempty"`  // Prometheus metrics 独立端口（空=复用主端口）
-	LogLevel    string   `yaml:"log_level,omitempty"`     // 日志级别: debug, info, warn, error
-	LogFormat   string   `yaml:"log_format,omitempty"`    // 日志格式: json, text
+	MetricsAddr string   `yaml:"metrics_addr,omitempty"` // Prometheus metrics 独立端口（空=复用主端口）
+	LogLevel    string   `yaml:"log_level,omitempty"`    // 日志级别: debug, info, warn, error
+	LogFormat   string   `yaml:"log_format,omitempty"`   // 日志格式: json, text
 }
 
 // DefaultServerConfig 返回默认配置
@@ -81,32 +82,32 @@ func DefaultServerConfig() ServerConfig {
 
 // ServerStats 服务器统计
 type ServerStats struct {
-	mu           sync.RWMutex
-	TotalReqs    int64
-	ChatReqs     int64
-	ErrorReqs    int64
-	StartTime    time.Time
-	LastReqTime  time.Time
+	mu          sync.RWMutex
+	TotalReqs   int64
+	ChatReqs    int64
+	ErrorReqs   int64
+	StartTime   time.Time
+	LastReqTime time.Time
 }
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
-	Message    string            `json:"message"`
-	SessionID  string            `json:"session_id,omitempty"`
-	Stream     bool              `json:"stream,omitempty"`
-	MaxIter    int               `json:"max_iterations,omitempty"`
-	AutoApprove bool             `json:"auto_approve,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	Message     string            `json:"message"`
+	SessionID   string            `json:"session_id,omitempty"`
+	Stream      bool              `json:"stream,omitempty"`
+	MaxIter     int               `json:"max_iterations,omitempty"`
+	AutoApprove bool              `json:"auto_approve,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
 }
 
 // ChatResponse 聊天响应
 type ChatResponse struct {
-	Response   string        `json:"response"`
-	SessionID  string        `json:"session_id"`
-	Iterations int           `json:"iterations"`
-	TokensUsed int           `json:"tokens_used"`
+	Response   string         `json:"response"`
+	SessionID  string         `json:"session_id"`
+	Iterations int            `json:"iterations"`
+	TokensUsed int            `json:"tokens_used"`
 	ToolCalls  []toolCallInfo `json:"tool_calls,omitempty"`
-	Duration   string        `json:"duration"`
+	Duration   string         `json:"duration"`
 }
 
 type toolCallInfo struct {
@@ -565,7 +566,7 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		// if len(parts) > 1 {
 		// 	args = parts[1]
 		// }
-		
+
 		// 简单命令处理（不依赖 gateway handler）
 		switch cmd {
 		case "help":
@@ -625,17 +626,6 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			return
 		}
 	}
-	
-	result, err := s.agent.RunLoop(ctx, req.Message, loopCfg)
-	if err != nil {
-		s.stats.mu.Lock()
-		s.stats.ErrorReqs++
-		s.stats.mu.Unlock()
-		s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	duration := time.Since(start)
 
 	// v0.24.1: 如果没有提供 session_id，创建新会话
 	sessionID := req.SessionID
@@ -653,7 +643,11 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 		}
 	}
 
-	// 使用 RunLoopWithSession 确保消息被保存
+	// 使用 RunLoopWithSession 确保消息被保存；无法创建/获取会话时降级为无会话 RunLoop
+	var (
+		result *agent.LoopResult
+		err    error
+	)
 	if sess != nil {
 		loopCfgWithSession := agent.LoopConfig{
 			MaxIterations: loopCfg.MaxIterations,
@@ -661,14 +655,18 @@ func (s *Server) doChatSync(w http.ResponseWriter, r *http.Request, req ChatRequ
 			AutoApprove:   loopCfg.AutoApprove,
 		}
 		result, err = s.agent.RunLoopWithSession(ctx, sess, req.Message, loopCfgWithSession)
-		if err != nil {
-			s.stats.mu.Lock()
-			s.stats.ErrorReqs++
-			s.stats.mu.Unlock()
-			s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
-			return
-		}
+	} else {
+		result, err = s.agent.RunLoop(ctx, req.Message, loopCfg)
 	}
+	if err != nil {
+		s.stats.mu.Lock()
+		s.stats.ErrorReqs++
+		s.stats.mu.Unlock()
+		s.sendError(w, "chat failed", http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	duration := time.Since(start)
 
 	resp := ChatResponse{
 		Response:   result.Response,
@@ -700,10 +698,10 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	// Agent 暴露 session manager
 	sessions := s.agent.Sessions().List()
 	type sessionInfo struct {
-		ID        string `json:"id"`
-		MessageCount int  `json:"message_count"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
+		ID           string `json:"id"`
+		MessageCount int    `json:"message_count"`
+		CreatedAt    string `json:"created_at"`
+		UpdatedAt    string `json:"updated_at"`
 	}
 
 	var infos []sessionInfo
@@ -913,7 +911,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleWSStats(w http.ResponseWriter, r *http.Request) {
 	if s.wsHub == nil {
 		s.sendJSON(w, http.StatusOK, map[string]interface{}{
-			"enabled":       false,
+			"enabled":        false,
 			"active_conns":   0,
 			"total_conns":    0,
 			"total_messages": 0,
@@ -924,9 +922,9 @@ func (s *Server) handleWSStats(w http.ResponseWriter, r *http.Request) {
 
 	stats := s.wsHub.GetStats()
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"enabled":       true,
-		"active_conns":  stats.ActiveConns,
-		"total_conns":   stats.TotalConns,
+		"enabled":        true,
+		"active_conns":   stats.ActiveConns,
+		"total_conns":    stats.TotalConns,
 		"total_messages": stats.TotalMessages,
 		"errors":         stats.Errors,
 		"sessions":       s.wsHub.SessionCount(),
@@ -941,8 +939,8 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"name":     "LuckyHarness API",
-		"version":  "v0.21.0",
+		"name":    "LuckyHarness API",
+		"version": "v0.21.0",
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
@@ -1173,8 +1171,8 @@ type rateLimiter struct {
 }
 
 type clientBucket struct {
-	count    int
-	resetAt  time.Time
+	count   int
+	resetAt time.Time
 }
 
 func newRateLimiter(limit int) *rateLimiter {
@@ -1242,14 +1240,14 @@ func (s *Server) handleContext(w http.ResponseWriter, r *http.Request) {
 	cfg := cw.Config()
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"max_tokens":        cfg.MaxTokens,
-		"reserved_tokens":  cfg.ReservedTokens,
-		"available_tokens": cfg.MaxTokens - cfg.ReservedTokens,
-		"strategy":          cfg.Strategy.String(),
-		"sliding_window_size": cfg.SlidingWindowSize,
+		"max_tokens":             cfg.MaxTokens,
+		"reserved_tokens":        cfg.ReservedTokens,
+		"available_tokens":       cfg.MaxTokens - cfg.ReservedTokens,
+		"strategy":               cfg.Strategy.String(),
+		"sliding_window_size":    cfg.SlidingWindowSize,
 		"max_conversation_turns": cfg.MaxConversationTurns,
-		"memory_budget":    cfg.MemoryBudget,
-		"summarize_threshold": cfg.SummarizeThreshold,
+		"memory_budget":          cfg.MemoryBudget,
+		"summarize_threshold":    cfg.SummarizeThreshold,
 	})
 }
 
@@ -1262,10 +1260,10 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Messages []struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
-			Priority  int    `json:"priority,omitempty"`
-			Category  string `json:"category,omitempty"`
+			Role     string `json:"role"`
+			Content  string `json:"content"`
+			Priority int    `json:"priority,omitempty"`
+			Category string `json:"category,omitempty"`
 		} `json:"messages"`
 		Strategy string `json:"strategy,omitempty"` // oldest_first, low_priority_first, sliding_window, summarize
 	}
@@ -1305,28 +1303,28 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 		switch req.Strategy {
 		case "oldest_first":
 			cw = contextx.NewContextWindow(contextx.WindowConfig{
-				MaxTokens:       cw.Config().MaxTokens,
-				ReservedTokens:  cw.Config().ReservedTokens,
-				Strategy:        contextx.TrimOldest,
+				MaxTokens:      cw.Config().MaxTokens,
+				ReservedTokens: cw.Config().ReservedTokens,
+				Strategy:       contextx.TrimOldest,
 			})
 		case "low_priority_first":
 			cw = contextx.NewContextWindow(contextx.WindowConfig{
-				MaxTokens:       cw.Config().MaxTokens,
-				ReservedTokens:  cw.Config().ReservedTokens,
-				Strategy:        contextx.TrimLowPriority,
+				MaxTokens:      cw.Config().MaxTokens,
+				ReservedTokens: cw.Config().ReservedTokens,
+				Strategy:       contextx.TrimLowPriority,
 			})
 		case "sliding_window":
 			cw = contextx.NewContextWindow(contextx.WindowConfig{
-				MaxTokens:          cw.Config().MaxTokens,
-				ReservedTokens:      cw.Config().ReservedTokens,
-				Strategy:            contextx.TrimSlidingWindow,
-				SlidingWindowSize:   cw.Config().SlidingWindowSize,
+				MaxTokens:         cw.Config().MaxTokens,
+				ReservedTokens:    cw.Config().ReservedTokens,
+				Strategy:          contextx.TrimSlidingWindow,
+				SlidingWindowSize: cw.Config().SlidingWindowSize,
 			})
 		case "summarize":
 			cw = contextx.NewContextWindow(contextx.WindowConfig{
-				MaxTokens:       cw.Config().MaxTokens,
-				ReservedTokens:  cw.Config().ReservedTokens,
-				Strategy:        contextx.TrimSummarize,
+				MaxTokens:      cw.Config().MaxTokens,
+				ReservedTokens: cw.Config().ReservedTokens,
+				Strategy:       contextx.TrimSummarize,
 			})
 		}
 	}
@@ -1338,23 +1336,23 @@ func (s *Server) handleContextFit(w http.ResponseWriter, r *http.Request) {
 	resultMessages := make([]map[string]interface{}, len(fitted))
 	for i, msg := range fitted {
 		resultMessages[i] = map[string]interface{}{
-			"role":      msg.Role,
-			"content":   msg.Content,
-			"priority":  int(msg.Priority),
-			"category":  msg.Category,
+			"role":     msg.Role,
+			"content":  msg.Content,
+			"priority": int(msg.Priority),
+			"category": msg.Category,
 		}
 	}
 
 	s.sendJSON(w, http.StatusOK, map[string]interface{}{
-		"trimmed":         trimResult.Trimmed,
-		"original_count":  trimResult.OriginalCount,
-		"original_tokens": trimResult.OriginalTokens,
-		"final_count":     trimResult.FinalCount,
-		"final_tokens":    trimResult.FinalTokens,
+		"trimmed":          trimResult.Trimmed,
+		"original_count":   trimResult.OriginalCount,
+		"original_tokens":  trimResult.OriginalTokens,
+		"final_count":      trimResult.FinalCount,
+		"final_tokens":     trimResult.FinalTokens,
 		"available_tokens": trimResult.AvailableTokens,
-		"strategy":        trimResult.Strategy.String(),
-		"messages":        resultMessages,
-		"summary":         trimResult.Summary(),
+		"strategy":         trimResult.Strategy.String(),
+		"messages":         resultMessages,
+		"summary":          trimResult.Summary(),
 	})
 }
 
@@ -1366,9 +1364,9 @@ func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			Source  string `json:"source"`            // 文件路径或来源标识
-			Title   string `json:"title,omitempty"`  // 文档标题（索引文本时使用）
+			Title   string `json:"title,omitempty"`   // 文档标题（索引文本时使用）
 			Content string `json:"content,omitempty"` // 文本内容（索引文本时使用）
-			Dir     string `json:"dir,omitempty"`    // 目录路径（批量索引时使用）
+			Dir     string `json:"dir,omitempty"`     // 目录路径（批量索引时使用）
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1395,10 +1393,10 @@ func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
 				docIDs[i] = d.ID
 			}
 			result = map[string]interface{}{
-				"action":   "index_directory",
-				"dir":      req.Dir,
-				"indexed":  len(docs),
-				"doc_ids":  docIDs,
+				"action":  "index_directory",
+				"dir":     req.Dir,
+				"indexed": len(docs),
+				"doc_ids": docIDs,
 			}
 		} else if req.Content != "" {
 			// 索引文本内容
@@ -1412,10 +1410,10 @@ func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			result = map[string]interface{}{
-				"action":    "index_text",
-				"doc_id":    doc.ID,
-				"title":     doc.Title,
-				"chunks":    len(doc.Chunks),
+				"action":     "index_text",
+				"doc_id":     doc.ID,
+				"title":      doc.Title,
+				"chunks":     len(doc.Chunks),
 				"indexed_at": doc.IndexedAt,
 			}
 		} else if req.Source != "" {
@@ -1426,10 +1424,10 @@ func (s *Server) handleRAGIndex(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			result = map[string]interface{}{
-				"action":    "index_file",
-				"doc_id":    doc.ID,
-				"title":     doc.Title,
-				"chunks":    len(doc.Chunks),
+				"action":     "index_file",
+				"doc_id":     doc.ID,
+				"title":      doc.Title,
+				"chunks":     len(doc.Chunks),
 				"indexed_at": doc.IndexedAt,
 			}
 		} else {
@@ -1471,10 +1469,10 @@ func (s *Server) handleRAGSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Query  string  `json:"query"`
-		TopK   int     `json:"top_k,omitempty"`
+		Query    string  `json:"query"`
+		TopK     int     `json:"top_k,omitempty"`
 		MinScore float64 `json:"min_score,omitempty"`
-		Source string  `json:"source,omitempty"` // 按来源过滤
+		Source   string  `json:"source,omitempty"` // 按来源过滤
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1578,9 +1576,9 @@ func (s *Server) handleRAGStats(w http.ResponseWriter, r *http.Request) {
 		"sources":        stats.Sources,
 		"documents":      docs,
 		"retriever": map[string]interface{}{
-			"top_k":     ragMgr.RetrieverConfig().TopK,
-			"min_score": ragMgr.RetrieverConfig().MinScore,
-			"use_mmr":   ragMgr.RetrieverConfig().UseMMR,
+			"top_k":      ragMgr.RetrieverConfig().TopK,
+			"min_score":  ragMgr.RetrieverConfig().MinScore,
+			"use_mmr":    ragMgr.RetrieverConfig().UseMMR,
 			"mmr_lambda": ragMgr.RetrieverConfig().MMRLambda,
 		},
 	})
@@ -1598,7 +1596,7 @@ func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
 			"version":     "0.20.0",
 			"description": "OpenAI Function Calling support",
 			"endpoints": map[string]string{
-				"POST /api/v1/fc":        "Execute function calling",
+				"POST /api/v1/fc":         "Execute function calling",
 				"GET  /api/v1/fc/tools":   "List available function tools",
 				"GET  /api/v1/fc/history": "Get function call history",
 			},
@@ -1715,12 +1713,12 @@ type fcRequest struct {
 
 // fcResponse 是 function calling 响应
 type fcResponse struct {
-	Response   string        `json:"response"`
-	Iterations int           `json:"iterations"`
-	TokensUsed int           `json:"tokens_used"`
+	Response   string         `json:"response"`
+	Iterations int            `json:"iterations"`
+	TokensUsed int            `json:"tokens_used"`
 	ToolCalls  []toolCallInfo `json:"tool_calls,omitempty"`
-	Duration   string        `json:"duration"`
-	State      string        `json:"state"`
+	Duration   string         `json:"duration"`
+	State      string         `json:"state"`
 }
 
 // --- v0.21.0: RAG 持久化存储 API ---
@@ -1737,8 +1735,8 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		// 获取存储后端信息
 		result := map[string]interface{}{
-			"backend":  "memory",
-			"sqlite":   false,
+			"backend": "memory",
+			"sqlite":  false,
 		}
 
 		if ragMgr.IsSQLite() {
@@ -1749,11 +1747,11 @@ func (s *Server) handleRAGStore(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			result = map[string]interface{}{
-				"backend":  "sqlite",
-				"sqlite":   true,
-				"db_path":  sqlStore.Path(),
-				"entries":  count,
-				"db_size":  dbSize,
+				"backend":   "sqlite",
+				"sqlite":    true,
+				"db_path":   sqlStore.Path(),
+				"entries":   count,
+				"db_size":   dbSize,
 				"dimension": sqlStore.Dimension(),
 			}
 		} else {
@@ -1809,10 +1807,10 @@ func (s *Server) handleWorkflows(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Name        string              `json:"name"`
-			Description string              `json:"description,omitempty"`
-			Tasks       []*workflow.Task    `json:"tasks"`
-			Version     string              `json:"version,omitempty"`
+			Name        string           `json:"name"`
+			Description string           `json:"description,omitempty"`
+			Tasks       []*workflow.Task `json:"tasks"`
+			Version     string           `json:"version,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			s.sendError(w, "invalid request body", http.StatusBadRequest, err.Error())
@@ -1988,6 +1986,8 @@ func (s *Server) handleGatewayTelegramStart(w http.ResponseWriter, r *http.Reque
 		AdminIDs:     req.AdminIDs,
 	})
 	handler := telegram.NewHandler(tgAdapter, s.agent)
+	// 与 CLI 路径保持一致：持久化 chatID→sessionID 映射，重启后恢复会话
+	handler.SetDataDir(filepath.Join(s.agent.Config().HomeDir(), "data", "telegram"))
 	tgAdapter.SetHandler(func(ctx context.Context, msg *gateway.Message) error {
 		return handler.HandleMessage(ctx, msg)
 	})
@@ -2055,7 +2055,7 @@ func formatDuration(d time.Duration) string {
 	days := int(d.Hours() / 24)
 	hours := int(d.Hours()) % 24
 	mins := int(d.Minutes()) % 60
-	
+
 	if days > 0 {
 		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
 	}

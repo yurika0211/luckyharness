@@ -58,7 +58,6 @@ func (sl *SkillLoader) LoadAll() ([]*SkillInfo, error) {
 		if err != nil {
 			continue // 跳过无法加载的
 		}
-		info.Dir = skillDir
 		skills = append(skills, info)
 	}
 
@@ -79,6 +78,7 @@ func (sl *SkillLoader) Load(path string) (*SkillInfo, error) {
 
 	// 解析 Skill 名称（从目录名）
 	dir := filepath.Dir(path)
+	info.Dir = dir
 	dirName := filepath.Base(dir)
 	info.Name = sanitizeName(dirName)
 
