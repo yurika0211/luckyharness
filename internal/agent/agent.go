@@ -1840,7 +1840,7 @@ func (a *Agent) LoadSkills(skillsDir string) (int, error) {
 			"name": {
 				Type:        "string",
 				Description: "Skill 名称（如 web-search, summarize, rewrite 等）",
-				Required:    true,
+				Required:    false,
 			},
 		},
 		Handler: a.handleSkillRead(),
@@ -1870,7 +1870,7 @@ func (a *Agent) handleSkillRead() func(args map[string]any) (string, error) {
 
 		// 查找匹配的 skill
 		for _, s := range a.skills {
-			if s.Name == name || strings.EqualFold(s.Name, name) {
+			if skillMatchesName(s, name) {
 				skillFile := filepath.Join(s.Dir, "SKILL.md")
 				data, err := os.ReadFile(skillFile)
 				if err != nil {
@@ -1894,6 +1894,39 @@ func (a *Agent) handleSkillRead() func(args map[string]any) (string, error) {
 
 		return fmt.Sprintf("Skill '%s' not found. Use skill_read without name to list all skills.", name), nil
 	}
+}
+
+func skillMatchesName(s *tool.SkillInfo, name string) bool {
+	if strings.EqualFold(s.Name, name) {
+		return true
+	}
+	target := normalizeSkillLookup(name)
+	if target == "" {
+		return false
+	}
+	if normalizeSkillLookup(s.Name) == target {
+		return true
+	}
+	for _, alias := range s.Aliases {
+		if strings.EqualFold(alias, name) || normalizeSkillLookup(alias) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeSkillLookup(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return ""
+	}
+	name = strings.ReplaceAll(name, "_", "-")
+	name = strings.Join(strings.Fields(name), "-")
+	name = strings.Trim(name, "-")
+	name = strings.Join(strings.FieldsFunc(name, func(r rune) bool {
+		return r == '-'
+	}), "-")
+	return name
 }
 
 // ConnectMCPServer 连接 MCP Server
@@ -2081,16 +2114,24 @@ func (a *Agent) fromContextMessages(messages []contextx.Message) []provider.Mess
 // applyWebSearchEnv 从环境变量覆盖 web_search 配置
 func applyWebSearchEnv(cfg *config.Manager) {
 	cur := cfg.Get()
+	provider := strings.ToLower(strings.TrimSpace(cur.WebSearch.Provider))
 
 	// 配置文件优先：仅在 config.json 对应字段为空时，才用环境变量补全。
 	if cur.WebSearch.Provider == "" {
 		if v := os.Getenv("LH_WEB_SEARCH_PROVIDER"); v != "" {
 			_ = cfg.Set("web_search.provider", v)
+			provider = strings.ToLower(strings.TrimSpace(v))
 		}
 	}
 	if cur.WebSearch.APIKey == "" {
 		if v := os.Getenv("LH_WEB_SEARCH_API_KEY"); v != "" {
 			_ = cfg.Set("web_search.api_key", v)
+		} else if provider == "exa" {
+			if v := os.Getenv("LH_SEARCH_EXA_KEY"); v != "" {
+				_ = cfg.Set("web_search.api_key", v)
+			} else if v := os.Getenv("EXA_API_KEY"); v != "" {
+				_ = cfg.Set("web_search.api_key", v)
+			}
 		} else if v := os.Getenv("BRAVE_API_KEY"); v != "" {
 			_ = cfg.Set("web_search.api_key", v)
 		}

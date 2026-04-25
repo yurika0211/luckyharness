@@ -269,6 +269,50 @@ func TestToOpenAIFormat(t *testing.T) {
 	}
 }
 
+func TestCallResolvesOpenAICompatibleName(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&Tool{
+		Name:        "skill_web_search___联网搜索总入口_run",
+		Description: "skill",
+		Permission:  PermAuto,
+		Handler: func(args map[string]any) (string, error) {
+			return "ok", nil
+		},
+	})
+
+	result, err := r.Call("skill_web_search___________run", nil)
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("expected ok, got %q", result)
+	}
+}
+
+func TestCallWithShellContextResolvesOpenAICompatibleName(t *testing.T) {
+	r := NewRegistry()
+	r.Register(&Tool{
+		Name:        "skill_web_search___联网搜索总入口_run",
+		Description: "skill",
+		Permission:  PermAuto,
+		ShellAware:  true,
+		Handler: func(args map[string]any) (string, error) {
+			if _, ok := args["_cwd"]; !ok {
+				t.Fatal("expected injected cwd")
+			}
+			return "ok", nil
+		},
+	})
+
+	result, err := r.CallWithShellContext("skill_web_search___________run", nil, &ShellContext{Cwd: "/tmp"})
+	if err != nil {
+		t.Fatalf("CallWithShellContext: %v", err)
+	}
+	if result != "ok" {
+		t.Fatalf("expected ok, got %q", result)
+	}
+}
+
 func TestFormatToolList(t *testing.T) {
 	r := NewRegistry()
 	r.Register(&Tool{
