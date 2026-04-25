@@ -705,3 +705,82 @@ func TestFitPreservesCritical(t *testing.T) {
 		t.Error("critical message should always be preserved")
 	}
 }
+
+// v0.83.0: contextx 包测试补全 - 覆盖 Config() 和边缘情况
+
+// TestContextWindowConfig 测试 Config() 方法
+func TestContextWindowConfig(t *testing.T) {
+	cfg := WindowConfig{
+		MaxTokens:      128000,
+		ReservedTokens: 10000,
+		Strategy:       TrimOldest,
+	}
+	
+	cw := NewContextWindow(cfg)
+	returnedCfg := cw.Config()
+	
+	if returnedCfg.MaxTokens != cfg.MaxTokens {
+		t.Errorf("MaxTokens mismatch: expected %d, got %d", cfg.MaxTokens, returnedCfg.MaxTokens)
+	}
+	if returnedCfg.ReservedTokens != cfg.ReservedTokens {
+		t.Errorf("ReservedTokens mismatch: expected %d, got %d", cfg.ReservedTokens, returnedCfg.ReservedTokens)
+	}
+	if returnedCfg.Strategy != cfg.Strategy {
+		t.Errorf("Strategy mismatch: expected %v, got %v", cfg.Strategy, returnedCfg.Strategy)
+	}
+	
+	t.Logf("Config() returned: MaxTokens=%d, ReservedTokens=%d, Strategy=%v", 
+		returnedCfg.MaxTokens, returnedCfg.ReservedTokens, returnedCfg.Strategy)
+}
+
+// TestRemainingTokens_Exhausted 测试 RemainingTokens 在 tokens 用完时返回 0
+func TestRemainingTokens_Exhausted(t *testing.T) {
+	te := NewTokenEstimator(100)
+	
+	// 创建大量消息，超过模型上下文窗口
+	messages := make([]Message, 100)
+	for i := range messages {
+		messages[i] = Message{Role: "user", Content: "Hello world! This is a test message."}
+	}
+	
+	remaining := te.RemainingTokens(messages)
+	if remaining != 0 {
+		t.Errorf("RemainingTokens should return 0 when exhausted, got %d", remaining)
+	}
+	
+	t.Logf("RemainingTokens correctly returns 0 when exhausted")
+}
+
+// TestNewTokenEstimator_ZeroOrNegative 测试 NewTokenEstimator 处理零/负值
+func TestNewTokenEstimator_ZeroOrNegative(t *testing.T) {
+	// 测试 0
+	te := NewTokenEstimator(0)
+	if te.modelContextWindow != 4096 {
+		t.Errorf("NewTokenEstimator(0) should default to 4096, got %d", te.modelContextWindow)
+	}
+	
+	// 测试负值
+	te2 := NewTokenEstimator(-1000)
+	if te2.modelContextWindow != 4096 {
+		t.Errorf("NewTokenEstimator(-1000) should default to 4096, got %d", te2.modelContextWindow)
+	}
+	
+	t.Logf("NewTokenEstimator correctly defaults to 4096 for non-positive values")
+}
+
+// TestCharsPerToken_MixedAndDefault 测试 charsPerToken 的 Mixed 和 default 分支
+func TestCharsPerToken_MixedAndDefault(t *testing.T) {
+	// ContentMixed
+	ratio := charsPerToken(ContentMixed)
+	if ratio != 2.5 {
+		t.Errorf("charsPerToken(ContentMixed) should return 2.5, got %f", ratio)
+	}
+	
+	// default 分支（ContentAuto = 0，也是 default）
+	ratio2 := charsPerToken(ContentAuto)
+	if ratio2 != 3.0 {
+		t.Errorf("charsPerToken(ContentAuto/default) should return 3.0, got %f", ratio2)
+	}
+	
+	t.Logf("charsPerToken: Mixed=%f, Auto/Default=%f", ratio, ratio2)
+}
