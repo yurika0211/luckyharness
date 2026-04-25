@@ -689,9 +689,12 @@ func (a *Agent) getStreamMode() StreamMode {
 }
 
 type streamConvergenceState struct {
-	emptyResponseRetries int
-	lengthRecoveryCount  int
-	continuedResponse    strings.Builder
+	emptyResponseRetries     int
+	lengthRecoveryCount      int
+	continuedResponse        strings.Builder
+	toolCallRepeatCount      map[string]int
+	toolCallLastResult       map[string]string
+	consecutiveToolOnlyIters int
 }
 
 func (s *streamConvergenceState) hasContinuation() bool {
@@ -699,6 +702,71 @@ func (s *streamConvergenceState) hasContinuation() bool {
 		return false
 	}
 	return strings.TrimSpace(s.continuedResponse.String()) != ""
+}
+
+func (s *streamConvergenceState) toolCallSig(name, arguments string) string {
+	return name + "|" + arguments
+}
+
+func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolCall, assistantContent string) (bool, []string) {
+	if s.toolCallRepeatCount == nil {
+		s.toolCallRepeatCount = make(map[string]int)
+	}
+	trimmed := strings.TrimSpace(assistantContent)
+	if trimmed == "" {
+		s.consecutiveToolOnlyIters++
+	} else {
+		s.consecutiveToolOnlyIters = 0
+	}
+
+	repeatedSigs := make([]string, 0, len(toolCalls))
+	allRepeated := true
+	for _, tc := range toolCalls {
+		sig := s.toolCallSig(tc.Name, tc.Arguments)
+		repeatedSigs = append(repeatedSigs, sig)
+		s.toolCallRepeatCount[sig]++
+		if s.toolCallRepeatCount[sig] < 3 {
+			allRepeated = false
+		}
+	}
+
+	if (allRepeated && trimmed == "") || s.consecutiveToolOnlyIters >= 3 {
+		return true, repeatedSigs
+	}
+	return false, nil
+}
+
+func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result string) {
+	if s.toolCallLastResult == nil {
+		s.toolCallLastResult = make(map[string]string)
+	}
+	s.toolCallLastResult[s.toolCallSig(name, arguments)] = result
+}
+
+func (s *streamConvergenceState) repeatedToolLoopMessage(repeatedSigs []string) string {
+	var b strings.Builder
+	b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
+	b.WriteString("Latest tool outputs:\n")
+	seen := make(map[string]struct{}, len(repeatedSigs))
+	for _, sig := range repeatedSigs {
+		if _, ok := seen[sig]; ok {
+			continue
+		}
+		seen[sig] = struct{}{}
+		parts := strings.SplitN(sig, "|", 2)
+		name := parts[0]
+		out := "(no cached output)"
+		if s.toolCallLastResult != nil {
+			if v := strings.TrimSpace(s.toolCallLastResult[sig]); v != "" {
+				out = v
+			}
+		}
+		if len(out) > 240 {
+			out = out[:240] + "...(truncated)"
+		}
+		b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
@@ -734,7 +802,12 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		}
 
 		loopCfg := DefaultLoopConfig()
+		cfg := a.cfg.Get()
+		if cfg.Agent.MaxIterations > 0 {
+			loopCfg.MaxIterations = cfg.Agent.MaxIterations
+		}
 		loopCfg.AutoApprove = true
+		sanitizeLoopConfig(&loopCfg)
 		state := &streamConvergenceState{}
 
 		// 🧠 思考阶段（第一轮）
@@ -840,6 +913,11 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		}
 
 		if len(toolCalls) > 0 {
+			if shouldStop, repeatedSigs := state.trackToolCallPattern(toolCalls, content.String()); shouldStop {
+				a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+				return
+			}
+
 			// 将 assistant 消息加入历史
 			messages = append(messages, provider.Message{
 				Role:      "assistant",
@@ -941,6 +1019,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					ToolCallID: r.ToolCallID,
 					Name:       r.ToolName,
 				})
+				if r.Index >= 0 && r.Index < len(toolCalls) {
+					state.rememberToolCallResult(r.ToolName, toolCalls[r.Index].Arguments, r.Result)
+				}
 			}
 
 			// 裁剪上下文，继续下一轮
@@ -1047,6 +1128,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 	if len(resp.ToolCalls) > 0 {
 		state.emptyResponseRetries = 0
 		state.lengthRecoveryCount = 0
+		if shouldStop, repeatedSigs := state.trackToolCallPattern(resp.ToolCalls, resp.Content); shouldStop {
+			a.finalizeStream(events, sess, userInput, state.repeatedToolLoopMessage(repeatedSigs))
+			return
+		}
 		messages = append(messages, provider.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
@@ -1146,6 +1231,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				ToolCallID: r.ToolCallID,
 				Name:       r.ToolName,
 			})
+			if r.Index >= 0 && r.Index < len(resp.ToolCalls) {
+				state.rememberToolCallResult(r.ToolName, resp.ToolCalls[r.Index].Arguments, r.Result)
+			}
 		}
 
 		// 裁剪上下文，递归继续

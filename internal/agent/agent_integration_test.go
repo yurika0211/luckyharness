@@ -327,7 +327,7 @@ func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
 
 	// 后续 simulated 路径持续返回 tool call，直到触发 max iterations
 	loopResp := &provider.Response{
-		Content: "",
+		Content: "still working",
 		ToolCalls: []provider.ToolCall{
 			{ID: "call_loop", Name: "missing_tool", Arguments: "{}"},
 		},
@@ -335,7 +335,7 @@ func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
 	mockProvider.EXPECT().
 		Chat(gomock.Any(), gomock.Any()).
 		Return(loopResp, nil).
-		AnyTimes()
+		Times(2)
 
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)
@@ -343,6 +343,7 @@ func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
 	cfg.Set("stream_mode", "native")
+	cfg.Set("agent.max_iterations", "3")
 
 	a, err := New(cfg)
 	if err != nil {
@@ -366,6 +367,67 @@ func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
 
 	if !foundMaxIterationErr {
 		t.Fatal("expected max iterations reached error event")
+	}
+}
+
+func TestChatWithSessionStreamStopsRepeatedToolCallLoop(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	loopResp := &provider.Response{
+		Content: "",
+		ToolCalls: []provider.ToolCall{
+			{ID: "call_loop", Name: "missing_tool", Arguments: "{}"},
+		},
+	}
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		Return(loopResp, nil).
+		Times(3)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "simulated")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sessionID := a.sessions.New().ID
+	eventChan, err := a.ChatWithSessionStream(context.Background(), sessionID, "repeat stream tool loop")
+	if err != nil {
+		t.Fatalf("ChatWithSessionStream() error = %v", err)
+	}
+
+	var doneContent string
+	var streamErr error
+	toolResultCount := 0
+	for event := range eventChan {
+		if event.Type == ChatEventDone {
+			doneContent = event.Content
+		}
+		if event.Type == ChatEventError {
+			streamErr = event.Err
+		}
+		if event.Type == ChatEventToolResult {
+			toolResultCount++
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if !strings.Contains(doneContent, "Detected repeated tool-call loop") {
+		t.Fatalf("expected repeated-tool loop guard response, got %q", doneContent)
+	}
+	if toolResultCount != 2 {
+		t.Fatalf("expected 2 tool results before guard, got %d", toolResultCount)
 	}
 }
 
