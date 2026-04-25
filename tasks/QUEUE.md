@@ -92,12 +92,31 @@
 
 ---
 
-### v0.89.0: tool 包补测到 80% (75%→80%+)
+### v0.89.0: tool 包补测到 80% (75%→79.3%) 🟡
 
-**状态**: Ready
+**状态**: In Progress
 **优先级**: Medium
-**目标**: tool 包 75% → 80%+ (+5pp)
-**预计耗时**: 20-30 分钟
+**进度**: 2026-04-25 02:45
+**tool 包覆盖率**: 75% → **79.3%** (+4.3pp)
+**目标**: 80%+ (还差 0.7pp)
+
+**本次补充**:
+- ✅ 修复 `TestOutputCompression/TruncateOutputs` 和 `TruncateOutput` 测试断言（截断后会添加提示）
+- ✅ 新增 `TestMCPClient`: MCP 客户端基本操作测试
+- ✅ 新增 `TestSkillLoaderFunctions`: parseFrontmatter/stripFrontmatter 测试
+- ✅ 新增 `TestGatewayFunctions`: truncateStr 测试
+- ✅ 新增 `TestSubscriptionFunctions`: SubTier 解析和订阅管理测试
+- ✅ 新增 `TestUsageTrackerFunctions`: 配额管理和使用量记录测试
+- ✅ 新增 `TestBuiltinFunctions`: handleShell/handleFileRead/handleFileWrite/handleFileList 错误处理测试
+- ✅ 新增工具函数测试：normalizeWhitespace/urlEncode/validatePath
+
+**提交记录**:
+- faea428: test(tool): v0.89.0 tool 包补充测试覆盖率达到 79.3%
+
+**下一步**:
+- 距离 80% 目标仅差 0.7pp
+- 需要补充 MCP 客户端低覆盖率函数测试（ListTools/CallTool/RegisterMCPTools）
+- 或补充 handleShell/handleFileRead 等函数的更多分支覆盖
 
 ---
 
