@@ -252,6 +252,15 @@ func TestStreamSender_SetToolCall_ArgsTruncation(t *testing.T) {
 	assert.LessOrEqual(t, len(sm.thinking), 120) // reasonable bound
 }
 
+func TestStreamSender_SetToolCall_EmptyArgs(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test"})
+	sm := &telegramStreamSender{adapter: adapter}
+
+	_ = sm.SetToolCall("正在联网搜索：『test』", "")
+	assert.Equal(t, "🔧 正在联网搜索：『test』", sm.thinking)
+	assert.NotContains(t, sm.thinking, "()")
+}
+
 // ── SetThinking after finish ─────────────────────────────────────────────────
 
 func TestStreamSender_SetThinkingAfterFinish(t *testing.T) {

@@ -146,7 +146,8 @@ type MsgGatewayConfig struct {
 
 // MsgGatewayTelegram Telegram 网关配置
 type MsgGatewayTelegram struct {
-	Token string `json:"token,omitempty"`
+	Token              string `json:"token,omitempty"`
+	ChatTimeoutSeconds int    `json:"chat_timeout_seconds,omitempty"` // Telegram 对话总超时（秒）
 }
 
 // MsgGatewayOneBot OneBot 网关配置
@@ -397,6 +398,9 @@ func DefaultConfig() *Config {
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
+			Telegram: MsgGatewayTelegram{
+				ChatTimeoutSeconds: 600, // 10 分钟
+			},
 			OneBot: MsgGatewayOneBot{
 				ShowTyping: true,
 				AutoLike:   true,
@@ -558,6 +562,9 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.MsgGateway.OneBot.LikeTimes <= 0 {
 		cfg.MsgGateway.OneBot.LikeTimes = def.MsgGateway.OneBot.LikeTimes
+	}
+	if cfg.MsgGateway.Telegram.ChatTimeoutSeconds <= 0 {
+		cfg.MsgGateway.Telegram.ChatTimeoutSeconds = def.MsgGateway.Telegram.ChatTimeoutSeconds
 	}
 }
 
@@ -751,6 +758,10 @@ func (m *Manager) Set(key, value string) error {
 	case "msg_gateway.telegram.token":
 		m.config.MsgGateway.Telegram.Token = value
 		m.config.MsgGateway.Token = value
+	case "msg_gateway.telegram.chat_timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.ChatTimeoutSeconds = n
 	case "msg_gateway.onebot.api_base":
 		m.config.MsgGateway.OneBot.APIBase = value
 	case "msg_gateway.onebot.ws_url":

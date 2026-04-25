@@ -7,11 +7,11 @@ import (
 
 // Message 代表一条对话消息
 type Message struct {
-	Role       string `json:"role"`
-	Content    string `json:"content"`
-	ToolCallID string `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
-	Name       string `json:"name,omitempty"`        // v0.16.0: function name for tool messages
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"` // v0.16.0: assistant tool calls
+	Role       string     `json:"role"`
+	Content    string     `json:"content"`
+	ToolCallID string     `json:"tool_call_id,omitempty"` // v0.16.0: function calling tool result
+	Name       string     `json:"name,omitempty"`         // v0.16.0: function name for tool messages
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // v0.16.0: assistant tool calls
 }
 
 // Response 代表 Provider 的响应
@@ -27,15 +27,16 @@ type Response struct {
 type StreamChunk struct {
 	Content        string
 	Done           bool
+	FinishReason   string
 	Model          string
 	ToolCallDeltas []StreamToolCallDelta // v0.40.0: 流式 tool_calls 增量
 }
 
 // StreamToolCallDelta 流式 tool_calls 的增量片段
 type StreamToolCallDelta struct {
-	Index    int    // tool_call 的索引
-	ID       string // tool_call ID（仅首个 chunk 携带）
-	Name     string // 函数名（仅首个 chunk 携带）
+	Index     int    // tool_call 的索引
+	ID        string // tool_call ID（仅首个 chunk 携带）
+	Name      string // 函数名（仅首个 chunk 携带）
 	Arguments string // 参数增量（逐 chunk 拼接）
 }
 
@@ -70,13 +71,13 @@ type Config struct {
 	MaxTokens    int
 	Temperature  float64
 	ExtraHeaders map[string]string `json:"extra_headers,omitempty" yaml:"extra_headers,omitempty"`
-	
+
 	// v0.56.0: 限制参数从配置文件加载
-	Limits       LimitsConfig      `json:"limits,omitempty"`
-	Retry        RetryConfig       `json:"retry,omitempty"`
+	Limits         LimitsConfig         `json:"limits,omitempty"`
+	Retry          RetryConfig          `json:"retry,omitempty"`
 	CircuitBreaker CircuitBreakerConfig `json:"circuit_breaker,omitempty"`
-	RateLimit    RateLimitConfig   `json:"rate_limit,omitempty"`
-	Context      ContextConfig     `json:"context,omitempty"`
+	RateLimit      RateLimitConfig      `json:"rate_limit,omitempty"`
+	Context        ContextConfig        `json:"context,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -102,25 +103,25 @@ type RetryConfig struct {
 
 // CircuitBreakerConfig 熔断器配置
 type CircuitBreakerConfig struct {
-	Enabled           bool `json:"enabled"`
-	ErrorThreshold    int  `json:"error_threshold"`
-	WindowSeconds     int  `json:"window_seconds"`
-	TimeoutSeconds    int  `json:"timeout_seconds"`
-	HalfOpenMaxReqs   int  `json:"half_open_max_requests"`
+	Enabled         bool `json:"enabled"`
+	ErrorThreshold  int  `json:"error_threshold"`
+	WindowSeconds   int  `json:"window_seconds"`
+	TimeoutSeconds  int  `json:"timeout_seconds"`
+	HalfOpenMaxReqs int  `json:"half_open_max_requests"`
 }
 
 // RateLimitConfig 限流配置
 type RateLimitConfig struct {
-	Enabled          bool `json:"enabled"`
-	RequestsPerMinute int `json:"requests_per_minute"`
-	TokensPerMinute   int `json:"tokens_per_minute"`
-	BurstSize         int `json:"burst_size"`
+	Enabled           bool `json:"enabled"`
+	RequestsPerMinute int  `json:"requests_per_minute"`
+	TokensPerMinute   int  `json:"tokens_per_minute"`
+	BurstSize         int  `json:"burst_size"`
 }
 
 // ContextConfig 上下文配置
 type ContextConfig struct {
-	MaxHistoryTurns     int     `json:"max_history_turns"`
-	MaxContextTokens    int     `json:"max_context_tokens"`
+	MaxHistoryTurns      int     `json:"max_history_turns"`
+	MaxContextTokens     int     `json:"max_context_tokens"`
 	CompressionThreshold float64 `json:"compression_threshold"`
 }
 
@@ -280,8 +281,8 @@ func (p *OpenAICompatibleProvider) ChatStreamWithOptions(ctx context.Context, me
 
 // Ensure interfaces are satisfied
 var (
-	_ Provider              = (*OpenAIProvider)(nil)
+	_ Provider                = (*OpenAIProvider)(nil)
 	_ FunctionCallingProvider = (*OpenAIProvider)(nil)
-	_ Provider              = (*OpenAICompatibleProvider)(nil)
+	_ Provider                = (*OpenAICompatibleProvider)(nil)
 	_ FunctionCallingProvider = (*OpenAICompatibleProvider)(nil)
 )

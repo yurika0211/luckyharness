@@ -46,8 +46,9 @@ type agentConfigProvider interface {
 
 // agentConfigSnapshot 是 config 快照的最小子集。
 type agentConfigSnapshot struct {
-	Model    string
-	Provider string
+	Model              string
+	Provider           string
+	ChatTimeoutSeconds int
 }
 
 // agentProviderAdapter 将 *agent.Agent 适配为 agentProvider 接口。
@@ -111,8 +112,9 @@ type agentConfigWrapper struct {
 func (w agentConfigWrapper) Get() agentConfigSnapshot {
 	cfg := w.mgr.Get()
 	return agentConfigSnapshot{
-		Model:    cfg.Model,
-		Provider: cfg.Provider,
+		Model:              cfg.Model,
+		Provider:           cfg.Provider,
+		ChatTimeoutSeconds: cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
 	}
 }
 
@@ -128,13 +130,16 @@ type Handler struct {
 
 	// v0.44.0: chatID→sessionID 映射持久化
 	dataDir string
+
+	// 对话总超时（防止长任务无限占用）；可配置，默认 10 分钟
+	chatStreamTimeout time.Duration
 }
 
 type chatTask struct {
 	cancel context.CancelFunc
 }
 
-const defaultChatStreamTimeout = 2 * time.Minute
+const defaultChatStreamTimeout = 10 * time.Minute
 
 // chatSessionsData 是持久化的 chatID→sessionID 映射
 type chatSessionsData struct {
@@ -148,12 +153,35 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		ap = agentProviderAdapter{a}
 	}
 	return &Handler{
-		adapter:  adapter,
-		agent:    ap,
-		sessions: make(map[string]string),
-		tasks:    make(map[string]*chatTask),
-		dataDir:  "", // 默认不持久化，需 SetDataDir 启用
+		adapter:           adapter,
+		agent:             ap,
+		sessions:          make(map[string]string),
+		tasks:             make(map[string]*chatTask),
+		dataDir:           "", // 默认不持久化，需 SetDataDir 启用
+		chatStreamTimeout: resolveChatStreamTimeout(ap),
 	}
+}
+
+func resolveChatStreamTimeout(ap agentProvider) time.Duration {
+	timeout := defaultChatStreamTimeout
+	if ap == nil {
+		return timeout
+	}
+	cfg := ap.Config().Get()
+	if cfg.ChatTimeoutSeconds > 0 {
+		timeout = time.Duration(cfg.ChatTimeoutSeconds) * time.Second
+	}
+	if timeout <= 0 {
+		timeout = defaultChatStreamTimeout
+	}
+	return timeout
+}
+
+func (h *Handler) effectiveChatStreamTimeout() time.Duration {
+	if h.chatStreamTimeout > 0 {
+		return h.chatStreamTimeout
+	}
+	return defaultChatStreamTimeout
 }
 
 // SetDataDir 设置数据目录并从磁盘恢复 chatID→sessionID 映射
@@ -340,11 +368,22 @@ func isTaskCanceledError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if errors.Is(err, context.Canceled) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "context canceled") || strings.Contains(msg, "context deadline exceeded")
+	return strings.Contains(msg, "context canceled")
+}
+
+func isTaskTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context deadline exceeded")
 }
 
 // HandleMessage processes an incoming gateway message.
@@ -531,7 +570,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	defer typingCancel()
 	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
 
-	chatCtx, chatCancel := context.WithTimeout(ctx, defaultChatStreamTimeout)
+	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
 	defer chatCancel()
 
 	// 启动流式对话
@@ -544,6 +583,11 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			events, err = h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
 		}
 		if err != nil {
+			if isTaskTimeoutError(err) {
+				sender.SetResult("⏱ 请求超时")
+				sender.Finish()
+				return nil
+			}
 			if isTaskCanceledError(err) {
 				sender.SetResult("🛑 当前任务已停止")
 				sender.Finish()
@@ -563,7 +607,11 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	for !ended {
 		select {
 		case <-chatCtx.Done():
-			sender.SetResult("🛑 当前任务已停止")
+			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+				sender.SetResult("⏱ 请求超时")
+			} else {
+				sender.SetResult("🛑 当前任务已停止")
+			}
 			sender.Finish()
 			sentResult = true
 			ended = true
@@ -579,12 +627,12 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
-				// 工具调用作为消息前缀展示
-				sender.SetToolCall(evt.Name, evt.Args)
+				// 工具调用转译为自然语言步骤，减少 JSON/参数噪音。
+				sender.SetToolCall(humanizeToolCall(evt.Name, evt.Args), "")
 
 			case agent.ChatEventToolResult:
 				// 工具结果展示后切回思考状态
-				sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
+				sender.SetThinking(fmt.Sprintf("继续处理中（已完成 %d 个步骤）", toolCallCount))
 
 			case agent.ChatEventContent:
 				// 内容流式追加
@@ -602,6 +650,13 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				ended = true
 
 			case agent.ChatEventError:
+				if isTaskTimeoutError(evt.Err) {
+					sender.SetResult("⏱ 请求超时")
+					sender.Finish()
+					sentResult = true
+					ended = true
+					break
+				}
 				if isTaskCanceledError(evt.Err) {
 					sender.SetResult("🛑 当前任务已停止")
 					sender.Finish()
@@ -626,7 +681,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		case finalContent.Len() > 0:
 			sender.SetResult(finalContent.String())
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
-			sender.SetResult("❌ Error: request timed out while waiting for model response")
+			sender.SetResult("⏱ 请求超时")
 		case errors.Is(chatCtx.Err(), context.Canceled):
 			sender.SetResult("🛑 当前任务已停止")
 		default:
@@ -662,6 +717,9 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 			response, err = h.agent.ChatWithSession(ctx, sessionID, text)
 		}
 		if err != nil {
+			if isTaskTimeoutError(err) {
+				return h.adapter.Send(ctx, msg.Chat.ID, "⏱ 请求超时")
+			}
 			if isTaskCanceledError(err) {
 				return h.adapter.Send(context.Background(), msg.Chat.ID, "🛑 当前任务已停止")
 			}

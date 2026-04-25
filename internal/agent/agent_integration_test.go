@@ -369,6 +369,190 @@ func TestAgentChatWithSessionStreamRespectsMaxIterations(t *testing.T) {
 	}
 }
 
+func TestChatWithSessionStreamSimulatedRecoversAfterEmptyResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	callN := 0
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msgs []provider.Message) (*provider.Response, error) {
+			callN++
+			if callN == 1 {
+				return &provider.Response{Content: "   "}, nil
+			}
+			foundRecoveryPrompt := false
+			for _, m := range msgs {
+				if m.Role == "user" && strings.Contains(m.Content, emptyResponseRecoveryPrompt) {
+					foundRecoveryPrompt = true
+					break
+				}
+			}
+			if !foundRecoveryPrompt {
+				t.Fatalf("expected empty recovery prompt in messages, got %+v", msgs)
+			}
+			return &provider.Response{Content: "Recovered stream answer", FinishReason: "stop"}, nil
+		}).
+		Times(2)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "simulated")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sessionID := a.sessions.New().ID
+	eventChan, err := a.ChatWithSessionStream(context.Background(), sessionID, "recover empty stream")
+	if err != nil {
+		t.Fatalf("ChatWithSessionStream() error = %v", err)
+	}
+
+	var doneContent string
+	var streamErr error
+	for event := range eventChan {
+		if event.Type == ChatEventDone {
+			doneContent = event.Content
+		}
+		if event.Type == ChatEventError {
+			streamErr = event.Err
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if doneContent != "Recovered stream answer" {
+		t.Fatalf("expected recovered stream answer, got %q", doneContent)
+	}
+}
+
+func TestChatWithSessionStreamNativeRecoversLengthTruncation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+
+	streamChan := make(chan provider.StreamChunk, 2)
+	streamChan <- provider.StreamChunk{Content: "Part A "}
+	streamChan <- provider.StreamChunk{Done: true, FinishReason: "length"}
+	close(streamChan)
+
+	mockProvider.EXPECT().
+		ChatStream(gomock.Any(), gomock.Any()).
+		Return(streamChan, nil).
+		Times(1)
+
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msgs []provider.Message) (*provider.Response, error) {
+			foundRecoveryPrompt := false
+			for _, m := range msgs {
+				if m.Role == "user" && strings.Contains(m.Content, lengthRecoveryPrompt) {
+					foundRecoveryPrompt = true
+					break
+				}
+			}
+			if !foundRecoveryPrompt {
+				t.Fatalf("expected length recovery prompt in messages, got %+v", msgs)
+			}
+			return &provider.Response{Content: "Part B", FinishReason: "stop"}, nil
+		}).
+		Times(1)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "native")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sessionID := a.sessions.New().ID
+	eventChan, err := a.ChatWithSessionStream(context.Background(), sessionID, "length continuation stream")
+	if err != nil {
+		t.Fatalf("ChatWithSessionStream() error = %v", err)
+	}
+
+	var doneContent string
+	var streamErr error
+	for event := range eventChan {
+		if event.Type == ChatEventDone {
+			doneContent = event.Content
+		}
+		if event.Type == ChatEventError {
+			streamErr = event.Err
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if doneContent != "Part A Part B" {
+		t.Fatalf("expected merged stream answer, got %q", doneContent)
+	}
+}
+
+func TestChatWithSessionStreamSimulatedStopsAfterLengthRecoveryLimit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		Return(&provider.Response{Content: "Chunk ", FinishReason: "length"}, nil).
+		Times(maxLengthContinuationRetries + 1)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("stream_mode", "simulated")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sessionID := a.sessions.New().ID
+	eventChan, err := a.ChatWithSessionStream(context.Background(), sessionID, "length limit stream")
+	if err != nil {
+		t.Fatalf("ChatWithSessionStream() error = %v", err)
+	}
+
+	var doneContent string
+	var streamErr error
+	for event := range eventChan {
+		if event.Type == ChatEventDone {
+			doneContent = event.Content
+		}
+		if event.Type == ChatEventError {
+			streamErr = event.Err
+		}
+	}
+
+	if streamErr != nil {
+		t.Fatalf("unexpected stream error: %v", streamErr)
+	}
+	if !strings.Contains(doneContent, strings.TrimSpace(lengthTruncatedNotice)) {
+		t.Fatalf("expected truncated notice in stream done content, got %q", doneContent)
+	}
+}
+
 func TestRunLoopStopsRepeatedToolCallLoop(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
@@ -463,5 +647,200 @@ func TestRunLoopStopsConsecutiveToolOnlyIterations(t *testing.T) {
 	}
 	if !strings.Contains(result.Response, "Detected repeated tool-call loop") {
 		t.Fatalf("expected loop guard response, got: %q", result.Response)
+	}
+}
+
+func TestRunLoopRecoversAfterEmptyResponse(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	callN := 0
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msgs []provider.Message) (*provider.Response, error) {
+			callN++
+			if callN == 1 {
+				return &provider.Response{Content: "   "}, nil
+			}
+			foundRecoveryPrompt := false
+			for _, m := range msgs {
+				if m.Role == "user" && strings.Contains(m.Content, emptyResponseRecoveryPrompt) {
+					foundRecoveryPrompt = true
+					break
+				}
+			}
+			if !foundRecoveryPrompt {
+				t.Fatalf("expected recovery prompt in messages, got %+v", msgs)
+			}
+			return &provider.Response{Content: "Recovered answer"}, nil
+		}).
+		Times(2)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	loopCfg := DefaultLoopConfig()
+	loopCfg.MaxIterations = 6
+	loopCfg.Timeout = 2 * time.Second
+
+	result, err := a.RunLoop(context.Background(), "need converged answer", loopCfg)
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result.Response != "Recovered answer" {
+		t.Fatalf("expected recovered answer, got %q", result.Response)
+	}
+	if result.Iterations != 2 {
+		t.Fatalf("expected 2 iterations, got %d", result.Iterations)
+	}
+}
+
+func TestRunLoopRecoversLengthTruncation(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	callN := 0
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, msgs []provider.Message) (*provider.Response, error) {
+			callN++
+			if callN == 1 {
+				return &provider.Response{
+					Content:      "Part A ",
+					FinishReason: "length",
+				}, nil
+			}
+			foundRecoveryPrompt := false
+			for _, m := range msgs {
+				if m.Role == "user" && strings.Contains(m.Content, lengthRecoveryPrompt) {
+					foundRecoveryPrompt = true
+					break
+				}
+			}
+			if !foundRecoveryPrompt {
+				t.Fatalf("expected length recovery prompt in messages, got %+v", msgs)
+			}
+			return &provider.Response{
+				Content:      "Part B",
+				FinishReason: "stop",
+			}, nil
+		}).
+		Times(2)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	loopCfg := DefaultLoopConfig()
+	loopCfg.MaxIterations = 6
+	loopCfg.Timeout = 2 * time.Second
+
+	result, err := a.RunLoop(context.Background(), "give me long answer", loopCfg)
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result.Response != "Part A Part B" {
+		t.Fatalf("expected merged continuation, got %q", result.Response)
+	}
+	if result.Iterations != 2 {
+		t.Fatalf("expected 2 iterations, got %d", result.Iterations)
+	}
+}
+
+func TestRunLoopFallsBackAfterRepeatedEmptyResponses(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		Return(&provider.Response{Content: "   "}, nil).
+		Times(maxEmptyResponseRetries + 1)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	loopCfg := DefaultLoopConfig()
+	loopCfg.MaxIterations = 8
+	loopCfg.Timeout = 2 * time.Second
+
+	result, err := a.RunLoop(context.Background(), "empty response fallback", loopCfg)
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result.Response != emptyFinalResponseMessage {
+		t.Fatalf("expected fallback response %q, got %q", emptyFinalResponseMessage, result.Response)
+	}
+	if result.Iterations != maxEmptyResponseRetries+1 {
+		t.Fatalf("expected %d iterations, got %d", maxEmptyResponseRetries+1, result.Iterations)
+	}
+}
+
+func TestRunLoopStopsAfterLengthRecoveryLimit(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	mockProvider.EXPECT().
+		Chat(gomock.Any(), gomock.Any()).
+		Return(&provider.Response{
+			Content:      "Chunk ",
+			FinishReason: "length",
+		}, nil).
+		Times(maxLengthContinuationRetries + 1)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	loopCfg := DefaultLoopConfig()
+	loopCfg.MaxIterations = 10
+	loopCfg.Timeout = 2 * time.Second
+
+	result, err := a.RunLoop(context.Background(), "long continuation", loopCfg)
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if !strings.Contains(result.Response, strings.TrimSpace(lengthTruncatedNotice)) {
+		t.Fatalf("expected truncated notice in response, got %q", result.Response)
+	}
+	if result.Iterations != maxLengthContinuationRetries+1 {
+		t.Fatalf("expected %d iterations, got %d", maxLengthContinuationRetries+1, result.Iterations)
 	}
 }

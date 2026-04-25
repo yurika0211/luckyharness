@@ -68,6 +68,15 @@ func DefaultLoopConfig() LoopConfig {
 // maxAllowedIterations 是 MaxIterations 的硬上限
 const maxAllowedIterations = 100
 
+const (
+	maxEmptyResponseRetries      = 2
+	maxLengthContinuationRetries = 3
+	emptyResponseRecoveryPrompt  = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
+	lengthRecoveryPrompt         = "Continue exactly from where you stopped. Do not repeat previous content."
+	emptyFinalResponseMessage    = "I couldn't produce a complete answer this round. Please retry."
+	lengthTruncatedNotice        = "\n\n[Output may be truncated after multiple continuation attempts.]"
+)
+
 // sanitizeLoopConfig 校验并修正 LoopConfig 的安全边界
 func sanitizeLoopConfig(cfg *LoopConfig) {
 	if cfg.MaxIterations <= 0 {
@@ -82,6 +91,13 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 	if cfg.Timeout > 10*time.Minute {
 		cfg.Timeout = 10 * time.Minute
 	}
+}
+
+func appendContinuation(dst *strings.Builder, part string) {
+	if strings.TrimSpace(part) == "" {
+		return
+	}
+	dst.WriteString(part)
 }
 
 // LoopResult 是 Agent Loop 的执行结果
@@ -113,9 +129,34 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	result := &LoopResult{
 		State: StateReason,
 	}
+	finalize := func(response string) {
+		result.Response = response
+		result.State = StateDone
+
+		// v0.24.1: 将对话添加到会话
+		if sess != nil {
+			sess.AddMessage("user", userInput)
+			sess.AddMessage("assistant", response)
+		}
+
+		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
+		if a.ragManager != nil {
+			a.indexConversationTurn(userInput, response)
+		}
+
+		// v0.24.1: 保存会话到磁盘
+		if sess != nil {
+			if saveErr := sess.Save(); saveErr != nil {
+				fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+			}
+		}
+	}
 	toolCallRepeatCount := make(map[string]int)
 	toolCallLastResult := make(map[string]string)
 	consecutiveToolOnlyIters := 0
+	emptyResponseRetries := 0
+	lengthRecoveryCount := 0
+	var continuedResponse strings.Builder
 	toolCallSig := func(name, arguments string) string {
 		return name + "|" + arguments
 	}
@@ -181,6 +222,8 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
+			emptyResponseRetries = 0
+			lengthRecoveryCount = 0
 			result.State = StateAct
 			if strings.TrimSpace(resp.Content) == "" {
 				consecutiveToolOnlyIters++
@@ -215,8 +258,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 					}
 					b.WriteString(fmt.Sprintf("- %s: %s\n", name, out))
 				}
-				result.Response = b.String()
-				result.State = StateDone
+				finalize(strings.TrimSpace(b.String()))
 				return result, nil
 			}
 
@@ -358,28 +400,56 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			continue // 继续循环，让 LLM 处理工具结果
 		}
 
-		// 没有工具调用，LLM 直接给出最终回复
-		result.Response = resp.Content
-		result.State = StateDone
+		raw := resp.Content
+		clean := strings.TrimSpace(raw)
 
-		// v0.24.1: 将对话添加到会话
-		if sess != nil {
-			sess.AddMessage("user", userInput)
-			sess.AddMessage("assistant", resp.Content)
-		}
-
-		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
-		if a.ragManager != nil {
-			a.indexConversationTurn(userInput, resp.Content)
-		}
-
-		// v0.24.1: 保存会话到磁盘
-		if sess != nil {
-			if saveErr := sess.Save(); saveErr != nil {
-				fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+		// 空回复恢复：给模型一次显式重试机会，避免直接返回空答案。
+		if clean == "" {
+			if emptyResponseRetries < maxEmptyResponseRetries {
+				emptyResponseRetries++
+				messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+				messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
+				continue
 			}
+			if strings.TrimSpace(continuedResponse.String()) != "" {
+				finalize(strings.TrimSpace(continuedResponse.String()))
+			} else {
+				finalize(emptyFinalResponseMessage)
+			}
+			return result, nil
 		}
+		emptyResponseRetries = 0
 
+		// 截断恢复：当模型因长度截断时，拼接已有内容并显式请求续写。
+		if strings.EqualFold(resp.FinishReason, "length") {
+			appendContinuation(&continuedResponse, raw)
+			if lengthRecoveryCount < maxLengthContinuationRetries {
+				lengthRecoveryCount++
+				messages = append(messages, provider.Message{Role: "assistant", Content: raw})
+				messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+				continue
+			}
+			partial := strings.TrimSpace(continuedResponse.String())
+			if partial == "" {
+				partial = clean
+			}
+			finalize(partial + lengthTruncatedNotice)
+			return result, nil
+		}
+		lengthRecoveryCount = 0
+
+		// 没有工具调用，LLM 直接给出最终回复
+		finalResponse := raw
+		if strings.TrimSpace(continuedResponse.String()) != "" {
+			appendContinuation(&continuedResponse, raw)
+			finalResponse = strings.TrimSpace(continuedResponse.String())
+		}
+		finalize(finalResponse)
+		return result, nil
+	}
+
+	if strings.TrimSpace(continuedResponse.String()) != "" {
+		finalize(strings.TrimSpace(continuedResponse.String()) + lengthTruncatedNotice)
 		return result, nil
 	}
 

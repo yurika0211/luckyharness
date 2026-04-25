@@ -688,6 +688,19 @@ func (a *Agent) getStreamMode() StreamMode {
 	return mode
 }
 
+type streamConvergenceState struct {
+	emptyResponseRetries int
+	lengthRecoveryCount  int
+	continuedResponse    strings.Builder
+}
+
+func (s *streamConvergenceState) hasContinuation() bool {
+	if s == nil {
+		return false
+	}
+	return strings.TrimSpace(s.continuedResponse.String()) != ""
+}
+
 func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, userInput string) (<-chan ChatEvent, error) {
 	sess, ok := a.sessions.Get(sessionID)
 	if !ok {
@@ -722,6 +735,7 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 		loopCfg := DefaultLoopConfig()
 		loopCfg.AutoApprove = true
+		state := &streamConvergenceState{}
 
 		// 🧠 思考阶段（第一轮）
 		events <- ChatEvent{Type: ChatEventThinking, Content: "Thinking... (round 1)"}
@@ -729,12 +743,12 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 		mode := a.getStreamMode()
 		if mode == StreamModeNative {
 			// === 真流式路径 ===
-			a.streamNative(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations)
+			a.streamNative(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
 			return
 		}
 
 		// === 模拟流式路径 ===
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, 1, loopCfg.MaxIterations, state)
 	}()
 
 	return events, nil
@@ -742,8 +756,15 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 // streamNative 真流式：直接使用 provider 的 ChatStream，逐 chunk 推送
 // tool_calls 通过流式增量拼接处理
-func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int) {
+func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+	if state == nil {
+		state = &streamConvergenceState{}
+	}
 	if remaining <= 0 {
+		if state.hasContinuation() {
+			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			return
+		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
@@ -762,10 +783,14 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 	}
 
 	var content strings.Builder
+	streamFinishReason := ""
 	// 流式 tool_calls 增量拼接
 	var toolCallsAcc []streamToolCallAcc // 按 index 累积
 
 	for chunk := range ch {
+		if chunk.FinishReason != "" {
+			streamFinishReason = chunk.FinishReason
+		}
 		if chunk.Content != "" {
 			content.WriteString(chunk.Content)
 			events <- ChatEvent{Type: ChatEventContent, Content: chunk.Content}
@@ -796,6 +821,8 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 	// 如果有累积的 tool_calls，处理它们
 	if len(toolCallsAcc) > 0 {
+		state.emptyResponseRetries = 0
+		state.lengthRecoveryCount = 0
 		toolCalls := make([]provider.ToolCall, 0, len(toolCallsAcc))
 		for _, acc := range toolCallsAcc {
 			if acc.name != "" {
@@ -919,6 +946,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
 			if remaining <= 1 {
+				if state.hasContinuation() {
+					a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+					return
+				}
 				events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 				return
 			}
@@ -926,27 +957,76 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
 
 			// 递归进入下一轮（用非流式，因为 tool_calls 后通常需要完整响应）
-			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1)
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
 			return
 		}
 	}
 
 	// 没有工具调用，纯文本回复（已在流式中逐 chunk 推送了）
 	response := content.String()
+	clean := strings.TrimSpace(response)
 
-	// 如果流式没产出内容，回退到非流式
-	if response == "" {
-		// 同一轮回退，不消耗额外迭代次数
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, round, remaining)
+	// 空回复恢复
+	if clean == "" {
+		if state.emptyResponseRetries < maxEmptyResponseRetries && remaining > 1 {
+			state.emptyResponseRetries++
+			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			return
+		}
+		if state.hasContinuation() {
+			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+		} else {
+			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+		}
 		return
 	}
+	state.emptyResponseRetries = 0
 
-	a.finalizeStream(events, sess, userInput, response)
+	// 原生流式可携带 finish_reason，遇到 length 时走续写恢复。
+	if strings.EqualFold(streamFinishReason, "length") {
+		appendContinuation(&state.continuedResponse, response)
+		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
+			state.lengthRecoveryCount++
+			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			return
+		}
+		partial := strings.TrimSpace(state.continuedResponse.String())
+		if partial == "" {
+			partial = clean
+		}
+		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		return
+	}
+	state.lengthRecoveryCount = 0
+
+	finalResponse := response
+	if state.hasContinuation() {
+		appendContinuation(&state.continuedResponse, response)
+		finalResponse = strings.TrimSpace(state.continuedResponse.String())
+	}
+	a.finalizeStream(events, sess, userInput, finalResponse)
 }
 
 // streamSimulated 模拟流式：先非流式获取完整响应，再按句子边界逐段推送
-func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int) {
+func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, messages []provider.Message, callOpts provider.CallOptions, sess *session.Session, userInput string, round int, remaining int, state *streamConvergenceState) {
+	if state == nil {
+		state = &streamConvergenceState{}
+	}
 	if remaining <= 0 {
+		if state.hasContinuation() {
+			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+			return
+		}
 		events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 		return
 	}
@@ -965,6 +1045,8 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 	// 有工具调用 → 展示过程 → 执行 → 继续循环
 	if len(resp.ToolCalls) > 0 {
+		state.emptyResponseRetries = 0
+		state.lengthRecoveryCount = 0
 		messages = append(messages, provider.Message{
 			Role:      "assistant",
 			Content:   resp.Content,
@@ -1069,24 +1151,83 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
 		if remaining <= 1 {
+			if state.hasContinuation() {
+				a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
+				return
+			}
 			events <- ChatEvent{Type: ChatEventError, Err: fmt.Errorf("max iterations reached")}
 			return
 		}
 		nextRound := round + 1
 		events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
-		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1)
+		a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
 		return
 	}
 
 	// 纯文本回复，模拟流式推送
 	response := resp.Content
+	clean := strings.TrimSpace(response)
+
+	// 空回复恢复
+	if clean == "" {
+		if state.emptyResponseRetries < maxEmptyResponseRetries && remaining > 1 {
+			state.emptyResponseRetries++
+			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "user", Content: emptyResponseRecoveryPrompt})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			return
+		}
+		if state.hasContinuation() {
+			a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String()))
+		} else {
+			a.finalizeStream(events, sess, userInput, emptyFinalResponseMessage)
+		}
+		return
+	}
+	state.emptyResponseRetries = 0
+
+	// length 续写恢复
+	if strings.EqualFold(resp.FinishReason, "length") {
+		chunks := splitIntoChunks(response, 60)
+		for _, chunk := range chunks {
+			events <- ChatEvent{Type: ChatEventContent, Content: chunk}
+			time.Sleep(50 * time.Millisecond)
+		}
+		appendContinuation(&state.continuedResponse, response)
+		if state.lengthRecoveryCount < maxLengthContinuationRetries && remaining > 1 {
+			state.lengthRecoveryCount++
+			messages = append(messages, provider.Message{Role: "assistant", Content: response})
+			messages = append(messages, provider.Message{Role: "user", Content: lengthRecoveryPrompt})
+			messages = a.fitContextWindow(messages)
+			nextRound := round + 1
+			events <- ChatEvent{Type: ChatEventThinking, Content: fmt.Sprintf("Thinking... (round %d)", nextRound)}
+			a.streamSimulated(ctx, events, messages, callOpts, sess, userInput, nextRound, remaining-1, state)
+			return
+		}
+		partial := strings.TrimSpace(state.continuedResponse.String())
+		if partial == "" {
+			partial = clean
+		}
+		a.finalizeStream(events, sess, userInput, partial+lengthTruncatedNotice)
+		return
+	}
+	state.lengthRecoveryCount = 0
+
 	chunks := splitIntoChunks(response, 60)
 	for _, chunk := range chunks {
 		events <- ChatEvent{Type: ChatEventContent, Content: chunk}
 		time.Sleep(50 * time.Millisecond)
 	}
 
-	a.finalizeStream(events, sess, userInput, response)
+	finalResponse := response
+	if state.hasContinuation() {
+		appendContinuation(&state.continuedResponse, response)
+		finalResponse = strings.TrimSpace(state.continuedResponse.String())
+	}
+	a.finalizeStream(events, sess, userInput, finalResponse)
 }
 
 // finalizeStream 流式对话收尾：保存会话、记忆、RAG 索引

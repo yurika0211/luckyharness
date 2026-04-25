@@ -552,6 +552,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 		scanner := bufio.NewScanner(bodyReader)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
+		lastFinishReason := ""
 		for scanner.Scan() {
 			line := scanner.Text()
 
@@ -564,7 +565,7 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 
 			// 流结束标记
 			if data == "[DONE]" {
-				ch <- StreamChunk{Done: true, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: lastFinishReason, Model: cfg.Model}
 				return
 			}
 
@@ -578,6 +579,9 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 			}
 
 			choice := chatResp.Choices[0]
+			if choice.FinishReason != "" {
+				lastFinishReason = choice.FinishReason
+			}
 
 			// 处理文本内容
 			if choice.Delta != nil && choice.Delta.Content != "" {
@@ -605,13 +609,13 @@ func callOpenAIStream(ctx context.Context, cfg Config, messages []Message, opts 
 			}
 
 			if choice.FinishReason == "stop" || choice.FinishReason == "length" {
-				ch <- StreamChunk{Done: true, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.Model}
 				return
 			}
 
 			// 工具调用完成
 			if choice.FinishReason == "tool_calls" {
-				ch <- StreamChunk{Done: true, Model: cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: choice.FinishReason, Model: cfg.Model}
 				return
 			}
 		}
