@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyharness/internal/function"
+	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
@@ -122,11 +123,47 @@ func (a *Agent) RunLoop(ctx context.Context, userInput string, loopCfg LoopConfi
 }
 
 // RunLoopWithSession 执行 Agent Loop（带会话上下文）
-func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (*LoopResult, error) {
+func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, userInput string, loopCfg LoopConfig) (result *LoopResult, err error) {
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
 
-	result := &LoopResult{
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
+	startAt := time.Now()
+	logger.Info("agent loop started",
+		"session_id", sessionID,
+		"max_iterations", loopCfg.MaxIterations,
+		"timeout_ms", loopCfg.Timeout.Milliseconds(),
+		"auto_approve", loopCfg.AutoApprove,
+	)
+	defer func() {
+		state := StateDone.String()
+		iterations := 0
+		tokens := 0
+		if result != nil {
+			state = result.State.String()
+			iterations = result.Iterations
+			tokens = result.TokensUsed
+		}
+
+		fields := []any{
+			"session_id", sessionID,
+			"state", state,
+			"iterations", iterations,
+			"tokens_used", tokens,
+			"duration_ms", time.Since(startAt).Milliseconds(),
+		}
+		if err != nil {
+			fields = append(fields, "error", err)
+			logger.Warn("agent loop finished with error", fields...)
+			return
+		}
+		logger.Info("agent loop finished", fields...)
+	}()
+
+	result = &LoopResult{
 		State: StateReason,
 	}
 	finalize := func(response string) {
@@ -147,7 +184,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		// v0.24.1: 保存会话到磁盘
 		if sess != nil {
 			if saveErr := sess.Save(); saveErr != nil {
-				fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+				logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 			}
 		}
 	}
@@ -200,6 +237,11 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	for i := 0; i < loopCfg.MaxIterations; i++ {
 		result.Iterations = i + 1
 		result.State = StateReason
+		logger.Debug("agent loop iteration started",
+			"session_id", sessionID,
+			"iteration", i+1,
+			"messages", len(messages),
+		)
 
 		// Reason: 调用 LLM（带 function calling 支持）
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
@@ -222,6 +264,11 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 		// 检查是否有工具调用
 		if len(resp.ToolCalls) > 0 {
+			logger.Info("agent loop tool call batch",
+				"session_id", sessionID,
+				"iteration", i+1,
+				"count", len(resp.ToolCalls),
+			)
 			emptyResponseRetries = 0
 			lengthRecoveryCount = 0
 			result.State = StateAct
@@ -393,7 +440,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			// v0.24.1: 工具调用后保存会话
 			if sess != nil {
 				if saveErr := sess.Save(); saveErr != nil {
-					fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+					logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 				}
 			}
 
@@ -460,7 +507,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	// v0.24.1: 保存会话到磁盘
 	if sess != nil {
 		if saveErr := sess.Save(); saveErr != nil {
-			fmt.Printf("[agent] warning: failed to save session: %v\n", saveErr)
+			logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 		}
 	}
 
@@ -610,10 +657,36 @@ func (a *Agent) executeTool(name, arguments string, autoApprove bool) (string, e
 }
 
 // executeToolWithSession 执行工具调用（带 session，支持 shell 上下文持久化）
-func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool, sess *session.Session) (string, error) {
+func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool, sess *session.Session) (output string, err error) {
+	sessionID := ""
+	if sess != nil {
+		sessionID = sess.ID
+	}
+	startAt := time.Now()
+	logger.Debug("tool execution started",
+		"session_id", sessionID,
+		"tool", name,
+		"auto_approve", autoApprove,
+	)
+	defer func() {
+		fields := []any{
+			"session_id", sessionID,
+			"tool", name,
+			"duration_ms", time.Since(startAt).Milliseconds(),
+		}
+		if err != nil {
+			fields = append(fields, "error", err)
+			logger.Warn("tool execution failed", fields...)
+			return
+		}
+		fields = append(fields, "output_bytes", len(output))
+		logger.Info("tool execution completed", fields...)
+	}()
+
 	// 记忆工具：直接由 agent 处理，不走 gateway
 	if name == "remember" || name == "recall" {
-		return a.handleMemoryTool(name, arguments)
+		output, err = a.handleMemoryTool(name, arguments)
+		return output, err
 	}
 
 	// 解析参数
@@ -639,7 +712,6 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 
 	// 通过 Gateway 执行
 	var result *tool.GatewayResult
-	var err error
 	if sc != nil {
 		result, err = a.gateway.ExecuteWithShellContext(name, args, "", sc)
 	} else {
@@ -654,7 +726,8 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 		a.updateShellContext(sess, arguments, result.Output)
 	}
 
-	return result.Output, nil
+	output = result.Output
+	return output, nil
 }
 
 // updateShellContext 从 shell 执行结果中提取 cwd 和 env 变更
