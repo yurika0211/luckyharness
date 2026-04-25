@@ -3,6 +3,7 @@ package tool
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -337,17 +338,37 @@ func handleFileList(args map[string]any) (string, error) {
 		recursive, _ = r.(bool)
 	}
 
+	maxEntries := 200
+	if v, ok := args["max_entries"]; ok {
+		switch n := v.(type) {
+		case float64:
+			maxEntries = int(n)
+		case int:
+			maxEntries = n
+		}
+	}
+	if maxEntries <= 0 {
+		maxEntries = 200
+	}
+
 	// 路径安全检查
 	if err := validatePath(path); err != nil {
 		return "", err
 	}
 
 	var b strings.Builder
+	entryCount := 0
+	truncated := false
 
 	if recursive {
+		stopWalk := errors.New("file list truncated")
 		err := filepath.Walk(path, func(walkPath string, info os.FileInfo, err error) error {
 			if err != nil {
 				return err
+			}
+			if entryCount >= maxEntries {
+				truncated = true
+				return stopWalk
 			}
 			rel, _ := filepath.Rel(path, walkPath)
 			if info.IsDir() {
@@ -355,9 +376,10 @@ func handleFileList(args map[string]any) (string, error) {
 			} else {
 				b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", rel, info.Size()))
 			}
+			entryCount++
 			return nil
 		})
-		if err != nil {
+		if err != nil && !errors.Is(err, stopWalk) {
 			return "", fmt.Errorf("walk directory: %w", err)
 		}
 	} else {
@@ -366,13 +388,22 @@ func handleFileList(args map[string]any) (string, error) {
 			return "", fmt.Errorf("read directory: %w", err)
 		}
 		for _, entry := range entries {
+			if entryCount >= maxEntries {
+				truncated = true
+				break
+			}
 			if entry.IsDir() {
 				b.WriteString(fmt.Sprintf("  📁 %s/\n", entry.Name()))
 			} else {
 				info, _ := entry.Info()
 				b.WriteString(fmt.Sprintf("  📄 %s (%d bytes)\n", entry.Name(), info.Size()))
 			}
+			entryCount++
 		}
+	}
+
+	if truncated {
+		b.WriteString(fmt.Sprintf("  ... truncated after %d entries\n", maxEntries))
 	}
 
 	return b.String(), nil
@@ -380,8 +411,8 @@ func handleFileList(args map[string]any) (string, error) {
 
 // WebSearchConfig 搜索配置（从 config.Manager 传入）
 type WebSearchConfig struct {
-	Provider   string // brave, ddgs, searxng（默认 brave）
-	APIKey     string // Brave / Tavily / Jina API key
+	Provider   string // brave, ddgs, searxng, exa（默认 brave）
+	APIKey     string // Brave / Exa API key
 	BaseURL    string // SearXNG 自部署地址
 	MaxResults int    // 最大结果数（默认 5）
 	Proxy      string // HTTP/SOCKS5 代理
@@ -475,26 +506,33 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 	// ── quick 模式：按优先级尝试搜索源，任一成功即返回 ──
 	// 降级链：Brave → ddgs → DDG Lite → SearXNG
 
-	// 1. Brave Search API
-	if provider == "brave" || (provider != "ddgs" && provider != "searxng") {
+	// 1. Exa Search API
+	if provider == "exa" {
+		if result, err := searchWithExa(cfg, query, count); err == nil && result != "" {
+			return annotateSource(result, "Exa"), nil
+		}
+	}
+
+	// 2. Brave Search API
+	if provider == "brave" || (provider != "ddgs" && provider != "searxng" && provider != "exa") {
 		if result, err := searchWithBrave(cfg, query, count); err == nil && result != "" {
 			return annotateSource(result, "Brave"), nil
 		}
 	}
 
-	// 2. ddgs Python 包（绕过 DDG 验证码，推荐降级方案）
+	// 3. ddgs Python 包（绕过 DDG 验证码，推荐降级方案）
 	if provider == "ddgs" || provider == "brave" {
 		if result, err := searchWithDDGS(query, count); err == nil && result != "" {
 			return annotateSource(result, "DDG (ddgs)"), nil
 		}
 	}
 
-	// 3. DDG Lite curl（可能遇到验证码，最后降级）
+	// 4. DDG Lite curl（可能遇到验证码，最后降级）
 	if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
 		return annotateSource(result, "DDG Lite"), nil
 	}
 
-	// 4. SearXNG 自部署
+	// 5. SearXNG 自部署
 	if provider == "searxng" || cfg.BaseURL != "" {
 		if result, err := searchWithSearXNG(cfg, query, count); err == nil && result != "" {
 			return annotateSource(result, "SearXNG"), nil
@@ -522,9 +560,16 @@ func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider st
 	}
 
 	// 1. Brave
-	if provider == "brave" || (provider != "ddgs" && provider != "searxng") {
+	if provider == "brave" || (provider != "ddgs" && provider != "searxng" && provider != "exa") {
 		if entries, err := searchWithBraveEntries(cfg, query, count); err == nil {
 			collect("Brave", entries)
+		}
+	}
+
+	// 1.5 Exa
+	if provider == "exa" || resolveExaAPIKey(cfg) != "" {
+		if entries, err := searchWithExaEntries(cfg, query, count); err == nil {
+			collect("Exa", entries)
 		}
 	}
 
@@ -687,6 +732,94 @@ func searchWithBraveEntries(cfg *WebSearchConfig, query string, count int) ([]se
 		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Description})
 	}
 	return entries, nil
+}
+
+// ── Exa Search API ───────────────────────────────────────────────────────────
+
+func searchWithExa(cfg *WebSearchConfig, query string, count int) (string, error) {
+	entries, err := searchWithExaEntries(cfg, query, count)
+	if err != nil {
+		return "", err
+	}
+	return formatEntries(query, entries, count), nil
+}
+
+func searchWithExaEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
+	apiKey := resolveExaAPIKey(cfg)
+	if apiKey == "" {
+		return nil, fmt.Errorf("exa: no API key configured")
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"query":      query,
+		"numResults": count,
+		"type":       "auto",
+		"contents": map[string]any{
+			"text": map[string]any{
+				"maxCharacters": 200,
+			},
+		},
+	})
+
+	cmd := exec.Command("curl", "-s", "-L",
+		"https://api.exa.ai/search",
+		"-H", "Content-Type: application/json",
+		"-H", "x-api-key: "+apiKey,
+		"-d", string(payload),
+		"--max-time", "15",
+	)
+	if cfg.Proxy != "" {
+		cmd.Args = append(cmd.Args, "--proxy", cfg.Proxy)
+	}
+
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = nil
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("exa search failed: %w", err)
+	}
+
+	output := stdout.String()
+	if output == "" {
+		return nil, fmt.Errorf("exa: empty response")
+	}
+
+	var resp struct {
+		Results []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+			Text  string `json:"text"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(output), &resp); err != nil {
+		return nil, fmt.Errorf("exa: parse response failed: %w", err)
+	}
+	if len(resp.Results) == 0 {
+		return nil, fmt.Errorf("exa: no results")
+	}
+
+	entries := make([]searchEntry, 0, len(resp.Results))
+	for _, r := range resp.Results {
+		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Text})
+	}
+	return entries, nil
+}
+
+func resolveExaAPIKey(cfg *WebSearchConfig) string {
+	if cfg != nil && strings.TrimSpace(strings.ToLower(cfg.Provider)) == "exa" && strings.TrimSpace(cfg.APIKey) != "" {
+		return cfg.APIKey
+	}
+	if v := os.Getenv("LH_SEARCH_EXA_KEY"); v != "" {
+		return v
+	}
+	if v := os.Getenv("EXA_API_KEY"); v != "" {
+		return v
+	}
+	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
+		return cfg.APIKey
+	}
+	return ""
 }
 
 // ── ddgs Python 包 ───────────────────────────────────────────────────────────
@@ -1224,6 +1357,9 @@ func validateSandbox(cleanPath string) error {
 		filepath.Join(home, ".luckyharness"), // LuckyHarness 自身目录
 		"/tmp",                               // 临时文件
 		"/dev/null",                          // 空设备
+	}
+	if base := filepath.Base(home); base == ".lh-home" {
+		allowedPrefixes = append(allowedPrefixes, home)
 	}
 
 	// 禁止的路径前缀（即使在上面的允许列表下也拦截）
