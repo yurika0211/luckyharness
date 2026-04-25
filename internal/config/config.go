@@ -148,6 +148,7 @@ type MsgGatewayConfig struct {
 type MsgGatewayTelegram struct {
 	Token              string `json:"token,omitempty"`
 	ChatTimeoutSeconds int    `json:"chat_timeout_seconds,omitempty"` // Telegram 对话总超时（秒）
+	ProgressAsMessages bool   `json:"progress_as_messages,omitempty"` // 中间思考/工具步骤是否单独发消息
 }
 
 // MsgGatewayOneBot OneBot 网关配置
@@ -399,7 +400,8 @@ func DefaultConfig() *Config {
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
 			Telegram: MsgGatewayTelegram{
-				ChatTimeoutSeconds: 600, // 10 分钟
+				ChatTimeoutSeconds: 600,  // 10 分钟
+				ProgressAsMessages: true, // 默认启用独立步骤消息
 			},
 			OneBot: MsgGatewayOneBot{
 				ShowTyping: true,
@@ -762,6 +764,8 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.MsgGateway.Telegram.ChatTimeoutSeconds = n
+	case "msg_gateway.telegram.progress_as_messages":
+		m.config.MsgGateway.Telegram.ProgressAsMessages = parseBool(value)
 	case "msg_gateway.onebot.api_base":
 		m.config.MsgGateway.OneBot.APIBase = value
 	case "msg_gateway.onebot.ws_url":

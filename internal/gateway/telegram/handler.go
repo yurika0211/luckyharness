@@ -49,6 +49,7 @@ type agentConfigSnapshot struct {
 	Model              string
 	Provider           string
 	ChatTimeoutSeconds int
+	ProgressAsMessages bool
 }
 
 // agentProviderAdapter 将 *agent.Agent 适配为 agentProvider 接口。
@@ -115,6 +116,7 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		Model:              cfg.Model,
 		Provider:           cfg.Provider,
 		ChatTimeoutSeconds: cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
+		ProgressAsMessages: cfg.MsgGateway.Telegram.ProgressAsMessages,
 	}
 }
 
@@ -133,6 +135,8 @@ type Handler struct {
 
 	// 对话总超时（防止长任务无限占用）；可配置，默认 10 分钟
 	chatStreamTimeout time.Duration
+	// 中间思考/工具步骤是否作为独立消息发送
+	progressAsMessages bool
 }
 
 type chatTask struct {
@@ -153,12 +157,13 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		ap = agentProviderAdapter{a}
 	}
 	return &Handler{
-		adapter:           adapter,
-		agent:             ap,
-		sessions:          make(map[string]string),
-		tasks:             make(map[string]*chatTask),
-		dataDir:           "", // 默认不持久化，需 SetDataDir 启用
-		chatStreamTimeout: resolveChatStreamTimeout(ap),
+		adapter:            adapter,
+		agent:              ap,
+		sessions:           make(map[string]string),
+		tasks:              make(map[string]*chatTask),
+		dataDir:            "", // 默认不持久化，需 SetDataDir 启用
+		chatStreamTimeout:  resolveChatStreamTimeout(ap),
+		progressAsMessages: resolveProgressAsMessages(ap),
 	}
 }
 
@@ -177,11 +182,24 @@ func resolveChatStreamTimeout(ap agentProvider) time.Duration {
 	return timeout
 }
 
+func resolveProgressAsMessages(ap agentProvider) bool {
+	enabled := true
+	if ap == nil {
+		return enabled
+	}
+	cfg := ap.Config().Get()
+	return cfg.ProgressAsMessages
+}
+
 func (h *Handler) effectiveChatStreamTimeout() time.Duration {
 	if h.chatStreamTimeout > 0 {
 		return h.chatStreamTimeout
 	}
 	return defaultChatStreamTimeout
+}
+
+func (h *Handler) effectiveProgressAsMessages() bool {
+	return h.progressAsMessages
 }
 
 // SetDataDir 设置数据目录并从磁盘恢复 chatID→sessionID 映射
@@ -563,6 +581,23 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	return h.handleChatSync(taskCtx, msg, inputText, sessionID)
 }
 
+func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || h.adapter == nil || msg == nil {
+		return
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	// 群聊里用 reply 方式，让中间步骤挂在原消息下，阅读更清晰。
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		_ = h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, text)
+		return
+	}
+	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
+}
+
 // handleChatStream 流式对话处理（Telegram 专用）
 func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSender, msg *gateway.Message, text, sessionID string) error {
 	// 启动 typing indicator（每 5 秒刷新一次，直到完成）
@@ -601,6 +636,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 	var finalContent strings.Builder
 	toolCallCount := 0
+	lastProgress := ""
 	ended := false
 	sentResult := false
 
@@ -622,17 +658,40 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			}
 			switch evt.Type {
 			case agent.ChatEventThinking:
-				// 思考状态作为消息前缀展示，不清空已有内容
-				sender.SetThinking(evt.Content)
+				if h.effectiveProgressAsMessages() {
+					progress := "🧠 " + clipOneLine(evt.Content, 180)
+					if progress != "🧠 " && progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
+				} else {
+					// 兼容旧模式：在同一条消息里更新思考前缀
+					sender.SetThinking(evt.Content)
+				}
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
-				// 工具调用转译为自然语言步骤，减少 JSON/参数噪音。
-				sender.SetToolCall(humanizeToolCall(evt.Name, evt.Args), "")
+				if h.effectiveProgressAsMessages() {
+					// 工具调用作为独立自然语言消息发送（Nanobot 风格）。
+					progress := "🔧 " + humanizeToolCall(evt.Name, evt.Args)
+					h.sendProgressMessage(msg, progress)
+					lastProgress = progress
+				} else {
+					// 兼容旧模式：显示工具调用标签
+					sender.SetToolCall(evt.Name, evt.Args)
+				}
 
 			case agent.ChatEventToolResult:
-				// 工具结果展示后切回思考状态
-				sender.SetThinking(fmt.Sprintf("继续处理中（已完成 %d 个步骤）", toolCallCount))
+				if h.effectiveProgressAsMessages() {
+					progress := fmt.Sprintf("✅ 已完成第 %d 个步骤", toolCallCount)
+					if progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
+				} else {
+					// 兼容旧模式：工具结果后切回思考态
+					sender.SetThinking(fmt.Sprintf("Continuing... (%d tools used)", toolCallCount))
+				}
 
 			case agent.ChatEventContent:
 				// 内容流式追加

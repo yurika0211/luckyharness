@@ -89,7 +89,7 @@ func newMockBotServer() (*httptest.Server, *tgbotapi.BotAPI, error) {
 			}
 		default:
 			result = map[string]interface{}{
-				"ok": true,
+				"ok":     true,
 				"result": map[string]interface{}{},
 			}
 		}
@@ -1662,9 +1662,9 @@ func TestV054HandlerHandleMessagePrivate(t *testing.T) {
 			ID:       "12345",
 			Username: "testuser",
 		},
-		Text:    "/help",
+		Text:      "/help",
 		IsCommand: true,
-		Command: "help",
+		Command:   "help",
 	}
 
 	// handleHelp 需要 agent，会 panic
@@ -2547,17 +2547,17 @@ func TestV054AdapterName(t *testing.T) {
 // ============================================================
 
 type mockAgentProvider struct {
-	sessions    *session.Manager
-	configSnap  agentConfigSnapshot
-	soulVal     *soul.Soul
-	toolsVal    *tool.Registry
-	skillsVal   []*tool.SkillInfo
-	cronEngine  *cron.Engine
-	metricsVal  *metrics.Metrics
-	memoryVal   *memory.Store
-	chatFunc    func(ctx context.Context, userInput string) (string, error)
-	chatSessFn  func(ctx context.Context, sessionID, userInput string) (string, error)
-	chatStreamFn func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	sessions      *session.Manager
+	configSnap    agentConfigSnapshot
+	soulVal       *soul.Soul
+	toolsVal      *tool.Registry
+	skillsVal     []*tool.SkillInfo
+	cronEngine    *cron.Engine
+	metricsVal    *metrics.Metrics
+	memoryVal     *memory.Store
+	chatFunc      func(ctx context.Context, userInput string) (string, error)
+	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
+	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
 	switchModelFn func(modelID string) error
 }
 
@@ -2633,9 +2633,11 @@ func (m *mockConfigProvider) Get() agentConfigSnapshot {
 }
 
 type mockStreamSender struct {
-	content  strings.Builder
-	result   string
-	finished bool
+	content       strings.Builder
+	result        string
+	finished      bool
+	thinkingCount int
+	toolCallCount int
 }
 
 func (m *mockStreamSender) Append(content string) error {
@@ -2644,10 +2646,12 @@ func (m *mockStreamSender) Append(content string) error {
 }
 
 func (m *mockStreamSender) SetThinking(label string) error {
+	m.thinkingCount++
 	return nil
 }
 
 func (m *mockStreamSender) SetToolCall(name, args string) error {
+	m.toolCallCount++
 	return nil
 }
 
@@ -2679,8 +2683,12 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, *httptest.Server) {
 		t.Fatalf("failed to create session manager: %v", err)
 	}
 	mockAgent := &mockAgentProvider{
-		sessions:   sessMgr,
-		configSnap: agentConfigSnapshot{Model: "test-model", Provider: "test-provider"},
+		sessions: sessMgr,
+		configSnap: agentConfigSnapshot{
+			Model:              "test-model",
+			Provider:           "test-provider",
+			ProgressAsMessages: true,
+		},
 		toolsVal:   tool.NewRegistry(),
 		skillsVal:  []*tool.SkillInfo{},
 		cronEngine: cron.NewEngine(),
@@ -2688,9 +2696,11 @@ func newHandlerWithMockAgent(t *testing.T) (*Handler, *httptest.Server) {
 	}
 
 	handler := &Handler{
-		adapter:  adapter,
-		agent:    mockAgent,
-		sessions: make(map[string]string),
+		adapter:            adapter,
+		agent:              mockAgent,
+		sessions:           make(map[string]string),
+		chatStreamTimeout:  defaultChatStreamTimeout,
+		progressAsMessages: true,
 	}
 
 	return handler, server
@@ -3592,6 +3602,46 @@ func TestV054HandleChatStreamUnexpectedClose(t *testing.T) {
 	}
 	if sender.result != "partial response" {
 		t.Fatalf("expected fallback result from partial content, got: %q", sender.result)
+	}
+}
+
+func TestV054HandleChatStreamProgressAsSeparateMessages(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 5)
+		ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "thinking..."}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search", Args: `{"query":"test"}`}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Content: "search results"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "Here are the results"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "Here are the results"}
+		close(ch)
+		return ch, nil
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "search for test",
+	}
+	sender := &mockStreamSender{}
+
+	err := handler.handleChatStream(context.Background(), sender, msg, "search for test", handler.getSessionID("12345"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if sender.thinkingCount != 0 {
+		t.Fatalf("expected no inline thinking updates, got %d", sender.thinkingCount)
+	}
+	if sender.toolCallCount != 0 {
+		t.Fatalf("expected no inline tool-call labels, got %d", sender.toolCallCount)
+	}
+	if sender.result != "Here are the results" {
+		t.Fatalf("expected final result, got: %q", sender.result)
 	}
 }
 

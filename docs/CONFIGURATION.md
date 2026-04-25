@@ -34,6 +34,7 @@
 - Agent Loop：`agent.max_iterations`, `agent.timeout_seconds`, `agent.auto_approve`
 - API Server：`server.addr`, `server.api_keys`, `server.enable_cors`, `server.rate_limit`
 - 消息网关：`msg_gateway.platform`, `msg_gateway.telegram.token`, `msg_gateway.onebot.*`
+- Telegram 中间步骤展示：`msg_gateway.telegram.progress_as_messages`
 
 ## 生效方式
 
