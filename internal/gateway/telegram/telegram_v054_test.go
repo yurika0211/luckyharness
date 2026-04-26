@@ -3645,6 +3645,45 @@ func TestV054HandleChatStreamProgressAsSeparateMessages(t *testing.T) {
 	}
 }
 
+func TestV054HandleChatStreamNaturalProgressFinalOnly(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	handler.progressAsNaturalLanguage = true
+
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 5)
+		ch <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "先核对任务状态"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "file_read", Args: `{"path":"tasks/QUEUE.md"}`}
+		ch <- agent.ChatEvent{Type: agent.ChatEventToolResult, Name: "file_read", Result: "ok"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "这是最终答案"}
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "这是最终答案"}
+		close(ch)
+		return ch, nil
+	}
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+		Text: "status report",
+	}
+	sender := &mockStreamSender{}
+
+	err := handler.handleChatStream(context.Background(), sender, msg, "status report", handler.getSessionID("12345"))
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if sender.content.Len() != 0 {
+		t.Fatalf("expected no streaming append in natural progress mode, got content length %d", sender.content.Len())
+	}
+	if !strings.HasPrefix(sender.result, "结论：\n") {
+		t.Fatalf("expected wrapped final conclusion, got: %q", sender.result)
+	}
+}
+
 func TestV054HandleChatStreamErrorEvent(t *testing.T) {
 	handler, server := newHandlerWithMockAgent(t)
 	defer server.Close()

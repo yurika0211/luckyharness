@@ -46,10 +46,12 @@ type agentConfigProvider interface {
 
 // agentConfigSnapshot 是 config 快照的最小子集。
 type agentConfigSnapshot struct {
-	Model              string
-	Provider           string
-	ChatTimeoutSeconds int
-	ProgressAsMessages bool
+	Model                     string
+	Provider                  string
+	ChatTimeoutSeconds        int
+	ProgressAsMessages        bool
+	ProgressAsNaturalLanguage bool
+	ShowToolDetailsInResult   bool
 }
 
 // agentProviderAdapter 将 *agent.Agent 适配为 agentProvider 接口。
@@ -113,10 +115,12 @@ type agentConfigWrapper struct {
 func (w agentConfigWrapper) Get() agentConfigSnapshot {
 	cfg := w.mgr.Get()
 	return agentConfigSnapshot{
-		Model:              cfg.Model,
-		Provider:           cfg.Provider,
-		ChatTimeoutSeconds: cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
-		ProgressAsMessages: cfg.MsgGateway.Telegram.ProgressAsMessages,
+		Model:                     cfg.Model,
+		Provider:                  cfg.Provider,
+		ChatTimeoutSeconds:        cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
+		ProgressAsMessages:        cfg.MsgGateway.Telegram.ProgressAsMessages,
+		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
+		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
 	}
 }
 
@@ -137,6 +141,10 @@ type Handler struct {
 	chatStreamTimeout time.Duration
 	// 中间思考/工具步骤是否作为独立消息发送
 	progressAsMessages bool
+	// 中间步骤是否转成自然语言进度播报，并在最后统一输出结论
+	progressAsNaturalLanguage bool
+	// 最终回答前是否附上自然语言工具摘要
+	showToolDetailsInResult bool
 }
 
 type chatTask struct {
@@ -157,13 +165,15 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		ap = agentProviderAdapter{a}
 	}
 	return &Handler{
-		adapter:            adapter,
-		agent:              ap,
-		sessions:           make(map[string]string),
-		tasks:              make(map[string]*chatTask),
-		dataDir:            "", // 默认不持久化，需 SetDataDir 启用
-		chatStreamTimeout:  resolveChatStreamTimeout(ap),
-		progressAsMessages: resolveProgressAsMessages(ap),
+		adapter:                   adapter,
+		agent:                     ap,
+		sessions:                  make(map[string]string),
+		tasks:                     make(map[string]*chatTask),
+		dataDir:                   "", // 默认不持久化，需 SetDataDir 启用
+		chatStreamTimeout:         resolveChatStreamTimeout(ap),
+		progressAsMessages:        resolveProgressAsMessages(ap),
+		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(ap),
+		showToolDetailsInResult:   resolveShowToolDetailsInResult(ap),
 	}
 }
 
@@ -191,6 +201,22 @@ func resolveProgressAsMessages(ap agentProvider) bool {
 	return cfg.ProgressAsMessages
 }
 
+func resolveProgressAsNaturalLanguage(ap agentProvider) bool {
+	if ap == nil {
+		return false
+	}
+	cfg := ap.Config().Get()
+	return cfg.ProgressAsNaturalLanguage
+}
+
+func resolveShowToolDetailsInResult(ap agentProvider) bool {
+	if ap == nil {
+		return false
+	}
+	cfg := ap.Config().Get()
+	return cfg.ShowToolDetailsInResult
+}
+
 func (h *Handler) effectiveChatStreamTimeout() time.Duration {
 	if h.chatStreamTimeout > 0 {
 		return h.chatStreamTimeout
@@ -200,6 +226,14 @@ func (h *Handler) effectiveChatStreamTimeout() time.Duration {
 
 func (h *Handler) effectiveProgressAsMessages() bool {
 	return h.progressAsMessages
+}
+
+func (h *Handler) effectiveProgressAsNaturalLanguage() bool {
+	return h.progressAsNaturalLanguage
+}
+
+func (h *Handler) effectiveShowToolDetailsInResult() bool {
+	return h.showToolDetailsInResult
 }
 
 // SetDataDir 设置数据目录并从磁盘恢复 chatID→sessionID 映射
@@ -570,6 +604,12 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 		inputText = fmt.Sprintf("[%s]: %s", msg.Sender.DisplayName(), text)
 	}
 
+	// 自然语言进度模式：直接按步骤发独立消息，最终结论也作为“最后一条新消息”发送。
+	// 这样可以避免结论写回到最早的占位流消息，导致视觉上跑到最上面。
+	if h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage() {
+		return h.handleChatNarrativeStream(taskCtx, msg, inputText, sessionID)
+	}
+
 	// 尝试流式输出（Adapter 已实现 StreamGateway）
 	sender, err := h.adapter.SendStream(taskCtx, msg.Chat.ID, msg.ID)
 	if err == nil {
@@ -596,6 +636,143 @@ func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
 		return
 	}
 	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
+}
+
+// handleChatNarrativeStream 自然语言进度模式（不使用流式占位消息）。
+// 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
+func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
+	// 启动 typing indicator（每 5 秒刷新一次，直到完成）
+	typingCtx, typingCancel := context.WithCancel(context.Background())
+	defer typingCancel()
+	go h.adapter.SendTypingLoop(typingCtx, msg.Chat.ID)
+
+	chatCtx, chatCancel := context.WithTimeout(ctx, h.effectiveChatStreamTimeout())
+	defer chatCancel()
+
+	events, err := h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
+	if err != nil {
+		// session 可能坏了，重试
+		if strings.Contains(err.Error(), "session not found") {
+			h.resetSession(msg.Chat.ID)
+			sessionID = h.getSessionID(msg.Chat.ID)
+			events, err = h.agent.ChatWithSessionStream(chatCtx, sessionID, text)
+		}
+		if err != nil {
+			switch {
+			case isTaskTimeoutError(err):
+				h.sendProgressMessage(msg, "⏱ 请求超时")
+			case isTaskCanceledError(err):
+				h.sendProgressMessage(msg, "🛑 当前任务已停止")
+			default:
+				h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", truncateString(err.Error(), 200)))
+			}
+			return nil
+		}
+	}
+
+	var finalContent strings.Builder
+	toolCallCount := 0
+	lastProgress := ""
+	ended := false
+	sentResult := false
+	var toolNarratives []string
+
+	for !ended {
+		select {
+		case <-chatCtx.Done():
+			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+				h.sendProgressMessage(msg, "⏱ 请求超时")
+			} else {
+				h.sendProgressMessage(msg, "🛑 当前任务已停止")
+			}
+			sentResult = true
+			ended = true
+
+		case evt, ok := <-events:
+			if !ok {
+				ended = true
+				break
+			}
+
+			switch evt.Type {
+			case agent.ChatEventThinking:
+				progress := humanizeThinkingProgress(evt.Content)
+				if strings.TrimSpace(progress) != "" && progress != lastProgress {
+					h.sendProgressMessage(msg, progress)
+					lastProgress = progress
+				}
+
+			case agent.ChatEventToolCall:
+				toolCallCount++
+				progress := humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
+				if strings.TrimSpace(progress) != "" && progress != lastProgress {
+					h.sendProgressMessage(msg, progress)
+					lastProgress = progress
+				}
+
+			case agent.ChatEventToolResult:
+				if h.effectiveShowToolDetailsInResult() {
+					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
+						toolNarratives = append(toolNarratives, line)
+					}
+				}
+				progress := humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
+				if strings.TrimSpace(progress) != "" && progress != lastProgress {
+					h.sendProgressMessage(msg, progress)
+					lastProgress = progress
+				}
+
+			case agent.ChatEventContent:
+				finalContent.WriteString(evt.Content)
+
+			case agent.ChatEventDone:
+				if finalContent.Len() == 0 {
+					finalContent.WriteString(evt.Content)
+				}
+				finalOutput := strings.TrimSpace(finalContent.String())
+				if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
+					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
+				}
+				h.sendProgressMessage(msg, wrapFinalConclusion(finalOutput))
+				sentResult = true
+				ended = true
+
+			case agent.ChatEventError:
+				if isTaskTimeoutError(evt.Err) {
+					h.sendProgressMessage(msg, "⏱ 请求超时")
+				} else if isTaskCanceledError(evt.Err) {
+					h.sendProgressMessage(msg, "🛑 当前任务已停止")
+				} else {
+					errMsg := evt.Err.Error()
+					if len(errMsg) > 200 {
+						errMsg = errMsg[:197] + "..."
+					}
+					h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", errMsg))
+				}
+				sentResult = true
+				ended = true
+			}
+		}
+	}
+
+	if !sentResult {
+		finalOutput := strings.TrimSpace(finalContent.String())
+		switch {
+		case finalOutput != "":
+			if h.effectiveShowToolDetailsInResult() {
+				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
+			}
+			h.sendProgressMessage(msg, wrapFinalConclusion(finalOutput))
+		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
+			h.sendProgressMessage(msg, "⏱ 请求超时")
+		case errors.Is(chatCtx.Err(), context.Canceled):
+			h.sendProgressMessage(msg, "🛑 当前任务已停止")
+		default:
+			h.sendProgressMessage(msg, "❌ Error: stream ended unexpectedly, please retry")
+		}
+	}
+
+	return nil
 }
 
 // handleChatStream 流式对话处理（Telegram 专用）
@@ -639,6 +816,8 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	lastProgress := ""
 	ended := false
 	sentResult := false
+	var toolNarratives []string
+	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
 
 	for !ended {
 		select {
@@ -660,7 +839,10 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventThinking:
 				if h.effectiveProgressAsMessages() {
 					progress := "🧠 " + clipOneLine(evt.Content, 180)
-					if progress != "🧠 " && progress != lastProgress {
+					if narrativeMode {
+						progress = humanizeThinkingProgress(evt.Content)
+					}
+					if strings.TrimSpace(progress) != "" && progress != "🧠 " && progress != lastProgress {
 						h.sendProgressMessage(msg, progress)
 						lastProgress = progress
 					}
@@ -674,6 +856,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				if h.effectiveProgressAsMessages() {
 					// 工具调用作为独立自然语言消息发送（Nanobot 风格）。
 					progress := "🔧 " + humanizeToolCall(evt.Name, evt.Args)
+					if narrativeMode {
+						progress = humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
+					}
 					h.sendProgressMessage(msg, progress)
 					lastProgress = progress
 				} else {
@@ -682,8 +867,16 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 
 			case agent.ChatEventToolResult:
+				if h.effectiveShowToolDetailsInResult() {
+					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
+						toolNarratives = append(toolNarratives, line)
+					}
+				}
 				if h.effectiveProgressAsMessages() {
 					progress := fmt.Sprintf("✅ 已完成第 %d 个步骤", toolCallCount)
+					if narrativeMode {
+						progress = humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
+					}
 					if progress != lastProgress {
 						h.sendProgressMessage(msg, progress)
 						lastProgress = progress
@@ -696,14 +889,23 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventContent:
 				// 内容流式追加
 				finalContent.WriteString(evt.Content)
-				sender.Append(evt.Content)
+				if !narrativeMode {
+					sender.Append(evt.Content)
+				}
 
 			case agent.ChatEventDone:
 				if finalContent.Len() == 0 {
 					finalContent.WriteString(evt.Content)
 				}
+				finalOutput := finalContent.String()
+				if h.effectiveShowToolDetailsInResult() {
+					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
+				}
+				if narrativeMode {
+					finalOutput = wrapFinalConclusion(finalOutput)
+				}
 				// 最终结果替换整个消息
-				sender.SetResult(finalContent.String())
+				sender.SetResult(finalOutput)
 				sender.Finish()
 				sentResult = true
 				ended = true
@@ -736,9 +938,16 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	}
 
 	if !sentResult {
+		finalOutput := finalContent.String()
+		if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
+			finalOutput = prependToolNarratives(toolNarratives, finalOutput)
+		}
+		if narrativeMode && finalOutput != "" {
+			finalOutput = wrapFinalConclusion(finalOutput)
+		}
 		switch {
 		case finalContent.Len() > 0:
-			sender.SetResult(finalContent.String())
+			sender.SetResult(finalOutput)
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			sender.SetResult("⏱ 请求超时")
 		case errors.Is(chatCtx.Err(), context.Canceled):
@@ -750,6 +959,31 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	}
 
 	return nil
+}
+
+func prependToolNarratives(lines []string, finalOutput string) string {
+	if len(lines) == 0 {
+		return finalOutput
+	}
+	seen := make(map[string]struct{}, len(lines))
+	var b strings.Builder
+	b.WriteString("我刚刚先做了这些事：\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if _, ok := seen[line]; ok {
+			continue
+		}
+		seen[line] = struct{}{}
+		b.WriteString("1. ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(strings.TrimSpace(finalOutput))
+	return b.String()
 }
 
 // truncateString 截断字符串
