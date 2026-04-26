@@ -503,43 +503,50 @@ func handleWebSearch(cfg *WebSearchConfig, args map[string]any) (string, error) 
 		return handleDeepSearch(cfg, query, count, provider)
 	}
 
-	// ── quick 模式：按优先级尝试搜索源，任一成功即返回 ──
-	// 降级链：Brave → ddgs → DDG Lite → SearXNG
-
-	// 1. Exa Search API
-	if provider == "exa" {
-		if result, err := searchWithExa(cfg, query, count); err == nil && result != "" {
-			return annotateSource(result, "Exa"), nil
-		}
-	}
-
-	// 2. Brave Search API
-	if provider == "brave" || (provider != "ddgs" && provider != "searxng" && provider != "exa") {
-		if result, err := searchWithBrave(cfg, query, count); err == nil && result != "" {
-			return annotateSource(result, "Brave"), nil
-		}
-	}
-
-	// 3. ddgs Python 包（绕过 DDG 验证码，推荐降级方案）
-	if provider == "ddgs" || provider == "brave" {
-		if result, err := searchWithDDGS(query, count); err == nil && result != "" {
-			return annotateSource(result, "DDG (ddgs)"), nil
-		}
-	}
-
-	// 4. DDG Lite curl（可能遇到验证码，最后降级）
-	if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
-		return annotateSource(result, "DDG Lite"), nil
-	}
-
-	// 5. SearXNG 自部署
-	if provider == "searxng" || cfg.BaseURL != "" {
-		if result, err := searchWithSearXNG(cfg, query, count); err == nil && result != "" {
-			return annotateSource(result, "SearXNG"), nil
+	for _, source := range quickSearchOrder(provider, cfg) {
+		switch source {
+		case "searxng":
+			if result, err := searchWithSearXNG(cfg, query, count); err == nil && result != "" {
+				return annotateSource(result, "SearXNG"), nil
+			}
+		case "exa":
+			if result, err := searchWithExa(cfg, query, count); err == nil && result != "" {
+				return annotateSource(result, "Exa"), nil
+			}
+		case "brave":
+			if result, err := searchWithBrave(cfg, query, count); err == nil && result != "" {
+				return annotateSource(result, "Brave"), nil
+			}
+		case "ddgs":
+			if result, err := searchWithDDGS(query, count); err == nil && result != "" {
+				return annotateSource(result, "DDG (ddgs)"), nil
+			}
+		case "ddg-lite":
+			if result, err := searchWithDDGLite(query, count); err == nil && result != "" {
+				return annotateSource(result, "DDG Lite"), nil
+			}
 		}
 	}
 
 	return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
+}
+
+func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
+	switch provider {
+	case "searxng":
+		return []string{"searxng", "exa", "ddgs", "ddg-lite", "brave"}
+	case "exa":
+		return []string{"exa", "searxng", "ddgs", "ddg-lite", "brave"}
+	case "ddgs":
+		return []string{"ddgs", "ddg-lite", "searxng", "exa", "brave"}
+	case "brave":
+		return []string{"brave", "ddgs", "ddg-lite", "searxng", "exa"}
+	default:
+		if cfg != nil && cfg.BaseURL != "" {
+			return []string{"searxng", "brave", "ddgs", "ddg-lite", "exa"}
+		}
+		return []string{"brave", "ddgs", "ddg-lite", "searxng", "exa"}
+	}
 }
 
 // handleDeepSearch 深度搜索模式：多源交叉验证，合并去重
@@ -559,29 +566,24 @@ func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider st
 		}
 	}
 
-	// 1. Brave
-	if provider == "brave" || (provider != "ddgs" && provider != "searxng" && provider != "exa") {
-		if entries, err := searchWithBraveEntries(cfg, query, count); err == nil {
-			collect("Brave", entries)
-		}
-	}
-
-	// 1.5 Exa
-	if provider == "exa" || resolveExaAPIKey(cfg) != "" {
-		if entries, err := searchWithExaEntries(cfg, query, count); err == nil {
-			collect("Exa", entries)
-		}
-	}
-
-	// 2. ddgs
-	if entries, err := searchWithDDGSEntries(query, count); err == nil {
-		collect("DDG", entries)
-	}
-
-	// 3. SearXNG
-	if provider == "searxng" || cfg.BaseURL != "" {
-		if entries, err := searchWithSearXNGEntries(cfg, query, count); err == nil {
-			collect("SearXNG", entries)
+	for _, source := range deepSearchOrder(provider, cfg) {
+		switch source {
+		case "searxng":
+			if entries, err := searchWithSearXNGEntries(cfg, query, count); err == nil {
+				collect("SearXNG", entries)
+			}
+		case "exa":
+			if entries, err := searchWithExaEntries(cfg, query, count); err == nil {
+				collect("Exa", entries)
+			}
+		case "ddgs":
+			if entries, err := searchWithDDGSEntries(query, count); err == nil {
+				collect("DDG", entries)
+			}
+		case "brave":
+			if entries, err := searchWithBraveEntries(cfg, query, count); err == nil {
+				collect("Brave", entries)
+			}
 		}
 	}
 
@@ -631,6 +633,40 @@ func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider st
 		result = result[:12000] + "\n... (truncated)"
 	}
 	return result, nil
+}
+
+func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
+	hasExa := resolveExaAPIKey(cfg) != ""
+	switch provider {
+	case "searxng":
+		if hasExa {
+			return []string{"searxng", "exa", "ddgs", "brave"}
+		}
+		return []string{"searxng", "ddgs", "brave"}
+	case "exa":
+		return []string{"exa", "searxng", "ddgs", "brave"}
+	case "ddgs":
+		if hasExa {
+			return []string{"ddgs", "searxng", "exa", "brave"}
+		}
+		return []string{"ddgs", "searxng", "brave"}
+	case "brave":
+		if hasExa {
+			return []string{"brave", "ddgs", "searxng", "exa"}
+		}
+		return []string{"brave", "ddgs", "searxng"}
+	default:
+		if cfg != nil && cfg.BaseURL != "" {
+			if hasExa {
+				return []string{"searxng", "brave", "ddgs", "exa"}
+			}
+			return []string{"searxng", "brave", "ddgs"}
+		}
+		if hasExa {
+			return []string{"brave", "ddgs", "searxng", "exa"}
+		}
+		return []string{"brave", "ddgs", "searxng"}
+	}
 }
 
 // searchEntry 统一的搜索结果条目
