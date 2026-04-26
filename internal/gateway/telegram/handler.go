@@ -138,6 +138,7 @@ type Handler struct {
 	mu         sync.RWMutex
 	sessions   map[string]string // chatID → sessionID
 	tasks      map[string]*chatTask
+	queues     map[string]*chatQueue
 	restarting bool
 
 	// v0.44.0: chatID→sessionID 映射持久化
@@ -155,6 +156,17 @@ type Handler struct {
 
 type chatTask struct {
 	cancel context.CancelFunc
+}
+
+type queuedChatRequest struct {
+	ctx       context.Context
+	msg       *gateway.Message
+	inputText string
+}
+
+type chatQueue struct {
+	running bool
+	items   []*queuedChatRequest
 }
 
 const defaultChatStreamTimeout = 10 * time.Minute
@@ -175,6 +187,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		agent:                     ap,
 		sessions:                  make(map[string]string),
 		tasks:                     make(map[string]*chatTask),
+		queues:                    make(map[string]*chatQueue),
 		dataDir:                   "", // 默认不持久化，需 SetDataDir 启用
 		chatStreamTimeout:         resolveChatStreamTimeout(ap),
 		progressAsMessages:        resolveProgressAsMessages(ap),
@@ -369,21 +382,94 @@ func (h *Handler) setSessionID(chatID, sessionID string) {
 
 func (h *Handler) dispatchChatAsync(ctx context.Context, msg *gateway.Message, inputText string) error {
 	msgCopy := *msg
-	go func() {
-		if err := h.handleChat(ctx, &msgCopy, inputText); err != nil {
+	position, startWorker := h.enqueueChatRequest(msg.Chat.ID, &queuedChatRequest{
+		ctx:       ctx,
+		msg:       &msgCopy,
+		inputText: inputText,
+	})
+	if startWorker {
+		go h.runChatQueue(msg.Chat.ID)
+	}
+	if position > 1 {
+		h.notifyQueued(msg.Chat.ID, msg.ID, position-1)
+	}
+	return nil
+}
+
+func (h *Handler) enqueueChatRequest(chatID string, req *queuedChatRequest) (position int, startWorker bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.queues == nil {
+		h.queues = make(map[string]*chatQueue)
+	}
+	q := h.queues[chatID]
+	if q == nil {
+		q = &chatQueue{}
+		h.queues[chatID] = q
+	}
+
+	position = len(q.items) + 1
+	if h.tasks != nil && h.tasks[chatID] != nil {
+		position++
+	}
+	q.items = append(q.items, req)
+	if !q.running {
+		q.running = true
+		startWorker = true
+	}
+	return position, startWorker
+}
+
+func (h *Handler) dequeueChatRequest(chatID string) (*queuedChatRequest, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	q := h.queues[chatID]
+	if q == nil || len(q.items) == 0 {
+		if q != nil {
+			q.running = false
+			delete(h.queues, chatID)
+		}
+		return nil, false
+	}
+
+	req := q.items[0]
+	q.items = q.items[1:]
+	return req, true
+}
+
+func (h *Handler) runChatQueue(chatID string) {
+	for {
+		req, ok := h.dequeueChatRequest(chatID)
+		if !ok {
+			return
+		}
+		if err := h.handleChat(req.ctx, req.msg, req.inputText); err != nil {
 			fmt.Printf("[telegram] chat error: %v\n", err)
 		}
-	}()
-	return nil
+	}
+}
+
+func (h *Handler) notifyQueued(chatID string, replyToMsgID string, ahead int) {
+	if h.adapter == nil || ahead <= 0 {
+		return
+	}
+	sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	text := fmt.Sprintf("⏳ 已加入消息队列，前面还有 %d 个任务", ahead)
+	if strings.TrimSpace(replyToMsgID) != "" {
+		_ = h.adapter.SendWithReply(sendCtx, chatID, replyToMsgID, text)
+		return
+	}
+	_ = h.adapter.Send(sendCtx, chatID, text)
 }
 
 func (h *Handler) beginChatTask(chatID string, parent context.Context) (context.Context, *chatTask) {
 	h.mu.Lock()
 	if h.tasks == nil {
 		h.tasks = make(map[string]*chatTask)
-	}
-	if old := h.tasks[chatID]; old != nil {
-		old.cancel()
 	}
 	taskCtx, cancel := context.WithCancel(parent)
 	task := &chatTask{cancel: cancel}
@@ -420,6 +506,19 @@ func (h *Handler) cancelChatTask(chatID string) bool {
 	}
 	task.cancel()
 	return true
+}
+
+func (h *Handler) queueStatus(chatID string) (running bool, queued int) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	if task := h.tasks[chatID]; task != nil {
+		running = true
+	}
+	if q := h.queues[chatID]; q != nil {
+		queued = len(q.items)
+	}
+	return running, queued
 }
 
 func isTaskCanceledError(err error) bool {
@@ -1538,6 +1637,14 @@ func (h *Handler) handleStatus(ctx context.Context, msg *gateway.Message) error 
 	m := h.agent.Metrics()
 	snapshot := m.Snapshot()
 	sb.WriteString(fmt.Sprintf("• Total requests: %d\n", snapshot.TotalRequests))
+
+	running, queued := h.queueStatus(chatID)
+	if running {
+		sb.WriteString("• Current task: running\n")
+	} else {
+		sb.WriteString("• Current task: idle\n")
+	}
+	sb.WriteString(fmt.Sprintf("• Queue pending: %d\n", queued))
 
 	return h.adapter.Send(ctx, chatID, sb.String())
 }

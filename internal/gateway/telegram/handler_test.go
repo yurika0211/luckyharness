@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -126,6 +127,45 @@ func TestConcurrentSessionAccess(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestEnqueueChatRequestTracksQueuePosition(t *testing.T) {
+	h := &Handler{
+		queues: make(map[string]*chatQueue),
+	}
+
+	pos1, start1 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "first"})
+	pos2, start2 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "second"})
+	pos3, start3 := h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "third"})
+
+	assert.Equal(t, 1, pos1)
+	assert.True(t, start1)
+	assert.Equal(t, 2, pos2)
+	assert.False(t, start2)
+	assert.Equal(t, 3, pos3)
+	assert.False(t, start3)
+
+	running, queued := h.queueStatus("chat1")
+	assert.False(t, running)
+	assert.Equal(t, 3, queued)
+}
+
+func TestDequeueChatRequestFIFO(t *testing.T) {
+	h := &Handler{
+		queues: make(map[string]*chatQueue),
+	}
+	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "first"})
+	h.enqueueChatRequest("chat1", &queuedChatRequest{ctx: context.Background(), inputText: "second"})
+
+	req1, ok1 := h.dequeueChatRequest("chat1")
+	req2, ok2 := h.dequeueChatRequest("chat1")
+	_, ok3 := h.dequeueChatRequest("chat1")
+
+	require.True(t, ok1)
+	require.True(t, ok2)
+	assert.Equal(t, "first", req1.inputText)
+	assert.Equal(t, "second", req2.inputText)
+	assert.False(t, ok3)
 }
 
 // TestHandleMessageCommand verifies command routing.
