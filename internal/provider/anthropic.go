@@ -54,13 +54,13 @@ type anthropicMessage struct {
 
 // anthropicResponse 是 Anthropic API 的响应体
 type anthropicResponse struct {
-	ID      string           `json:"id"`
-	Type    string           `json:"type"`
-	Role    string           `json:"role"`
-	Content []anthropicBlock `json:"content"`
-	Model   string           `json:"model"`
-	Usage   anthropicUsage   `json:"usage"`
-	StopReason string       `json:"stop_reason"`
+	ID         string           `json:"id"`
+	Type       string           `json:"type"`
+	Role       string           `json:"role"`
+	Content    []anthropicBlock `json:"content"`
+	Model      string           `json:"model"`
+	Usage      anthropicUsage   `json:"usage"`
+	StopReason string           `json:"stop_reason"`
 }
 
 type anthropicBlock struct {
@@ -75,17 +75,17 @@ type anthropicUsage struct {
 
 // anthropicStreamEvent 是 Anthropic SSE 事件
 type anthropicStreamEvent struct {
-	Type         string          `json:"type"`
-	Index        int             `json:"index,omitempty"`
-	ContentBlock *anthropicBlock `json:"content_block,omitempty"`
-	Delta        *anthropicDelta `json:"delta,omitempty"`
+	Type         string             `json:"type"`
+	Index        int                `json:"index,omitempty"`
+	ContentBlock *anthropicBlock    `json:"content_block,omitempty"`
+	Delta        *anthropicDelta    `json:"delta,omitempty"`
 	Message      *anthropicResponse `json:"message,omitempty"`
 }
 
 type anthropicDelta struct {
-	Type          string `json:"type"`
-	Text          string `json:"text,omitempty"`
-	StopReason    string `json:"stop_reason,omitempty"`
+	Type       string `json:"type"`
+	Text       string `json:"text,omitempty"`
+	StopReason string `json:"stop_reason,omitempty"`
 }
 
 func (p *AnthropicProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
@@ -247,16 +247,16 @@ func (p *AnthropicProvider) ChatStream(ctx context.Context, messages []Message) 
 					}
 				}
 			case "message_stop":
-				ch <- StreamChunk{Done: true, Model: p.cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: "stop", Model: p.cfg.Model}
 				return
 			case "message_delta":
 				if event.Delta != nil && event.Delta.StopReason != "" {
-					ch <- StreamChunk{Done: true, Model: p.cfg.Model}
+					ch <- StreamChunk{Done: true, FinishReason: event.Delta.StopReason, Model: p.cfg.Model}
 					return
 				}
 			case "error":
 				// Anthropic error event
-				ch <- StreamChunk{Done: true, Model: p.cfg.Model}
+				ch <- StreamChunk{Done: true, FinishReason: "error", Model: p.cfg.Model}
 				return
 			}
 		}

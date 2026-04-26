@@ -1351,6 +1351,32 @@ func TestAgentHandleSkillRead(t *testing.T) {
 	}
 }
 
+func TestAgentHandleSkillReadMatchesAliases(t *testing.T) {
+	a := &Agent{
+		skills: []*tool.SkillInfo{
+			{
+				Name:    "research",
+				Aliases: []string{"research_orchestrator"},
+				Dir:     t.TempDir(),
+			},
+		},
+	}
+
+	skillFile := filepath.Join(a.skills[0].Dir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("# Research\n"), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	handler := a.handleSkillRead()
+	result, err := handler(map[string]any{"name": "research orchestrator"})
+	if err != nil {
+		t.Fatalf("handleSkillRead error = %v", err)
+	}
+	if !strings.Contains(result, "# Research") {
+		t.Fatalf("expected alias match to return skill file, got %q", result)
+	}
+}
+
 func TestAgentConnectMCPServer(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg, _ := config.NewManagerWithDir(tmpDir)
@@ -1365,6 +1391,24 @@ func TestAgentConnectMCPServer(t *testing.T) {
 	
 	// ConnectMCPServer should not panic
 	a.ConnectMCPServer("test", "http://localhost:8080", "test-key")
+}
+
+func TestApplyWebSearchEnvUsesExaKey(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("web_search.provider", "exa"); err != nil {
+		t.Fatalf("Set provider error = %v", err)
+	}
+
+	t.Setenv("EXA_API_KEY", "exa-env-key")
+	applyWebSearchEnv(cfg)
+
+	if got := cfg.Get().WebSearch.APIKey; got != "exa-env-key" {
+		t.Fatalf("expected exa env key, got %q", got)
+	}
 }
 
 func TestAgentChatMethodsExist(t *testing.T) {

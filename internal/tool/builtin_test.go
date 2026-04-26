@@ -1,8 +1,10 @@
 package tool
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -95,6 +97,30 @@ func TestFileListTool(t *testing.T) {
 	}
 }
 
+func TestFileListToolTruncatesRecursiveOutput(t *testing.T) {
+	r := NewRegistry()
+	RegisterBuiltinTools(r)
+
+	tmpDir := t.TempDir()
+	for i := 0; i < 20; i++ {
+		if err := os.WriteFile(filepath.Join(tmpDir, fmt.Sprintf("f%02d.txt", i)), []byte("x"), 0644); err != nil {
+			t.Fatalf("write file: %v", err)
+		}
+	}
+
+	result, err := r.Call("file_list", map[string]any{
+		"path":        tmpDir,
+		"recursive":   true,
+		"max_entries": 5,
+	})
+	if err != nil {
+		t.Fatalf("file_list recursive: %v", err)
+	}
+	if !strings.Contains(result, "truncated after 5 entries") {
+		t.Fatalf("expected truncation marker, got %q", result)
+	}
+}
+
 func TestShellTool(t *testing.T) {
 	r := NewRegistry()
 	RegisterBuiltinTools(r)
@@ -180,6 +206,18 @@ func TestSandboxPathValidation(t *testing.T) {
 	}
 }
 
+func TestSandboxPathValidationAllowsProjectLocalHome(t *testing.T) {
+	projectHome := filepath.Join(t.TempDir(), ".lh-home")
+	if err := os.MkdirAll(filepath.Join(projectHome, ".luckyharness"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("HOME", projectHome)
+
+	if err := validatePath(filepath.Join(projectHome, "skills")); err != nil {
+		t.Fatalf("expected project-local lh home to be allowed, got %v", err)
+	}
+}
+
 func TestShellSandboxValidation(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -202,5 +240,41 @@ func TestShellSandboxValidation(t *testing.T) {
 				t.Errorf("validateShellSandbox(%q) error = %v, wantErr %v", tt.cmd, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestResolveExaAPIKey(t *testing.T) {
+	t.Setenv("LH_SEARCH_EXA_KEY", "")
+	t.Setenv("EXA_API_KEY", "")
+
+	cfg := &WebSearchConfig{Provider: "exa", APIKey: "cfg-key"}
+	if got := resolveExaAPIKey(cfg); got != "cfg-key" {
+		t.Fatalf("expected cfg key, got %q", got)
+	}
+
+	t.Setenv("LH_SEARCH_EXA_KEY", "lh-exa-key")
+	if got := resolveExaAPIKey(&WebSearchConfig{}); got != "lh-exa-key" {
+		t.Fatalf("expected LH_SEARCH_EXA_KEY, got %q", got)
+	}
+
+	t.Setenv("LH_SEARCH_EXA_KEY", "")
+	t.Setenv("EXA_API_KEY", "env-exa-key")
+	if got := resolveExaAPIKey(&WebSearchConfig{}); got != "env-exa-key" {
+		t.Fatalf("expected EXA_API_KEY, got %q", got)
+	}
+}
+
+func TestQuickSearchOrderPrefersSearXNG(t *testing.T) {
+	order := quickSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
+	if len(order) == 0 || order[0] != "searxng" {
+		t.Fatalf("expected searxng first, got %v", order)
+	}
+}
+
+func TestDeepSearchOrderPrefersSearXNG(t *testing.T) {
+	t.Setenv("EXA_API_KEY", "")
+	order := deepSearchOrder("searxng", &WebSearchConfig{BaseURL: "https://search.shiokou.asia"})
+	if len(order) == 0 || order[0] != "searxng" {
+		t.Fatalf("expected searxng first, got %v", order)
 	}
 }

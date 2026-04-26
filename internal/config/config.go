@@ -112,9 +112,13 @@ type ContextConfig struct {
 
 // AgentLoopConfig Agent Loop 配置
 type AgentLoopConfig struct {
-	MaxIterations  int  `json:"max_iterations,omitempty"`
-	TimeoutSeconds int  `json:"timeout_seconds,omitempty"`
-	AutoApprove    bool `json:"auto_approve,omitempty"`
+	MaxIterations          int  `json:"max_iterations,omitempty"`
+	TimeoutSeconds         int  `json:"timeout_seconds,omitempty"`
+	AutoApprove            bool `json:"auto_approve,omitempty"`
+	RepeatToolCallLimit    int  `json:"repeat_tool_call_limit,omitempty"`
+	ToolOnlyIterationLimit int  `json:"tool_only_iteration_limit,omitempty"`
+	DuplicateFetchLimit    int  `json:"duplicate_fetch_limit,omitempty"`
+	ContextDebug           bool `json:"context_debug,omitempty"`
 }
 
 // ServerConfig API Server 配置
@@ -146,7 +150,11 @@ type MsgGatewayConfig struct {
 
 // MsgGatewayTelegram Telegram 网关配置
 type MsgGatewayTelegram struct {
-	Token string `json:"token,omitempty"`
+	Token                     string `json:"token,omitempty"`
+	ChatTimeoutSeconds        int    `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
+	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
+	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
+	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
 }
 
 // MsgGatewayOneBot OneBot 网关配置
@@ -380,9 +388,13 @@ func DefaultConfig() *Config {
 			CompressionThreshold: 0.8,
 		},
 		Agent: AgentLoopConfig{
-			MaxIterations:  10,
-			TimeoutSeconds: 60,
-			AutoApprove:    false,
+			MaxIterations:          10,
+			TimeoutSeconds:         60,
+			AutoApprove:            false,
+			RepeatToolCallLimit:    3,
+			ToolOnlyIterationLimit: 3,
+			DuplicateFetchLimit:    1,
+			ContextDebug:           false,
 		},
 		Server: ServerConfig{
 			Addr:        "127.0.0.1:9090",
@@ -397,6 +409,12 @@ func DefaultConfig() *Config {
 		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
+			Telegram: MsgGatewayTelegram{
+				ChatTimeoutSeconds:        600,  // 10 分钟
+				ProgressAsMessages:        true, // 默认启用独立步骤消息
+				ProgressAsNaturalLanguage: false,
+				ShowToolDetailsInResult:   false,
+			},
 			OneBot: MsgGatewayOneBot{
 				ShowTyping: true,
 				AutoLike:   true,
@@ -526,6 +544,15 @@ func normalizeConfig(cfg *Config) {
 	if cfg.Agent.TimeoutSeconds <= 0 {
 		cfg.Agent.TimeoutSeconds = def.Agent.TimeoutSeconds
 	}
+	if cfg.Agent.RepeatToolCallLimit <= 0 {
+		cfg.Agent.RepeatToolCallLimit = def.Agent.RepeatToolCallLimit
+	}
+	if cfg.Agent.ToolOnlyIterationLimit <= 0 {
+		cfg.Agent.ToolOnlyIterationLimit = def.Agent.ToolOnlyIterationLimit
+	}
+	if cfg.Agent.DuplicateFetchLimit <= 0 {
+		cfg.Agent.DuplicateFetchLimit = def.Agent.DuplicateFetchLimit
+	}
 
 	if cfg.Server.Addr == "" {
 		cfg.Server.Addr = def.Server.Addr
@@ -558,6 +585,12 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.MsgGateway.OneBot.LikeTimes <= 0 {
 		cfg.MsgGateway.OneBot.LikeTimes = def.MsgGateway.OneBot.LikeTimes
+	}
+	if cfg.MsgGateway.Telegram.ChatTimeoutSeconds <= 0 {
+		cfg.MsgGateway.Telegram.ChatTimeoutSeconds = def.MsgGateway.Telegram.ChatTimeoutSeconds
+	}
+	if !cfg.MsgGateway.Telegram.ShowToolDetailsInResult {
+		cfg.MsgGateway.Telegram.ShowToolDetailsInResult = def.MsgGateway.Telegram.ShowToolDetailsInResult
 	}
 }
 
@@ -719,6 +752,20 @@ func (m *Manager) Set(key, value string) error {
 		m.config.Agent.TimeoutSeconds = n
 	case "agent.auto_approve":
 		m.config.Agent.AutoApprove = parseBool(value)
+	case "agent.repeat_tool_call_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.RepeatToolCallLimit = n
+	case "agent.tool_only_iteration_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.ToolOnlyIterationLimit = n
+	case "agent.duplicate_fetch_limit":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Agent.DuplicateFetchLimit = n
+	case "agent.context_debug":
+		m.config.Agent.ContextDebug = parseBool(value)
 	case "server.addr":
 		m.config.Server.Addr = value
 	case "server.api_keys":
@@ -751,6 +798,16 @@ func (m *Manager) Set(key, value string) error {
 	case "msg_gateway.telegram.token":
 		m.config.MsgGateway.Telegram.Token = value
 		m.config.MsgGateway.Token = value
+	case "msg_gateway.telegram.chat_timeout_seconds":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.MsgGateway.Telegram.ChatTimeoutSeconds = n
+	case "msg_gateway.telegram.progress_as_messages":
+		m.config.MsgGateway.Telegram.ProgressAsMessages = parseBool(value)
+	case "msg_gateway.telegram.progress_as_natural_language":
+		m.config.MsgGateway.Telegram.ProgressAsNaturalLanguage = parseBool(value)
+	case "msg_gateway.telegram.show_tool_details_in_result":
+		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.onebot.api_base":
 		m.config.MsgGateway.OneBot.APIBase = value
 	case "msg_gateway.onebot.ws_url":

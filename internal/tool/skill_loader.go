@@ -23,6 +23,7 @@ func NewSkillLoader(skillsDir string) *SkillLoader {
 // SkillInfo Skill 元信息
 type SkillInfo struct {
 	Name         string
+	Aliases      []string
 	Description  string
 	Summary      string // v0.36.0: SKILL.md 精简摘要，用于注入 system prompt
 	Dir          string
@@ -81,11 +82,15 @@ func (sl *SkillLoader) Load(path string) (*SkillInfo, error) {
 	info.Dir = dir
 	dirName := filepath.Base(dir)
 	info.Name = sanitizeName(dirName)
+	addSkillAlias(info, dirName)
 
 	// v0.35.0: 解析 frontmatter
 	fm := parseFrontmatter(content)
+	hasFrontmatterName := false
 	if name, ok := fm["name"]; ok && name != "" {
 		info.Name = sanitizeName(name)
+		hasFrontmatterName = true
+		addSkillAlias(info, name)
 	}
 	if desc, ok := fm["description"]; ok && desc != "" {
 		info.Description = desc
@@ -95,8 +100,9 @@ func (sl *SkillLoader) Load(path string) (*SkillInfo, error) {
 	if match := regexp.MustCompile(`(?m)^#\s+(.+)$`).FindStringSubmatch(content); len(match) > 1 {
 		titleName := strings.TrimSpace(match[1])
 		// 去掉标题中的 emoji 和特殊字符
+		addSkillAlias(info, titleName)
 		titleName = sanitizeName(titleName)
-		if info.Name == "" || info.Name == sanitizeName(dirName) {
+		if !hasFrontmatterName && (info.Name == "" || info.Name == sanitizeName(dirName)) {
 			info.Name = titleName
 		}
 	}
@@ -118,6 +124,22 @@ func (sl *SkillLoader) Load(path string) (*SkillInfo, error) {
 	info.Summary = sl.extractSummary(content)
 
 	return info, nil
+}
+
+func addSkillAlias(info *SkillInfo, alias string) {
+	alias = sanitizeName(alias)
+	if alias == "" {
+		return
+	}
+	if alias == info.Name {
+		return
+	}
+	for _, existing := range info.Aliases {
+		if existing == alias {
+			return
+		}
+	}
+	info.Aliases = append(info.Aliases, alias)
 }
 
 // extractDescription 从 SKILL.md 提取描述
@@ -154,20 +176,23 @@ func (sl *SkillLoader) autoGenerateTools(info *SkillInfo, content string) []Skil
 	scriptsDir := filepath.Join(info.Dir, "scripts")
 	scripts := sl.findScripts(scriptsDir)
 
-	if len(scripts) > 0 {
-		// 为每个脚本生成一个工具
-		for _, script := range scripts {
-			toolName := strings.TrimSuffix(script.Name(), filepath.Ext(script.Name()))
-			toolName = sanitizeName(toolName)
-			if toolName == "" {
-				continue
-			}
-			tools = append(tools, SkillToolDef{
-				Name:        toolName,
-				Description: fmt.Sprintf("执行 %s skill 的 %s 脚本", info.Name, toolName),
-				Parameters:  map[string]Param{},
-			})
+	if len(scripts) == 0 {
+		// 纯文档型 skill 通过 skill_read 暴露，避免模型把静态指南当成可执行工具反复调用。
+		return nil
+	}
+
+	// 为每个脚本生成一个工具
+	for _, script := range scripts {
+		toolName := strings.TrimSuffix(script.Name(), filepath.Ext(script.Name()))
+		toolName = sanitizeName(toolName)
+		if toolName == "" {
+			continue
 		}
+		tools = append(tools, SkillToolDef{
+			Name:        toolName,
+			Description: fmt.Sprintf("执行 %s skill 的 %s 脚本", info.Name, toolName),
+			Parameters:  map[string]Param{},
+		})
 	}
 
 	// 始终生成一个主工具（skill name 本身）

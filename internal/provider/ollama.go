@@ -45,10 +45,10 @@ func (p *OllamaProvider) Validate() error {
 
 // ollamaChatRequest 是 Ollama chat API 的请求体
 type ollamaChatRequest struct {
-	Model    string           `json:"model"`
-	Messages []ollamaMessage  `json:"messages"`
-	Stream   bool             `json:"stream"`
-	Options  *ollamaOptions   `json:"options,omitempty"`
+	Model    string          `json:"model"`
+	Messages []ollamaMessage `json:"messages"`
+	Stream   bool            `json:"stream"`
+	Options  *ollamaOptions  `json:"options,omitempty"`
 }
 
 type ollamaMessage struct {
@@ -63,12 +63,12 @@ type ollamaOptions struct {
 
 // ollamaChatResponse 是 Ollama chat API 的响应体
 type ollamaChatResponse struct {
-	Model     string `json:"model"`
-	Message    ollamaMessage `json:"message"`
-	Done      bool   `json:"done"`
-	TotalDuration    int64   `json:"total_duration,omitempty"`
-	EvalCount        int     `json:"eval_count,omitempty"`
-	PromptEvalCount int     `json:"prompt_eval_count,omitempty"`
+	Model           string        `json:"model"`
+	Message         ollamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	TotalDuration   int64         `json:"total_duration,omitempty"`
+	EvalCount       int           `json:"eval_count,omitempty"`
+	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
 }
 
 func (p *OllamaProvider) Chat(ctx context.Context, messages []Message) (*Response, error) {
@@ -195,7 +195,7 @@ func (p *OllamaProvider) ChatStream(ctx context.Context, messages []Message) (<-
 			}
 
 			if chatResp.Done {
-				ch <- StreamChunk{Done: true, Model: chatResp.Model}
+				ch <- StreamChunk{Done: true, FinishReason: "stop", Model: chatResp.Model}
 				return
 			}
 		}

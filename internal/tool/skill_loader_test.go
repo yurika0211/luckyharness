@@ -53,6 +53,49 @@ func TestSkillLoaderLoadAll(t *testing.T) {
 	}
 }
 
+func TestSkillLoaderPreservesFrontmatterNameAndAddsAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "research")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	skillContent := `---
+name: web-search
+description: Search the web
+---
+
+# Web Search — 联网搜索总入口
+`
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte(skillContent), 0644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	loader := NewSkillLoader(tmpDir)
+	info, err := loader.Load(skillFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if info.Name != "web-search" {
+		t.Fatalf("expected frontmatter name to win, got %q", info.Name)
+	}
+	if len(info.Aliases) == 0 {
+		t.Fatal("expected aliases to be captured")
+	}
+
+	foundTitleAlias := false
+	for _, alias := range info.Aliases {
+		if alias == "web_search___联网搜索总入口" {
+			foundTitleAlias = true
+		}
+	}
+	if !foundTitleAlias {
+		t.Fatalf("expected title alias in aliases, got %v", info.Aliases)
+	}
+}
+
 func TestSkillLoaderNoSkillsDir(t *testing.T) {
 	loader := NewSkillLoader("/nonexistent/path")
 	_, err := loader.LoadAll()
@@ -186,5 +229,25 @@ func TestSkillLoaderAutoGenerateToolsFromScripts(t *testing.T) {
 	}
 	if !hasCalc {
 		t.Fatal("expected auto-generated script tool 'calc'")
+	}
+}
+
+func TestSkillLoaderDoesNotGenerateRunToolForDocOnlySkill(t *testing.T) {
+	tmpDir := t.TempDir()
+	skillDir := filepath.Join(tmpDir, "doc-only")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Doc Only\n\nJust docs.\n"), 0644); err != nil {
+		t.Fatalf("write SKILL.md: %v", err)
+	}
+
+	loader := NewSkillLoader(tmpDir)
+	info, err := loader.Load(filepath.Join(skillDir, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(info.Tools) != 0 {
+		t.Fatalf("expected doc-only skill to expose no tools, got %d", len(info.Tools))
 	}
 }

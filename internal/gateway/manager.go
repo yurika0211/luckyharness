@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
+
+	"github.com/yurika0211/luckyharness/internal/logger"
 )
 
 // GatewayStats tracks per-gateway statistics.
@@ -43,6 +45,7 @@ func (gm *GatewayManager) Register(gw Gateway) error {
 
 	gm.gateways[name] = gw
 	gm.stats[name] = &GatewayStats{}
+	logger.Info("gateway registered", "name", name)
 	return nil
 }
 
@@ -65,6 +68,7 @@ func (gm *GatewayManager) Unregister(name string) error {
 
 	delete(gm.gateways, name)
 	delete(gm.stats, name)
+	logger.Info("gateway unregistered", "name", name)
 	return nil
 }
 
@@ -73,6 +77,7 @@ func (gm *GatewayManager) OnMessage(handler MessageHandler) {
 	gm.mu.Lock()
 	defer gm.mu.Unlock()
 	gm.handler = handler
+	logger.Debug("gateway message handler updated")
 }
 
 // handleMessage is called by gateways when they receive a message.
@@ -90,10 +95,26 @@ func (gm *GatewayManager) handleMessage(ctx context.Context, gwName string, msg 
 	gm.mu.RUnlock()
 
 	if handler == nil {
+		logger.Debug("gateway message dropped: no handler", "gateway", gwName)
 		return nil
 	}
 
-	return handler(ctx, msg)
+	if msg != nil {
+		logger.Info("gateway message received",
+			"gateway", gwName,
+			"chat_id", msg.Chat.ID,
+			"chat_type", msg.Chat.Type.String(),
+			"sender_id", msg.Sender.ID,
+			"is_command", msg.IsCommand,
+			"text_len", len(msg.Text),
+		)
+	}
+
+	err := handler(ctx, msg)
+	if err != nil {
+		logger.Warn("gateway message handler failed", "gateway", gwName, "error", err)
+	}
+	return err
 }
 
 // RecordSent increments the sent counter for a gateway.
@@ -105,6 +126,7 @@ func (gm *GatewayManager) RecordSent(gwName string) {
 	if ok {
 		atomic.AddInt64(&stats.MessagesSent, 1)
 	}
+	logger.Debug("gateway sent counter updated", "gateway", gwName)
 }
 
 // RecordError increments the error counter for a gateway.
@@ -116,6 +138,7 @@ func (gm *GatewayManager) RecordError(gwName string) {
 	if ok {
 		atomic.AddInt64(&stats.Errors, 1)
 	}
+	logger.Warn("gateway error counter updated", "gateway", gwName)
 }
 
 // StartAll starts all registered gateways.
@@ -124,12 +147,16 @@ func (gm *GatewayManager) StartAll(ctx context.Context) error {
 	defer gm.mu.RUnlock()
 
 	for name, gw := range gm.gateways {
+		logger.Info("gateway starting", "name", name)
 		if err := gw.Start(ctx); err != nil {
+			logger.Error("gateway start failed", "name", name, "error", err)
 			return fmt.Errorf("start gateway %q: %w", name, err)
 		}
+		logger.Info("gateway started", "name", name)
 	}
 
 	gm.running.Store(true)
+	logger.Info("all gateways started", "count", len(gm.gateways))
 	return nil
 }
 
@@ -143,10 +170,13 @@ func (gm *GatewayManager) Start(ctx context.Context, name string) error {
 		return fmt.Errorf("gateway %q not found", name)
 	}
 
+	logger.Info("gateway starting", "name", name)
 	if err := gw.Start(ctx); err != nil {
+		logger.Error("gateway start failed", "name", name, "error", err)
 		return fmt.Errorf("start gateway %q: %w", name, err)
 	}
 
+	logger.Info("gateway started", "name", name)
 	return nil
 }
 
@@ -158,13 +188,18 @@ func (gm *GatewayManager) StopAll() error {
 	var firstErr error
 	for name, gw := range gm.gateways {
 		if gw.IsRunning() {
+			logger.Info("gateway stopping", "name", name)
 			if err := gw.Stop(); err != nil && firstErr == nil {
+				logger.Error("gateway stop failed", "name", name, "error", err)
 				firstErr = fmt.Errorf("stop gateway %q: %w", name, err)
+			} else if err == nil {
+				logger.Info("gateway stopped", "name", name)
 			}
 		}
 	}
 
 	gm.running.Store(false)
+	logger.Info("all gateways stop completed")
 	return firstErr
 }
 
@@ -178,7 +213,13 @@ func (gm *GatewayManager) Stop(name string) error {
 		return fmt.Errorf("gateway %q not found", name)
 	}
 
-	return gw.Stop()
+	logger.Info("gateway stopping", "name", name)
+	if err := gw.Stop(); err != nil {
+		logger.Error("gateway stop failed", "name", name, "error", err)
+		return err
+	}
+	logger.Info("gateway stopped", "name", name)
+	return nil
 }
 
 // Get returns a gateway by name.
@@ -241,9 +282,9 @@ func (gm *GatewayManager) IsRunning() bool {
 
 // GatewayStatus represents the status of a single gateway.
 type GatewayStatus struct {
-	Name      string       `json:"name"`
-	Running   bool         `json:"running"`
-	Stats     GatewayStats `json:"stats"`
+	Name    string       `json:"name"`
+	Running bool         `json:"running"`
+	Stats   GatewayStats `json:"stats"`
 }
 
 // Status returns the status of all gateways.

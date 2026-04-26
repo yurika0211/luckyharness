@@ -135,13 +135,6 @@ func toOpenAIName(name string) string {
 	return ret
 }
 
-// fromOpenAIName 从 OpenAI 兼容名称还原为原始工具名（通过映射表）
-func fromOpenAIName(openaiName string) string {
-	// 在注册表中查找匹配的工具
-	// 注意：这个函数需要在注册表中查找，所以实际实现在 Registry 中
-	return openaiName
-}
-
 // Registry 管理所有已注册的工具
 type Registry struct {
 	mu       sync.RWMutex
@@ -229,13 +222,7 @@ func (r *Registry) ListEnabled() []*Tool {
 // Call 调用工具
 func (r *Registry) Call(name string, args map[string]any) (string, error) {
 	r.mu.RLock()
-	// 先尝试直接查找
-	t, ok := r.tools[name]
-	// 如果没找到，尝试从 OpenAI 兼容名称反向查找
-	if !ok {
-		name = fromOpenAIName(name)
-		t, ok = r.tools[name]
-	}
+	t, name, ok := r.lookupToolLocked(name)
 	r.mu.RUnlock()
 
 	if !ok {
@@ -267,7 +254,7 @@ type ShellContext struct {
 // 对于 ShellAware 的工具，自动在 args 中注入 _cwd 和 _env
 func (r *Registry) CallWithShellContext(name string, args map[string]any, sc *ShellContext) (string, error) {
 	r.mu.RLock()
-	t, ok := r.tools[name]
+	t, name, ok := r.lookupToolLocked(name)
 	r.mu.RUnlock()
 
 	if !ok {
@@ -296,6 +283,26 @@ func (r *Registry) CallWithShellContext(name string, args map[string]any, sc *Sh
 	}
 
 	return t.Handler(args)
+}
+
+func (r *Registry) lookupToolLocked(name string) (*Tool, string, bool) {
+	if t, ok := r.tools[name]; ok {
+		return t, name, true
+	}
+
+	keys := make([]string, 0, len(r.tools))
+	for toolName := range r.tools {
+		keys = append(keys, toolName)
+	}
+	sort.Strings(keys)
+
+	for _, toolName := range keys {
+		if toOpenAIName(toolName) == name {
+			return r.tools[toolName], toolName, true
+		}
+	}
+
+	return nil, name, false
 }
 
 // CheckPermission 检查工具权限（不执行）

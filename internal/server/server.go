@@ -1,11 +1,14 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/gateway/telegram"
 	"github.com/yurika0211/luckyharness/internal/health"
+	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
 	"github.com/yurika0211/luckyharness/internal/provider"
@@ -132,6 +136,72 @@ type ErrorResponse struct {
 	Error   string `json:"error"`
 	Code    int    `json:"code"`
 	Details string `json:"details,omitempty"`
+}
+
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
+	bytes      int
+}
+
+func (r *responseRecorder) WriteHeader(code int) {
+	r.statusCode = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *responseRecorder) Write(b []byte) (int, error) {
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func (r *responseRecorder) ReadFrom(src io.Reader) (int64, error) {
+	rf, ok := r.ResponseWriter.(io.ReaderFrom)
+	if !ok {
+		return io.Copy(r, src)
+	}
+	if r.statusCode == 0 {
+		r.statusCode = http.StatusOK
+	}
+	n, err := rf.ReadFrom(src)
+	r.bytes += int(n)
+	return n, err
+}
+
+func (r *responseRecorder) StatusCode() int {
+	if r.statusCode == 0 {
+		return http.StatusOK
+	}
+	return r.statusCode
+}
+
+func (r *responseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return h.Hijack()
+}
+
+func (r *responseRecorder) Push(target string, opts *http.PushOptions) error {
+	p, ok := r.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return p.Push(target, opts)
+}
+
+func (r *responseRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // New 创建 API Server
@@ -277,12 +347,13 @@ func (s *Server) Start() error {
 
 	// 中间件链
 	handler = s.recoveryMiddleware(handler)
-	handler = s.loggingMiddleware(handler)
 	handler = s.rateLimitMiddleware(handler)
 	handler = s.authMiddleware(handler)
 	if s.config.EnableCORS {
 		handler = s.corsMiddleware(handler)
 	}
+	// 放在最外层，覆盖鉴权/限流/CORS 失败等所有请求路径。
+	handler = s.loggingMiddleware(handler)
 
 	s.server = &http.Server{
 		Addr:         s.config.Addr,
@@ -297,10 +368,17 @@ func (s *Server) Start() error {
 
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("api server crashed", "error", err)
 			fmt.Printf("API server error: %v\n", err)
 		}
 	}()
 
+	logger.Info("api server started",
+		"addr", s.config.Addr,
+		"cors_enabled", s.config.EnableCORS,
+		"api_keys", len(s.config.APIKeys),
+		"rate_limit", s.config.RateLimit,
+	)
 	fmt.Printf("🚀 LuckyHarness API Server running at http://localhost%s\n", s.config.Addr)
 	fmt.Printf("   API: /api/v1/chat | /api/v1/health | /api/v1/stats\n")
 	return nil
@@ -315,6 +393,8 @@ func (s *Server) Stop() error {
 		return nil
 	}
 
+	logger.Info("api server stopping", "addr", s.config.Addr)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -328,6 +408,7 @@ func (s *Server) Stop() error {
 	}
 
 	s.running = false
+	logger.Info("api server stopped", "addr", s.config.Addr)
 	return nil
 }
 
@@ -1024,6 +1105,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 				ip = ip[:idx]
 			}
 			if ip != "127.0.0.1" && ip != "::1" && ip != "localhost" {
+				logger.Warn("auth rejected non-local request without api keys",
+					"path", r.URL.Path,
+					"method", r.Method,
+					"remote_addr", r.RemoteAddr,
+				)
 				s.sendError(w, "api key required (no keys configured, localhost only)", http.StatusUnauthorized,
 					"configure api_keys in server config or access from localhost")
 				return
@@ -1042,6 +1128,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		if apiKey == "" {
+			logger.Warn("auth missing api key",
+				"path", r.URL.Path,
+				"method", r.Method,
+				"remote_addr", r.RemoteAddr,
+			)
 			s.sendError(w, "api key required", http.StatusUnauthorized, "provide X-API-Key header or Authorization: Bearer <key>")
 			return
 		}
@@ -1056,6 +1147,11 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		if !valid {
+			logger.Warn("auth invalid api key",
+				"path", r.URL.Path,
+				"method", r.Method,
+				"remote_addr", r.RemoteAddr,
+			)
 			s.sendError(w, "invalid api key", http.StatusForbidden, "")
 			return
 		}
@@ -1069,6 +1165,12 @@ func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr
 		if !s.rateLimiter.Allow(ip) {
+			logger.Warn("rate limit exceeded",
+				"path", r.URL.Path,
+				"method", r.Method,
+				"remote_addr", r.RemoteAddr,
+				"limit_per_min", s.config.RateLimit,
+			)
 			s.sendError(w, "rate limit exceeded", http.StatusTooManyRequests,
 				fmt.Sprintf("limit: %d req/min", s.config.RateLimit))
 			return
@@ -1081,8 +1183,42 @@ func (s *Server) rateLimitMiddleware(next http.Handler) http.Handler {
 func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		fmt.Printf("[%s] %s %s %v\n", start.Format("15:04:05"), r.Method, r.URL.Path, time.Since(start))
+		rec := &responseRecorder{ResponseWriter: w}
+		next.ServeHTTP(rec, r)
+
+		duration := time.Since(start)
+		clientIP := r.RemoteAddr
+		if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+			parts := strings.Split(xff, ",")
+			if len(parts) > 0 && strings.TrimSpace(parts[0]) != "" {
+				clientIP = strings.TrimSpace(parts[0])
+			}
+		} else if xrip := strings.TrimSpace(r.Header.Get("X-Real-IP")); xrip != "" {
+			clientIP = xrip
+		} else if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			clientIP = host
+		}
+
+		fields := []any{
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rec.StatusCode(),
+			"duration_ms", duration.Milliseconds(),
+			"bytes", rec.bytes,
+			"client_ip", clientIP,
+		}
+		if ua := strings.TrimSpace(r.UserAgent()); ua != "" {
+			fields = append(fields, "user_agent", ua)
+		}
+
+		switch {
+		case rec.StatusCode() >= http.StatusInternalServerError:
+			logger.Error("http request completed", fields...)
+		case rec.StatusCode() >= http.StatusBadRequest:
+			logger.Warn("http request completed", fields...)
+		default:
+			logger.Info("http request completed", fields...)
+		}
 	})
 }
 
@@ -1095,7 +1231,11 @@ func (s *Server) recoveryMiddleware(next http.Handler) http.Handler {
 				s.stats.ErrorReqs++
 				s.stats.mu.Unlock()
 				// 内部错误详情只写日志，不返回给客户端
-				fmt.Printf("[RECOVERY] panic: %v\n", err)
+				logger.Error("panic recovered",
+					"path", r.URL.Path,
+					"method", r.Method,
+					"panic", err,
+				)
 				s.sendError(w, "internal server error", http.StatusInternalServerError, "")
 			}
 		}()

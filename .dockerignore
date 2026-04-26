@@ -1,0 +1,16 @@
+.git
+.github
+.codex
+.lh-home
+.lh-home*
+tmp
+bin
+docs
+GA
+coverage.out
+*_cover.out
+*.test
+lh
+.env
+.env.*
+!.env.example

@@ -276,14 +276,14 @@ func (a *Adapter) SendStream(ctx context.Context, chatID string, replyToMsgID st
 	}
 
 	return &telegramStreamSender{
-		adapter:    a,
-		chatID:     chatIDInt,
-		messageID:  sent.MessageID,
-		chatIDStr:  chatID,
-		content:    "",
-		thinking:   "🧠 Thinking...",
-		editCount:  0,
-		lastEdit:   time.Now(),
+		adapter:   a,
+		chatID:    chatIDInt,
+		messageID: sent.MessageID,
+		chatIDStr: chatID,
+		content:   "",
+		thinking:  "🧠 Thinking...",
+		editCount: 0,
+		lastEdit:  time.Now(),
 	}, nil
 }
 
@@ -295,8 +295,8 @@ type telegramStreamSender struct {
 	chatIDStr string
 
 	mu        sync.Mutex
-	content   string       // 已生成的正文内容
-	thinking  string       // 当前思考/工具调用标签
+	content   string // 已生成的正文内容
+	thinking  string // 当前思考/工具调用标签
 	editCount int
 	lastEdit  time.Time
 	finished  bool
@@ -340,6 +340,11 @@ func (s *telegramStreamSender) SetToolCall(name, args string) error {
 
 	if s.finished {
 		return nil
+	}
+
+	if strings.TrimSpace(args) == "" {
+		s.thinking = fmt.Sprintf("🔧 %s", name)
+		return s.throttledEdit()
 	}
 
 	// 截断过长的参数

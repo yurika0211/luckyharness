@@ -18,6 +18,15 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.MaxTokens != 4096 {
 		t.Errorf("expected max_tokens 4096, got %d", cfg.MaxTokens)
 	}
+	if cfg.Agent.RepeatToolCallLimit != 3 {
+		t.Errorf("expected repeat_tool_call_limit 3, got %d", cfg.Agent.RepeatToolCallLimit)
+	}
+	if cfg.Agent.ToolOnlyIterationLimit != 3 {
+		t.Errorf("expected tool_only_iteration_limit 3, got %d", cfg.Agent.ToolOnlyIterationLimit)
+	}
+	if cfg.Agent.DuplicateFetchLimit != 1 {
+		t.Errorf("expected duplicate_fetch_limit 1, got %d", cfg.Agent.DuplicateFetchLimit)
+	}
 }
 
 func TestManagerSetAndGet(t *testing.T) {
@@ -594,6 +603,10 @@ func TestSet_AgentOptions(t *testing.T) {
 	mgr.Set("agent.max_iterations", "50")
 	mgr.Set("agent.timeout_seconds", "300")
 	mgr.Set("agent.auto_approve", "true")
+	mgr.Set("agent.repeat_tool_call_limit", "2")
+	mgr.Set("agent.tool_only_iteration_limit", "4")
+	mgr.Set("agent.duplicate_fetch_limit", "1")
+	mgr.Set("agent.context_debug", "true")
 
 	cfg := mgr.Get()
 	if cfg.Agent.MaxIterations != 50 {
@@ -601,6 +614,18 @@ func TestSet_AgentOptions(t *testing.T) {
 	}
 	if cfg.Agent.TimeoutSeconds != 300 {
 		t.Errorf("expected 300, got %d", cfg.Agent.TimeoutSeconds)
+	}
+	if cfg.Agent.RepeatToolCallLimit != 2 {
+		t.Errorf("expected 2, got %d", cfg.Agent.RepeatToolCallLimit)
+	}
+	if cfg.Agent.ToolOnlyIterationLimit != 4 {
+		t.Errorf("expected 4, got %d", cfg.Agent.ToolOnlyIterationLimit)
+	}
+	if cfg.Agent.DuplicateFetchLimit != 1 {
+		t.Errorf("expected 1, got %d", cfg.Agent.DuplicateFetchLimit)
+	}
+	if !cfg.Agent.ContextDebug {
+		t.Errorf("expected context_debug true")
 	}
 
 	t.Logf("Agent options set correctly")

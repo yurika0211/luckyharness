@@ -68,7 +68,11 @@
   "agent": {
     "max_iterations": 10,
     "timeout_seconds": 60,
-    "auto_approve": false
+    "auto_approve": false,
+    "repeat_tool_call_limit": 3,
+    "tool_only_iteration_limit": 3,
+    "duplicate_fetch_limit": 1,
+    "context_debug": false
   },
   "server": {
     "addr": "127.0.0.1:9090",
@@ -90,7 +94,11 @@
     "start_all": false,
     "api_addr": "127.0.0.1:9090",
     "telegram": {
-      "token": ""
+      "token": "",
+      "chat_timeout_seconds": 600,
+      "progress_as_messages": true,
+      "progress_as_natural_language": false,
+      "show_tool_details_in_result": false
     },
     "onebot": {
       "api_base": "",
