@@ -143,7 +143,9 @@ func newRootCmd() *cobra.Command {
 		Use:   "version",
 		Short: "显示版本",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("🍀 LuckyHarness v0.38.2")
+			fmt.Printf("🍀 LuckyHarness %s\n", buildVersion)
+			fmt.Printf("   commit: %s\n", buildCommit)
+			fmt.Printf("   date:   %s\n", buildDate)
 		},
 	}
 

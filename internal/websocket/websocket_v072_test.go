@@ -30,6 +30,21 @@ func createTestAgentForWS(t *testing.T) *agent.Agent {
 	return a
 }
 
+func cleanupPendingSession(t *testing.T, h *AgentHandler, sessionID string) {
+	t.Helper()
+	h.CancelSession(sessionID)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if h.PendingCount() == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("pending websocket chat did not finish for session %s", sessionID)
+}
+
 // TestSyncChat 测试 syncChat 函数
 func TestSyncChat(t *testing.T) {
 	a := createTestAgentForWS(t)
@@ -165,6 +180,9 @@ func TestStreamChatError(t *testing.T) {
 func TestHandleChat(t *testing.T) {
 	a := createTestAgentForWS(t)
 	h := NewAgentHandler(a)
+	t.Cleanup(func() {
+		cleanupPendingSession(t, h, "test-session")
+	})
 
 	client := &Client{
 		SessionID: "test-session",
@@ -196,6 +214,9 @@ func TestHandleChat(t *testing.T) {
 func TestHandleChatStream(t *testing.T) {
 	a := createTestAgentForWS(t)
 	h := NewAgentHandler(a)
+	t.Cleanup(func() {
+		cleanupPendingSession(t, h, "test-session")
+	})
 
 	client := &Client{
 		SessionID: "test-session",
@@ -256,6 +277,9 @@ func TestHandleChatInvalidData(t *testing.T) {
 func TestHandleChatCancelPending(t *testing.T) {
 	a := createTestAgentForWS(t)
 	h := NewAgentHandler(a)
+	t.Cleanup(func() {
+		cleanupPendingSession(t, h, "test-session")
+	})
 
 	client := &Client{
 		SessionID: "test-session",

@@ -37,4 +37,4 @@ VOLUME ["/etc/luckyharness", "/var/lib/luckyharness"]
 EXPOSE 9090
 
 ENTRYPOINT ["luckyharness"]
-CMD ["--help"]
+CMD ["serve"]
