@@ -32,9 +32,11 @@
 - Provider 额外请求头：`extra_headers`
 - 重试/熔断/限流：`retry`, `circuit_breaker`, `rate_limit`
 - Agent Loop：`agent.max_iterations`, `agent.timeout_seconds`, `agent.auto_approve`, `agent.repeat_tool_call_limit`, `agent.tool_only_iteration_limit`, `agent.duplicate_fetch_limit`
+- Context 调试：`agent.context_debug`
 - API Server：`server.addr`, `server.api_keys`, `server.enable_cors`, `server.rate_limit`
 - 消息网关：`msg_gateway.platform`, `msg_gateway.telegram.token`, `msg_gateway.onebot.*`
 - Telegram 中间步骤展示：`msg_gateway.telegram.progress_as_messages`
+- Telegram 中间步骤自然语言播报（结论最后输出）：`msg_gateway.telegram.progress_as_natural_language`
 - Telegram 最终回答前附加工具摘要：`msg_gateway.telegram.show_tool_details_in_result`
 
 ## 生效方式
@@ -61,6 +63,9 @@ lh serve
 - `agent.duplicate_fetch_limit`
   - 同一 URL 允许执行 `web_fetch` 的次数上限
   - 默认：`1`
+- `agent.context_debug`
+  - 打印上下文拼装调试报告（cache hit/miss、token 估算、分块统计）
+  - 默认：`false`
 
 示例：
 
@@ -72,7 +77,8 @@ lh serve
     "auto_approve": false,
     "repeat_tool_call_limit": 2,
     "tool_only_iteration_limit": 2,
-    "duplicate_fetch_limit": 1
+    "duplicate_fetch_limit": 1,
+    "context_debug": true
   }
 }
 ```

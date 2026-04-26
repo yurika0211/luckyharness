@@ -606,6 +606,7 @@ func TestSet_AgentOptions(t *testing.T) {
 	mgr.Set("agent.repeat_tool_call_limit", "2")
 	mgr.Set("agent.tool_only_iteration_limit", "4")
 	mgr.Set("agent.duplicate_fetch_limit", "1")
+	mgr.Set("agent.context_debug", "true")
 
 	cfg := mgr.Get()
 	if cfg.Agent.MaxIterations != 50 {
@@ -622,6 +623,9 @@ func TestSet_AgentOptions(t *testing.T) {
 	}
 	if cfg.Agent.DuplicateFetchLimit != 1 {
 		t.Errorf("expected 1, got %d", cfg.Agent.DuplicateFetchLimit)
+	}
+	if !cfg.Agent.ContextDebug {
+		t.Errorf("expected context_debug true")
 	}
 
 	t.Logf("Agent options set correctly")

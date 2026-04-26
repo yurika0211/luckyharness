@@ -118,6 +118,7 @@ type AgentLoopConfig struct {
 	RepeatToolCallLimit    int  `json:"repeat_tool_call_limit,omitempty"`
 	ToolOnlyIterationLimit int  `json:"tool_only_iteration_limit,omitempty"`
 	DuplicateFetchLimit    int  `json:"duplicate_fetch_limit,omitempty"`
+	ContextDebug           bool `json:"context_debug,omitempty"`
 }
 
 // ServerConfig API Server 配置
@@ -149,11 +150,11 @@ type MsgGatewayConfig struct {
 
 // MsgGatewayTelegram Telegram 网关配置
 type MsgGatewayTelegram struct {
-	Token              string `json:"token,omitempty"`
-	ChatTimeoutSeconds int    `json:"chat_timeout_seconds,omitempty"` // Telegram 对话总超时（秒）
-	ProgressAsMessages bool   `json:"progress_as_messages,omitempty"` // 中间思考/工具步骤是否单独发消息
-	ProgressAsNaturalLanguage bool `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
-	ShowToolDetailsInResult bool `json:"show_tool_details_in_result,omitempty"` // 最终回答前是否附上自然语言工具步骤摘要
+	Token                     string `json:"token,omitempty"`
+	ChatTimeoutSeconds        int    `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
+	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
+	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
+	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
 }
 
 // MsgGatewayOneBot OneBot 网关配置
@@ -393,6 +394,7 @@ func DefaultConfig() *Config {
 			RepeatToolCallLimit:    3,
 			ToolOnlyIterationLimit: 3,
 			DuplicateFetchLimit:    1,
+			ContextDebug:           false,
 		},
 		Server: ServerConfig{
 			Addr:        "127.0.0.1:9090",
@@ -405,15 +407,15 @@ func DefaultConfig() *Config {
 		Dashboard: DashboardConfig{
 			Addr: ":8765",
 		},
-			MsgGateway: MsgGatewayConfig{
-				APIAddr: "127.0.0.1:9090",
-				Telegram: MsgGatewayTelegram{
-					ChatTimeoutSeconds:     600,  // 10 分钟
-					ProgressAsMessages:     true, // 默认启用独立步骤消息
-					ProgressAsNaturalLanguage: false,
-					ShowToolDetailsInResult: false,
-				},
-				OneBot: MsgGatewayOneBot{
+		MsgGateway: MsgGatewayConfig{
+			APIAddr: "127.0.0.1:9090",
+			Telegram: MsgGatewayTelegram{
+				ChatTimeoutSeconds:        600,  // 10 分钟
+				ProgressAsMessages:        true, // 默认启用独立步骤消息
+				ProgressAsNaturalLanguage: false,
+				ShowToolDetailsInResult:   false,
+			},
+			OneBot: MsgGatewayOneBot{
 				ShowTyping: true,
 				AutoLike:   true,
 				LikeTimes:  1,
@@ -762,6 +764,8 @@ func (m *Manager) Set(key, value string) error {
 		var n int
 		fmt.Sscanf(value, "%d", &n)
 		m.config.Agent.DuplicateFetchLimit = n
+	case "agent.context_debug":
+		m.config.Agent.ContextDebug = parseBool(value)
 	case "server.addr":
 		m.config.Server.Addr = value
 	case "server.api_keys":
