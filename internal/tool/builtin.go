@@ -2,17 +2,18 @@ package tool
 
 import (
 	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
+
+	searchpkg "github.com/yurika0211/luckyharness/internal/search"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // RegisterBuiltinTools 注册所有内置工具
@@ -36,12 +37,12 @@ func RegisterBuiltinToolsWithConfig(r *Registry, searchCfg *WebSearchConfig) {
 // ShellTool 执行 shell 命令
 func ShellTool() *Tool {
 	return &Tool{
-		Name:        "shell",
-		Description: "Execute a shell command and return its output. Use for system operations, file manipulation, and running scripts.",
-		Category:    CatBuiltin,
-		Source:      "builtin",
-		Permission:  PermApprove, // shell 命令需要审批
-		ShellAware:  true,
+		Name:         "shell",
+		Description:  "Execute a shell command and return its output. Use for system operations, file manipulation, and running scripts.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermApprove, // shell 命令需要审批
+		ShellAware:   true,
 		ParallelSafe: false,
 		Parameters: map[string]Param{
 			"command": {
@@ -552,87 +553,21 @@ func quickSearchOrder(provider string, cfg *WebSearchConfig) []string {
 // handleDeepSearch 深度搜索模式：多源交叉验证，合并去重
 // 照 SKILL.md「深度调研」策略：多源搜索 → 合并去重 → 标注来源
 func handleDeepSearch(cfg *WebSearchConfig, query string, count int, provider string) (string, error) {
-	type sourceResult struct {
-		source  string
-		entries []searchEntry
-	}
-
-	var sources []sourceResult
-
-	// 从多个源收集结果
-	collect := func(name string, entries []searchEntry) {
-		if len(entries) > 0 {
-			sources = append(sources, sourceResult{source: name, entries: entries})
-		}
-	}
-
+	var engines []searchpkg.SearchEngine
 	for _, source := range deepSearchOrder(provider, cfg) {
-		switch source {
-		case "searxng":
-			if entries, err := searchWithSearXNGEntries(cfg, query, count); err == nil {
-				collect("SearXNG", entries)
-			}
-		case "exa":
-			if entries, err := searchWithExaEntries(cfg, query, count); err == nil {
-				collect("Exa", entries)
-			}
-		case "ddgs":
-			if entries, err := searchWithDDGSEntries(query, count); err == nil {
-				collect("DDG", entries)
-			}
-		case "brave":
-			if entries, err := searchWithBraveEntries(cfg, query, count); err == nil {
-				collect("Brave", entries)
-			}
+		if eng := buildSearchEngineForSource(source, cfg); eng != nil {
+			engines = append(engines, eng)
 		}
 	}
-
-	if len(sources) == 0 {
+	if len(engines) == 0 {
 		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
 	}
 
-	// 合并去重（按 URL 去重，保留多源标注）
-	seen := make(map[string]*mergedEntry)
-	var order []string // 保持插入顺序
-
-	for _, src := range sources {
-		for _, e := range src.entries {
-			normalizedURL := normalizeURL(e.URL)
-			if existing, ok := seen[normalizedURL]; ok {
-				existing.sources = append(existing.sources, src.source)
-			} else {
-				seen[normalizedURL] = &mergedEntry{
-					title:   e.Title,
-					url:     e.URL,
-					snippet: e.Snippet,
-					sources: []string{src.source},
-				}
-				order = append(order, normalizedURL)
-			}
-		}
+	dr := searchpkg.DeepSearch(context.Background(), engines, query, count)
+	if len(dr.Results) == 0 {
+		return fmt.Sprintf("No results found for '%s' (all search sources failed)", query), nil
 	}
-
-	// 格式化输出
-	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Results for: %s (deep search, %d sources)\n\n", query, len(sources)))
-	for i, urlKey := range order {
-		if i >= count {
-			break
-		}
-		e := seen[urlKey]
-		sourceTag := strings.Join(e.sources, "+")
-		b.WriteString(fmt.Sprintf("%d. %s [%s]\n   %s\n", i+1, e.title, sourceTag, e.url))
-		if e.snippet != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", e.snippet))
-		}
-		b.WriteString("\n")
-	}
-
-	result := b.String()
-	if len(result) > 12000 {
-		result = result[:12000] + "\n... (truncated)"
-	}
-	return result, nil
+	return searchpkg.FormatDeepResults(query, dr), nil
 }
 
 func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
@@ -669,6 +604,52 @@ func deepSearchOrder(provider string, cfg *WebSearchConfig) []string {
 	}
 }
 
+func buildSearchEngineForSource(source string, cfg *WebSearchConfig) searchpkg.SearchEngine {
+	switch source {
+	case "searxng":
+		baseURL := cfg.BaseURL
+		if baseURL == "" {
+			baseURL = os.Getenv("SEARXNG_BASE_URL")
+		}
+		return searchpkg.NewSearXNGEngine(baseURL, cfg.Proxy)
+	case "exa":
+		return searchpkg.NewExaEngine(resolveExaAPIKey(cfg))
+	case "ddgs":
+		return searchpkg.NewDDGSEngine()
+	case "ddg-lite":
+		return searchpkg.NewDDGLiteEngine()
+	case "brave":
+		return searchpkg.NewBraveEngine(resolveBraveAPIKey(cfg), cfg.Proxy)
+	default:
+		return nil
+	}
+}
+
+func toSearchEntries(results []searchpkg.SearchResult) []searchEntry {
+	entries := make([]searchEntry, 0, len(results))
+	for _, r := range results {
+		entries = append(entries, searchEntry{
+			Title:   r.Title,
+			URL:     r.URL,
+			Snippet: r.Snippet,
+		})
+	}
+	return entries
+}
+
+func resolveBraveAPIKey(cfg *WebSearchConfig) string {
+	if cfg != nil && strings.TrimSpace(strings.ToLower(cfg.Provider)) == "brave" && strings.TrimSpace(cfg.APIKey) != "" {
+		return cfg.APIKey
+	}
+	if v := os.Getenv("BRAVE_API_KEY"); v != "" {
+		return v
+	}
+	if cfg != nil && strings.TrimSpace(cfg.APIKey) != "" {
+		return cfg.APIKey
+	}
+	return ""
+}
+
 // searchEntry 统一的搜索结果条目
 type searchEntry struct {
 	Title   string
@@ -682,18 +663,6 @@ type mergedEntry struct {
 	url     string
 	snippet string
 	sources []string
-}
-
-// normalizeURL 简单 URL 归一化（去尾斜杠、去 fragment、小写 host）
-func normalizeURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	u.Fragment = ""
-	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String()
 }
 
 // annotateSource 给搜索结果标注来源
@@ -713,61 +682,12 @@ func searchWithBrave(cfg *WebSearchConfig, query string, count int) (string, err
 }
 
 func searchWithBraveEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("BRAVE_API_KEY")
+	engine := searchpkg.NewBraveEngine(resolveBraveAPIKey(cfg), cfg.Proxy)
+	results, err := engine.Search(context.Background(), query, count)
+	if err != nil {
+		return nil, err
 	}
-	if apiKey == "" {
-		return nil, fmt.Errorf("brave: no API key configured")
-	}
-
-	reqURL := fmt.Sprintf("https://api.search.brave.com/res/v1/web/search?q=%s&count=%d",
-		urlEncode(query), count)
-
-	cmd := exec.Command("curl", "-s", "-L", reqURL,
-		"-H", "Accept: application/json",
-		"-H", "X-Subscription-Token: "+apiKey,
-		"--max-time", "10",
-	)
-	if cfg.Proxy != "" {
-		cmd.Args = append(cmd.Args, "--proxy", cfg.Proxy)
-	}
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("brave api request failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return nil, fmt.Errorf("brave: empty response")
-	}
-
-	var resp struct {
-		Web struct {
-			Results []struct {
-				Title       string `json:"title"`
-				URL         string `json:"url"`
-				Description string `json:"description"`
-			} `json:"results"`
-		} `json:"web"`
-	}
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("brave: parse response failed: %w", err)
-	}
-
-	if len(resp.Web.Results) == 0 {
-		return nil, fmt.Errorf("brave: no results")
-	}
-
-	entries := make([]searchEntry, 0, len(resp.Web.Results))
-	for _, r := range resp.Web.Results {
-		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Description})
-	}
-	return entries, nil
+	return toSearchEntries(results), nil
 }
 
 // ── Exa Search API ───────────────────────────────────────────────────────────
@@ -781,65 +701,12 @@ func searchWithExa(cfg *WebSearchConfig, query string, count int) (string, error
 }
 
 func searchWithExaEntries(cfg *WebSearchConfig, query string, count int) ([]searchEntry, error) {
-	apiKey := resolveExaAPIKey(cfg)
-	if apiKey == "" {
-		return nil, fmt.Errorf("exa: no API key configured")
+	engine := searchpkg.NewExaEngine(resolveExaAPIKey(cfg))
+	results, err := engine.Search(context.Background(), query, count)
+	if err != nil {
+		return nil, err
 	}
-
-	payload, _ := json.Marshal(map[string]any{
-		"query":      query,
-		"numResults": count,
-		"type":       "auto",
-		"contents": map[string]any{
-			"text": map[string]any{
-				"maxCharacters": 200,
-			},
-		},
-	})
-
-	cmd := exec.Command("curl", "-s", "-L",
-		"https://api.exa.ai/search",
-		"-H", "Content-Type: application/json",
-		"-H", "x-api-key: "+apiKey,
-		"-d", string(payload),
-		"--max-time", "15",
-	)
-	if cfg.Proxy != "" {
-		cmd.Args = append(cmd.Args, "--proxy", cfg.Proxy)
-	}
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("exa search failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return nil, fmt.Errorf("exa: empty response")
-	}
-
-	var resp struct {
-		Results []struct {
-			Title string `json:"title"`
-			URL   string `json:"url"`
-			Text  string `json:"text"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("exa: parse response failed: %w", err)
-	}
-	if len(resp.Results) == 0 {
-		return nil, fmt.Errorf("exa: no results")
-	}
-
-	entries := make([]searchEntry, 0, len(resp.Results))
-	for _, r := range resp.Results {
-		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Text})
-	}
-	return entries, nil
+	return toSearchEntries(results), nil
 }
 
 func resolveExaAPIKey(cfg *WebSearchConfig) string {
@@ -869,82 +736,23 @@ func searchWithDDGS(query string, count int) (string, error) {
 }
 
 func searchWithDDGSEntries(query string, count int) ([]searchEntry, error) {
-	script := fmt.Sprintf(
-		`import json; from ddgs import DDGS; ddgs=DDGS(timeout=10); results=ddgs.text(%q, max_results=%d); print(json.dumps(results, ensure_ascii=False))`,
-		query, count,
-	)
-
-	cmd := exec.Command("python3", "-c", script)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("ddgs search failed: %w", err)
+	engine := searchpkg.NewDDGSEngine()
+	results, err := engine.Search(context.Background(), query, count)
+	if err != nil {
+		return nil, err
 	}
-
-	output := stdout.String()
-	if output == "" || output == "[]" {
-		return nil, fmt.Errorf("ddgs returned empty results")
-	}
-
-	var results []map[string]any
-	if err := json.Unmarshal([]byte(output), &results); err != nil {
-		return nil, fmt.Errorf("ddgs: parse failed: %w", err)
-	}
-
-	if len(results) == 0 {
-		return nil, fmt.Errorf("ddgs returned empty results")
-	}
-
-	entries := make([]searchEntry, 0, len(results))
-	for _, r := range results {
-		title, _ := r["title"].(string)
-		href, _ := r["href"].(string)
-		body, _ := r["body"].(string)
-		entries = append(entries, searchEntry{Title: title, URL: href, Snippet: body})
-	}
-	return entries, nil
+	return toSearchEntries(results), nil
 }
 
 // ── DDG Lite curl ────────────────────────────────────────────────────────────
 
 func searchWithDDGLite(query string, count int) (string, error) {
-	cmd := exec.Command("curl", "-s", "-L",
-		"https://lite.duckduckgo.com/lite/",
-		"-d", "q="+urlEncode(query),
-		"-d", "kl=cn-zh",
-		"--max-time", "10",
-	)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("curl ddg lite failed: %w", err)
+	engine := searchpkg.NewDDGLiteEngine()
+	results, err := engine.Search(context.Background(), query, count)
+	if err != nil {
+		return "", err
 	}
-
-	output := stdout.String()
-	if output == "" {
-		return "", fmt.Errorf("ddg lite returned empty response")
-	}
-
-	// 检测验证码/反爬页面
-	if strings.Contains(output, "challenge-form") ||
-		strings.Contains(output, "anomaly-modal") ||
-		strings.Contains(output, "confirm this search was made by a human") {
-		return "", fmt.Errorf("ddg lite returned captcha/challenge page")
-	}
-
-	result := parseDDGLiteHTML(output, count)
-	if result == "" {
-		return "", fmt.Errorf("ddg lite: no parseable results")
-	}
-
-	if len(result) > 5000 {
-		result = result[:5000] + "\n... (truncated)"
-	}
-	return result, nil
+	return formatEntries(query, toSearchEntries(results), count), nil
 }
 
 // ── SearXNG 自部署 ──────────────────────────────────────────────────────────
@@ -962,54 +770,12 @@ func searchWithSearXNGEntries(cfg *WebSearchConfig, query string, count int) ([]
 	if baseURL == "" {
 		baseURL = os.Getenv("SEARXNG_BASE_URL")
 	}
-	if baseURL == "" {
-		return nil, fmt.Errorf("searxng: no base URL configured")
+	engine := searchpkg.NewSearXNGEngine(baseURL, cfg.Proxy)
+	results, err := engine.Search(context.Background(), query, count)
+	if err != nil {
+		return nil, err
 	}
-
-	reqURL := fmt.Sprintf("%s/search?q=%s&format=json&limit=%d",
-		strings.TrimRight(baseURL, "/"), urlEncode(query), count)
-
-	cmd := exec.Command("curl", "-s", "-L", reqURL,
-		"-H", "User-Agent: RightClaw/1.0",
-		"--max-time", "10",
-	)
-	if cfg.Proxy != "" {
-		cmd.Args = append(cmd.Args, "--proxy", cfg.Proxy)
-	}
-
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("searxng request failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return nil, fmt.Errorf("searxng: empty response")
-	}
-
-	var resp struct {
-		Results []struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Content string `json:"content"`
-		} `json:"results"`
-	}
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return nil, fmt.Errorf("searxng: parse response failed: %w", err)
-	}
-
-	if len(resp.Results) == 0 {
-		return nil, fmt.Errorf("searxng: no results")
-	}
-
-	entries := make([]searchEntry, 0, len(resp.Results))
-	for _, r := range resp.Results {
-		entries = append(entries, searchEntry{Title: r.Title, URL: r.URL, Snippet: r.Content})
-	}
-	return entries, nil
+	return toSearchEntries(results), nil
 }
 
 // ── HTML 解析辅助 ────────────────────────────────────────────────────────────
@@ -1052,10 +818,10 @@ func parseDDGLiteHTML(html string, count int) string {
 
 	for i := 0; i < n; i++ {
 		url := links[i][1]
-		title := stripHTMLTags(links[i][2])
+		title := utils.StripHTMLTags(links[i][2])
 		b.WriteString(fmt.Sprintf("%d. %s\n   %s\n", i+1, title, url))
 		if i < len(snippets) {
-			snippet := stripHTMLTags(snippets[i][1])
+			snippet := utils.StripHTMLTags(snippets[i][1])
 			if snippet != "" {
 				b.WriteString(fmt.Sprintf("   %s\n", snippet))
 			}
@@ -1066,70 +832,14 @@ func parseDDGLiteHTML(html string, count int) string {
 	return b.String()
 }
 
-func stripHTMLTags(s string) string {
-	return regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
-}
-
 func urlEncode(s string) string {
-	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
+	return utils.URLEncode(s)
 }
 
 // validateFetchURL 校验 URL 是否安全（SSRF 防护）
 // 仅允许 http/https scheme，禁止私有 IP 和云元数据地址
 func validateFetchURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid url: %w", err)
-	}
-
-	// 仅允许 http/https
-	if u.Scheme != "http" && u.Scheme != "https" {
-		return fmt.Errorf("scheme %q not allowed (only http/https)", u.Scheme)
-	}
-
-	host := u.Hostname()
-	if host == "" {
-		return fmt.Errorf("empty host")
-	}
-
-	// 禁止私有 IP / 回环 / 链路本地 / 云元数据
-	privateRanges := []struct {
-		prefix string
-		name   string
-	}{
-		{"127.", "loopback"},
-		{"10.", "private"},
-		{"192.168.", "private"},
-		{"169.254.", "link-local/metadata"},
-		{"0.", "unspecified"},
-		{"::1", "loopback"},
-		{"fc", "unique-local"},  // IPv6 fc00::/7
-		{"fd", "unique-local"},  // IPv6 fd00::/8
-		{"fe80", "link-local"},  // IPv6 fe80::/10
-	}
-	lowerHost := strings.ToLower(host)
-	for _, r := range privateRanges {
-		if strings.HasPrefix(lowerHost, r.prefix) {
-			return fmt.Errorf("host %q is %s address (not allowed)", host, r.name)
-		}
-	}
-
-	// 172.16.0.0/12 范围检查
-	if strings.HasPrefix(host, "172.") {
-		parts := strings.SplitN(host, ".", 3)
-		if len(parts) >= 2 {
-			if second, err := strconv.Atoi(parts[1]); err == nil && second >= 16 && second <= 31 {
-				return fmt.Errorf("host %q is private address (not allowed)", host)
-			}
-		}
-	}
-
-	// 禁止 localhost
-	if lowerHost == "localhost" {
-		return fmt.Errorf("localhost not allowed")
-	}
-
-	return nil
+	return searchpkg.ValidateFetchURL(rawURL)
 }
 
 // ── WebFetchTool ─────────────────────────────────────────────────────────────
@@ -1206,147 +916,52 @@ func handleWebFetch(cfg *WebSearchConfig, args map[string]any) (string, error) {
 
 // fetchWithDefuddle 使用 defuddle CLI 提取网页正文为干净 Markdown
 func fetchWithDefuddle(fetchURL string, maxChars int) (string, error) {
-	// 检查 defuddle 是否可用
-	cmd := exec.Command("which", "defuddle")
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("defuddle not installed")
+	result, err := searchpkg.NewDefuddleEngine().Fetch(context.Background(), fetchURL, maxChars)
+	if err != nil {
+		return "", err
 	}
-
-	cmd = exec.Command("defuddle", "parse", fetchURL, "--md")
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("defuddle parse failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return "", fmt.Errorf("defuddle: empty result")
-	}
-
-	if len(output) > maxChars {
-		output = output[:maxChars] + "\n... (truncated)"
-	}
-
-	return output, nil
+	return formatFetchResult(result, false), nil
 }
 
 func fetchWithJina(cfg *WebSearchConfig, url string, maxChars int) (string, error) {
-	jinaKey := os.Getenv("JINA_API_KEY")
-
-	curlArgs := []string{"-s", "-L",
-		"https://r.jina.ai/" + url,
-		"-H", "Accept: application/json",
-		"-H", "User-Agent: RightClaw/1.0",
-		"--max-time", "20",
+	apiKey := os.Getenv("JINA_API_KEY")
+	engine := searchpkg.NewJinaEngine(apiKey, cfg.Proxy)
+	result, err := engine.Fetch(context.Background(), url, maxChars)
+	if err != nil {
+		return "", err
 	}
-	if jinaKey != "" {
-		curlArgs = append(curlArgs, "-H", "Authorization: Bearer "+jinaKey)
-	}
-	if cfg.Proxy != "" {
-		curlArgs = append(curlArgs, "--proxy", cfg.Proxy)
-	}
-
-	cmd := exec.Command("curl", curlArgs...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("jina fetch failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return "", fmt.Errorf("jina: empty response")
-	}
-
-	// 解析 Jina JSON 响应
-	var resp struct {
-		Data struct {
-			Title   string `json:"title"`
-			Content string `json:"content"`
-			URL     string `json:"url"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal([]byte(output), &resp); err != nil {
-		return "", fmt.Errorf("jina: parse failed: %w", err)
-	}
-
-	if resp.Data.Content == "" {
-		return "", fmt.Errorf("jina: no content extracted")
-	}
-
-	var b strings.Builder
-	if resp.Data.Title != "" {
-		b.WriteString(fmt.Sprintf("# %s\n\n", resp.Data.Title))
-	}
-	content := resp.Data.Content
-	if len(content) > maxChars {
-		content = content[:maxChars] + "\n... (truncated)"
-	}
-	b.WriteString(content)
-
-	return b.String(), nil
+	return formatFetchResult(result, true), nil
 }
 
 func fetchWithCurl(cfg *WebSearchConfig, url string, maxChars int) (string, error) {
-	curlArgs := []string{"-s", "-L", url,
-		"-H", "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_2) AppleWebKit/537.36",
-		"--max-time", "15",
+	result, err := searchpkg.NewCurlEngine(cfg.Proxy).Fetch(context.Background(), url, maxChars)
+	if err != nil {
+		return "", err
 	}
-	if cfg.Proxy != "" {
-		curlArgs = append(curlArgs, "--proxy", cfg.Proxy)
-	}
-
-	cmd := exec.Command("curl", curlArgs...)
-	var stdout bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = nil
-
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("curl fetch failed: %w", err)
-	}
-
-	output := stdout.String()
-	if output == "" {
-		return "", fmt.Errorf("curl: empty response")
-	}
-
-	// 简单提取：去 HTML 标签，保留文本
-	text := stripHTMLTags(output)
-	text = normalizeWhitespace(text)
-
-	if len(text) > maxChars {
-		text = text[:maxChars] + "\n... (truncated)"
-	}
-
-	if len(text) < 50 {
-		return "", fmt.Errorf("curl: too little content extracted")
-	}
-
-	return text, nil
+	return formatFetchResult(result, false), nil
 }
 
-func normalizeWhitespace(s string) string {
-	// 多个空白字符合并为一个空格
-	re := regexp.MustCompile(`\s+`)
-	s = re.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
+func formatFetchResult(result *searchpkg.FetchResult, includeTitle bool) string {
+	if result == nil {
+		return ""
+	}
+	content := result.Content
+	if !includeTitle || strings.TrimSpace(result.Title) == "" {
+		return content
+	}
+	return fmt.Sprintf("# %s\n\n%s", result.Title, content)
 }
 
 // CurrentTimeTool 获取当前时间
 func CurrentTimeTool() *Tool {
 	return &Tool{
-		Name:        "current_time",
-		Description: "Get the current date and time.",
-		Category:    CatBuiltin,
-		Source:      "builtin",
-		Permission:  PermAuto,
-		Parameters:  map[string]Param{},
-		Handler:     handleCurrentTime,
+		Name:         "current_time",
+		Description:  "Get the current date and time.",
+		Category:     CatBuiltin,
+		Source:       "builtin",
+		Permission:   PermAuto,
+		Parameters:   map[string]Param{},
+		Handler:      handleCurrentTime,
 		ParallelSafe: true,
 	}
 }
