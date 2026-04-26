@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -364,7 +366,7 @@ func mergeResults(results []SearchResult, count int) []SearchResult {
 	var order []string
 
 	for _, r := range results {
-		norm := normalizeURL(r.URL)
+		norm := utils.NormalizeURL(r.URL)
 		if m, ok := seen[norm]; ok {
 			// Add source if not already present
 			found := false
@@ -402,17 +404,6 @@ func mergeResults(results []SearchResult, count int) []SearchResult {
 		out = append(out, r)
 	}
 	return out
-}
-
-func normalizeURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return rawURL
-	}
-	u.Fragment = ""
-	u.Host = strings.ToLower(u.Host)
-	u.Path = strings.TrimRight(u.Path, "/")
-	return u.String()
 }
 
 // ---------------------------------------------------------------------------

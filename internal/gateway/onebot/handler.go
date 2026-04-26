@@ -8,6 +8,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/agent"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // Handler processes OneBot (QQ) messages with per-chat session management.
@@ -80,7 +81,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 			response, err = h.agent.ChatWithSession(ctx, sessionID, text)
 		}
 		if err != nil {
-			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Error: %s", truncateStr(err.Error(), 200)))
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
 		}
 	}
 
@@ -127,11 +128,4 @@ func (h *Handler) handleCommand(ctx context.Context, msg *gateway.Message) error
 	default:
 		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("未知命令: /%s\n输入 /help 查看帮助", msg.Command))
 	}
-}
-
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
 }

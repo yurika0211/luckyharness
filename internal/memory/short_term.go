@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // --- 短期记忆：滑动窗口 + 摘要压缩 ---
@@ -91,11 +92,11 @@ func (b *ShortTermBuffer) generateStructuredSummary(overflow []ConversationTurn)
 	for _, msg := range overflow {
 		switch msg.Role {
 		case "user":
-			userStatements = append(userStatements, truncateField(msg.Content, 120))
+			userStatements = append(userStatements, utils.Truncate(msg.Content, 120))
 			entities = append(entities, extractEntities(msg.Content)...)
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		case "assistant":
-			assistantStatements = append(assistantStatements, truncateField(msg.Content, 120))
+			assistantStatements = append(assistantStatements, utils.Truncate(msg.Content, 120))
 			decisions = append(decisions, extractDecisions(msg.Content)...)
 		}
 	}
@@ -105,25 +106,25 @@ func (b *ShortTermBuffer) generateStructuredSummary(overflow []ConversationTurn)
 
 	if len(userStatements) > 0 {
 		sb.WriteString("User said:\n")
-		for _, s := range dedupSlice(userStatements) {
+		for _, s := range utils.DedupNonEmptyStrings(userStatements) {
 			sb.WriteString("  - " + s + "\n")
 		}
 	}
 
 	if len(assistantStatements) > 0 {
 		sb.WriteString("Assistant responded:\n")
-		for _, s := range dedupSlice(assistantStatements) {
+		for _, s := range utils.DedupNonEmptyStrings(assistantStatements) {
 			sb.WriteString("  - " + s + "\n")
 		}
 	}
 
 	if len(entities) > 0 {
-		sb.WriteString("Key entities: " + strings.Join(dedupSlice(entities), ", ") + "\n")
+		sb.WriteString("Key entities: " + strings.Join(utils.DedupNonEmptyStrings(entities), ", ") + "\n")
 	}
 
 	if len(decisions) > 0 {
 		sb.WriteString("Decisions:\n")
-		for _, d := range dedupSlice(decisions) {
+		for _, d := range utils.DedupNonEmptyStrings(decisions) {
 			sb.WriteString("  - " + d + "\n")
 		}
 	}
@@ -202,14 +203,6 @@ func (b *ShortTermBuffer) Clear() {
 
 // --- 辅助函数 ---
 
-// truncateField 截断字段内容
-func truncateField(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 // extractEntities 从文本中提取关键实体（基于启发式规则）
 // 暂不接 NLP，用简单规则提取：引号内容、大写开头词、代码相关词
 func extractEntities(text string) []string {
@@ -276,24 +269,11 @@ func extractDecisions(text string) []string {
 				end = len(text)
 			}
 			fragment := text[start:end]
-			decisions = append(decisions, truncateField(fragment, 100))
+			decisions = append(decisions, utils.Truncate(fragment, 100))
 		}
 	}
 
 	return decisions
-}
-
-// dedupSlice 去重字符串切片
-func dedupSlice(items []string) []string {
-	seen := make(map[string]bool)
-	result := make([]string, 0, len(items))
-	for _, item := range items {
-		if !seen[item] && item != "" {
-			seen[item] = true
-			result = append(result, item)
-		}
-	}
-	return result
 }
 
 // Ensure ShortTermBuffer is used correctly

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // LoadManifest 从文件加载插件清单
@@ -39,13 +41,13 @@ func SaveManifest(manifest *Manifest, path string) error {
 // parseManifest 简单 YAML 解析器
 func parseManifest(content string) (*Manifest, error) {
 	m := &Manifest{
-	Permissions:  []Permission{},
-	Dependencies: []Dependency{},
+		Permissions:  []Permission{},
+		Dependencies: []Dependency{},
 		Tags:         []string{},
 		ConfigSchema: map[string]ConfigField{},
 	}
 
-	lines := splitLines(content)
+	lines := utils.SplitLines(content)
 	var currentSection string
 
 	for _, line := range lines {
@@ -197,21 +199,6 @@ func formatManifest(m *Manifest) string {
 }
 
 // --- string helpers (avoid importing strings for simple ops) ---
-
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
 
 func trimSpace(s string) string {
 	start, end := 0, len(s)

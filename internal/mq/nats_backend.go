@@ -10,24 +10,25 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // NATSBackend implements Backend using NATS as the message broker
 type NATSBackend struct {
-	mu      sync.RWMutex
-	conn    *nats.Conn
-	subs    map[string]*nats.Subscription
+	mu       sync.RWMutex
+	conn     *nats.Conn
+	subs     map[string]*nats.Subscription
 	handlers map[string]Handler
-	closed  bool
-	counter uint64
+	closed   bool
+	counter  uint64
 }
 
 // NATSConfig holds NATS connection configuration
 type NATSConfig struct {
-	URL         string        `yaml:"url"`
-	Name        string        `yaml:"name,omitempty"`
+	URL           string        `yaml:"url"`
+	Name          string        `yaml:"name,omitempty"`
 	ReconnectWait time.Duration `yaml:"reconnect_wait,omitempty"`
-	MaxReconnect int           `yaml:"max_reconnect,omitempty"`
+	MaxReconnect  int           `yaml:"max_reconnect,omitempty"`
 }
 
 // NewNATSBackend creates a new NATS-based message queue backend
@@ -179,7 +180,7 @@ func decodeMessage(data []byte) (*Message, error) {
 	}
 
 	// Simple parsing
-	lines := splitLines(data)
+	lines := utils.SplitLinesBytes(data)
 	if len(lines) < 3 {
 		return nil, fmt.Errorf("invalid message format")
 	}
@@ -225,20 +226,4 @@ func decodeMessage(data []byte) (*Message, error) {
 	}
 
 	return msg, nil
-}
-
-// splitLines splits byte data into lines
-func splitLines(data []byte) []string {
-	var lines []string
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			lines = append(lines, string(data[start:i]))
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, string(data[start:]))
-	}
-	return lines
 }

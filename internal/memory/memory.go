@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // --- 三层记忆架构 ---
@@ -41,17 +43,17 @@ func (t Tier) String() string {
 
 // Entry 代表一条记忆
 type Entry struct {
-	ID         string    `json:"id"`
-	Content    string    `json:"content"`
-	Category   string    `json:"category"`
-	Tier       Tier      `json:"tier"`
-	Importance float64   `json:"importance"` // 0.0 ~ 1.0，越高越重要
-	AccessCount int      `json:"access_count"` // 被检索次数
-	CreatedAt  time.Time `json:"created_at"`
-	AccessedAt time.Time `json:"accessed_at"` // 最后被检索时间
-	Tags       []string  `json:"tags,omitempty"`
-	SummaryOf  []string  `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"` // 过期时间，nil 表示永不过期
+	ID          string     `json:"id"`
+	Content     string     `json:"content"`
+	Category    string     `json:"category"`
+	Tier        Tier       `json:"tier"`
+	Importance  float64    `json:"importance"`   // 0.0 ~ 1.0，越高越重要
+	AccessCount int        `json:"access_count"` // 被检索次数
+	CreatedAt   time.Time  `json:"created_at"`
+	AccessedAt  time.Time  `json:"accessed_at"` // 最后被检索时间
+	Tags        []string   `json:"tags,omitempty"`
+	SummaryOf   []string   `json:"summary_of,omitempty"` // 如果是摘要，记录原始条目 ID
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"` // 过期时间，nil 表示永不过期
 }
 
 // Weight 计算记忆权重（用于排序和衰减）
@@ -157,7 +159,7 @@ func (s *Store) SaveWithTierAndTags(content, category string, tier Tier, importa
 		Tier:       tier,
 		Importance: importance,
 		CreatedAt:  now,
-		AccessedAt:  now,
+		AccessedAt: now,
 		Tags:       tags,
 	}
 	s.entries[entry.ID] = entry
@@ -294,7 +296,7 @@ func (s *Store) SearchParallel(query string, limit int) []Entry {
 
 	// 使用 channel 收集各层级的检索结果
 	type tierResult struct {
-		tier   Tier
+		tier    Tier
 		entries []entryScore
 	}
 	resultCh := make(chan tierResult, 3)
@@ -586,14 +588,14 @@ func (s *Store) Summarize(ids []string, summary string, category string) error {
 	// 创建摘要条目
 	now := time.Now()
 	entry := &Entry{
-		ID:        s.generateID(),
-		Content:   summary,
-		Category:  category,
-		Tier:      TierMedium,
+		ID:         s.generateID(),
+		Content:    summary,
+		Category:   category,
+		Tier:       TierMedium,
 		Importance: 0.6,
-		CreatedAt: now,
+		CreatedAt:  now,
 		AccessedAt: now,
-		SummaryOf: sourceIDs,
+		SummaryOf:  sourceIDs,
 	}
 	s.entries[entry.ID] = entry
 
@@ -611,9 +613,9 @@ func (s *Store) Stats() map[Tier]int {
 	defer s.mu.RUnlock()
 
 	stats := map[Tier]int{
-		TierShort: 0,
+		TierShort:  0,
 		TierMedium: 0,
-		TierLong:  0,
+		TierLong:   0,
 	}
 	for _, e := range s.entries {
 		stats[e.Tier]++
@@ -751,7 +753,7 @@ func (s *Store) migrateOldFormat() error {
 		return nil // 没有旧文件也正常
 	}
 
-	lines := splitLines(string(data))
+	lines := utils.SplitLines(string(data))
 	now := time.Now()
 	for i, line := range lines {
 		if line == "" {
@@ -797,23 +799,4 @@ func max(a, b float64) float64 {
 		return a
 	}
 	return b
-}
-
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			line := s[start:i]
-			if len(line) > 0 && line[len(line)-1] == '\r' {
-				line = line[:len(line)-1]
-			}
-			lines = append(lines, line)
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -13,17 +14,17 @@ import (
 // MCPClient 是 MCP (Model Context Protocol) 客户端
 // 用于连接外部 MCP Server 并调用其工具
 type MCPClient struct {
-	mu       sync.RWMutex
-	servers  map[string]*MCPServerConfig // 已连接的 MCP Server
-	client   *http.Client
+	mu      sync.RWMutex
+	servers map[string]*MCPServerConfig // 已连接的 MCP Server
+	client  *http.Client
 }
 
 // MCPServerConfig MCP Server 配置
 type MCPServerConfig struct {
-	Name     string `json:"name"`
-	URL      string `json:"url"`
-	APIKey   string `json:"api_key,omitempty"`
-	Enabled  bool   `json:"enabled"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	APIKey  string `json:"api_key,omitempty"`
+	Enabled bool   `json:"enabled"`
 }
 
 // MCPToolInfo MCP Server 返回的工具信息
@@ -182,7 +183,7 @@ func (c *MCPClient) CallTool(serverName, toolName string, args map[string]any) (
 		}
 	}
 
-	return stringsJoin(texts, "\n"), nil
+	return strings.Join(texts, "\n"), nil
 }
 
 // RegisterMCPTools 将 MCP Server 的工具注册到 Registry
@@ -310,15 +311,4 @@ func convertMCPParams(mcpParams map[string]any) map[string]Param {
 	}
 
 	return params
-}
-
-func stringsJoin(ss []string, sep string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	result := ss[0]
-	for i := 1; i < len(ss); i++ {
-		result += sep + ss[i]
-	}
-	return result
 }

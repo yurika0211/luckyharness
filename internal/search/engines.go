@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // ---------------------------------------------------------------------------
@@ -159,11 +161,11 @@ func parseDDGLiteResults(html string, count int) []SearchResult {
 	for i := 0; i < n; i++ {
 		r := SearchResult{
 			URL:    links[i][1],
-			Title:  stripHTMLTags(links[i][2]),
+			Title:  utils.StripHTMLTags(links[i][2]),
 			Source: "ddg-lite",
 		}
 		if i < len(snippets) {
-			r.Snippet = stripHTMLTags(snippets[i][1])
+			r.Snippet = utils.StripHTMLTags(snippets[i][1])
 		}
 		results = append(results, r)
 	}
@@ -232,9 +234,9 @@ func searchWithSearXNG(baseURL, proxy, query string, count int) ([]SearchResult,
 
 func searchWithExa(apiKey, query string, count int) ([]SearchResult, error) {
 	payload, _ := json.Marshal(map[string]any{
-		"query":     query,
+		"query":      query,
 		"numResults": count,
-		"type":      "auto",
+		"type":       "auto",
 		"contents": map[string]any{
 			"text": map[string]any{
 				"maxCharacters": 200,
@@ -264,10 +266,10 @@ func searchWithExa(apiKey, query string, count int) ([]SearchResult, error) {
 
 	var resp struct {
 		Results []struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Text    string `json:"text"`
-			Score   float64 `json:"score"`
+			Title string  `json:"title"`
+			URL   string  `json:"url"`
+			Text  string  `json:"text"`
+			Score float64 `json:"score"`
 		} `json:"results"`
 	}
 	if err := json.Unmarshal([]byte(output), &resp); err != nil {
@@ -408,8 +410,8 @@ func fetchWithCurl(proxy, rawURL string, maxChars int) (*FetchResult, error) {
 		return nil, fmt.Errorf("curl: empty response")
 	}
 
-	text := stripHTMLTags(output)
-	text = normalizeWhitespace(text)
+	text := utils.StripHTMLTags(output)
+	text = utils.NormalizeWhitespace(text)
 
 	if len(text) < 50 {
 		return nil, fmt.Errorf("curl: too little content extracted")
@@ -430,26 +432,8 @@ func fetchWithCurl(proxy, rawURL string, maxChars int) (*FetchResult, error) {
 // Helpers
 // ---------------------------------------------------------------------------
 
-func stripHTMLTags(s string) string {
-	return regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
-}
-
-func normalizeWhitespace(s string) string {
-	re := regexp.MustCompile(`\s+`)
-	s = re.ReplaceAllString(s, " ")
-	return strings.TrimSpace(s)
-}
-
 func urlEncode(s string) string {
-	return strings.ReplaceAll(
-		strings.ReplaceAll(
-			regexp.MustCompile(`[^A-Za-z0-9\-_.~]`).ReplaceAllStringFunc(s, func(match string) string {
-				return fmt.Sprintf("%%%02X", match[0])
-			}),
-			" ", "+",
-		),
-		"+", "%20",
-	)
+	return utils.URLEncode(s)
 }
 
 // Ensure unused import hint

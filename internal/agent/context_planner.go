@@ -12,6 +12,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 type contextBuildOptions struct {
@@ -114,7 +115,7 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 			systemParts = append(systemParts, tools)
 		}
 	}
-	systemContent := strings.TrimSpace(strings.Join(filterEmptyStrings(systemParts), "\n\n"))
+	systemContent := strings.TrimSpace(strings.Join(utils.FilterNonEmptyTrimmed(systemParts), "\n\n"))
 	if systemContent != "" {
 		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
 	}
@@ -301,7 +302,7 @@ func (p *contextPlanner) buildToolCatalog() string {
 		}
 		b.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
 	}
-	return p.fitTextToBudget(b.String(), maxInt(96, p.budget.System/4))
+	return p.fitTextToBudget(b.String(), utils.MaxInt(96, p.budget.System/4))
 }
 
 func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
@@ -345,7 +346,7 @@ func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
 		return provider.Message{}
 	}
 	content := "[Core Memory]\n" + strings.Join(selected, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/3))}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/3))}
 }
 
 func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Message {
@@ -359,14 +360,14 @@ func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Messa
 	if len(results) == 0 {
 		return provider.Message{}
 	}
-	limit := minInt(4, len(results))
+	limit := utils.MinInt(4, len(results))
 	lines := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
 		e := results[i]
 		lines = append(lines, fmt.Sprintf("- [%s/%s] %s", e.Category, e.Tier.String(), truncate(e.Content, 120)))
 	}
 	content := "[Working Memory]\n" + strings.Join(lines, "\n")
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/2))}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/2))}
 }
 
 func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Message {
@@ -387,7 +388,7 @@ func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Messa
 		b.WriteString(truncate(sm.RawSummary, 180))
 		b.WriteString("\n")
 	}
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), maxInt(96, p.budget.Memory/3))}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), utils.MaxInt(96, p.budget.Memory/3))}
 }
 
 func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
@@ -399,7 +400,7 @@ func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
 		return provider.Message{}
 	}
 	content := "[Recent Context]\n" + summary
-	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/3))}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, utils.MaxInt(96, p.budget.Memory/3))}
 }
 
 func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) provider.Message {
@@ -448,18 +449,18 @@ func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.
 			middleStart = 0
 		}
 		if middleStart > 0 {
-			if themes := summarizeConversationRange(all[:middleStart], "[Conversation Themes]", p.est, maxInt(96, p.budget.History/4)); themes != "" {
+			if themes := summarizeConversationRange(all[:middleStart], "[Conversation Themes]", p.est, utils.MaxInt(96, p.budget.History/4)); themes != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: themes})
 			}
 		}
 		if middleStart < recentStart {
-			if summary := summarizeConversationRange(all[middleStart:recentStart], "[Conversation Summary]", p.est, maxInt(96, p.budget.History/3)); summary != "" {
+			if summary := summarizeConversationRange(all[middleStart:recentStart], "[Conversation Summary]", p.est, utils.MaxInt(96, p.budget.History/3)); summary != "" {
 				messages = append(messages, provider.Message{Role: "system", Content: summary})
 			}
 		}
 	}
 
-	recentBudget := maxInt(128, p.budget.History/2)
+	recentBudget := utils.MaxInt(128, p.budget.History/2)
 	used := 0
 	for _, msg := range all[recentStart:] {
 		msg = p.compactHistoryMessage(msg)
@@ -545,21 +546,21 @@ func summarizeConversationRange(messages []provider.Message, header string, est 
 	b.WriteString("\n")
 	if len(userLines) > 0 {
 		b.WriteString("User topics:\n")
-		for _, line := range dedupStrings(userLines, 4) {
+		for _, line := range utils.DedupStringsLimit(userLines, 4) {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	}
 	if len(assistantLines) > 0 {
 		b.WriteString("Assistant progress:\n")
-		for _, line := range dedupStrings(assistantLines, 4) {
+		for _, line := range utils.DedupStringsLimit(assistantLines, 4) {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
 	}
 	if len(toolLines) > 0 {
 		b.WriteString("Tool evidence:\n")
-		for _, line := range dedupStrings(toolLines, 4) {
+		for _, line := range utils.DedupStringsLimit(toolLines, 4) {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
@@ -581,25 +582,6 @@ func summarizeConversationRange(messages []provider.Message, header string, est 
 		}
 	}
 	return ""
-}
-
-func dedupStrings(items []string, limit int) []string {
-	if limit <= 0 {
-		limit = len(items)
-	}
-	seen := make(map[string]struct{}, len(items))
-	out := make([]string, 0, minInt(len(items), limit))
-	for _, item := range items {
-		if _, ok := seen[item]; ok {
-			continue
-		}
-		seen[item] = struct{}{}
-		out = append(out, item)
-		if len(out) >= limit {
-			break
-		}
-	}
-	return out
 }
 
 func toContextMessage(msg provider.Message) contextx.Message {
@@ -650,31 +632,6 @@ func extractLineAfterPrefix(text, prefix string) string {
 	return ""
 }
 
-func filterEmptyStrings(items []string) []string {
-	out := make([]string, 0, len(items))
-	for _, item := range items {
-		item = strings.TrimSpace(item)
-		if item != "" {
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
 func aOrEmpty(s string) string {
 	return strings.TrimSpace(s)
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

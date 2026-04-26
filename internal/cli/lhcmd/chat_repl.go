@@ -19,6 +19,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/server"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // startREPL 启动交互式 REPL
@@ -106,7 +107,7 @@ func startREPL(mgr *config.Manager) error {
 		if len(result.ToolCalls) > 0 {
 			fmt.Println()
 			for _, tc := range result.ToolCalls {
-				fmt.Printf("  🔧 %s(%s) → %s (%v)\n", tc.Name, truncate(tc.Arguments, 50), truncate(tc.Result, 80), tc.Duration)
+				fmt.Printf("  🔧 %s(%s) → %s (%v)\n", tc.Name, utils.Truncate(tc.Arguments, 50), utils.Truncate(tc.Result, 80), tc.Duration)
 			}
 		}
 
@@ -455,13 +456,6 @@ func tierEmoji(t memory.Tier) string {
 	default:
 		return "⚪"
 	}
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // handleCronCommand 处理 /cron 命令

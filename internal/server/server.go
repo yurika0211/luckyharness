@@ -27,6 +27,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 	"github.com/yurika0211/luckyharness/internal/websocket"
 	"github.com/yurika0211/luckyharness/internal/workflow"
 )
@@ -2192,15 +2193,5 @@ func (s *Server) handleGatewayByName(w http.ResponseWriter, r *http.Request) {
 
 // formatDuration 格式化运行时间
 func formatDuration(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	hours := int(d.Hours()) % 24
-	mins := int(d.Minutes()) % 60
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, mins)
-	}
-	return fmt.Sprintf("%dm %ds", mins, int(d.Seconds())%60)
+	return utils.FormatDurationCompact(d)
 }

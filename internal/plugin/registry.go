@@ -5,24 +5,25 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
 
 // Registry 插件注册中心
 type Registry struct {
-	mu       sync.RWMutex
-	plugins  map[string]*PluginEntry // name -> entry
-	pluginsDir string                 // 插件安装目录
-	index    *RemoteIndex             // 远程仓库索引（可选）
+	mu         sync.RWMutex
+	plugins    map[string]*PluginEntry // name -> entry
+	pluginsDir string                  // 插件安装目录
+	index      *RemoteIndex            // 远程仓库索引（可选）
 }
 
 // PluginEntry 已安装的插件条目
 type PluginEntry struct {
 	Manifest  *Manifest
 	Status    PluginStatus
-	Config    map[string]any    // 插件配置
-	Error     string            // 错误信息（如果状态为 error）
+	Config    map[string]any // 插件配置
+	Error     string         // 错误信息（如果状态为 error）
 	UpdatedAt time.Time
 }
 
@@ -244,8 +245,8 @@ func (r *Registry) LoadFromDisk() error {
 			r.mu.Lock()
 			r.plugins[entry.Name()] = &PluginEntry{
 				Manifest: &Manifest{
-					Name:  entry.Name(),
-					Type:  "unknown",
+					Name: entry.Name(),
+					Type: "unknown",
 				},
 				Status: StatusError,
 				Error:  fmt.Sprintf("load manifest: %v", err),
@@ -330,7 +331,7 @@ func (ri *RemoteIndex) Count() int {
 
 // matchRemoteEntry 检查远程条目是否匹配查询
 func matchRemoteEntry(e *RemoteEntry, query string) bool {
-	lower := stringsToLower(e.Name + " " + e.Description + " " + e.Author + " " + stringsJoin(e.Tags, " "))
+	lower := stringsToLower(e.Name + " " + e.Description + " " + e.Author + " " + strings.Join(e.Tags, " "))
 	return stringsContains(lower, query)
 }
 
@@ -373,15 +374,4 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
-}
-
-func stringsJoin(ss []string, sep string) string {
-	if len(ss) == 0 {
-		return ""
-	}
-	result := ss[0]
-	for _, s := range ss[1:] {
-		result += sep + s
-	}
-	return result
 }

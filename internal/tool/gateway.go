@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // Gateway 统一工具网关
@@ -192,7 +194,7 @@ func (r *GatewayResult) Format() string {
 	if !r.Success {
 		status = "❌"
 	}
-	return fmt.Sprintf("%s [%s] %s (%v)", status, r.ToolName, truncateStr(r.Output, 100), r.Duration)
+	return fmt.Sprintf("%s [%s] %s (%v)", status, r.ToolName, utils.Truncate(r.Output, 100), r.Duration)
 }
 
 // ErrQuotaExceeded 配额超限错误
@@ -204,12 +206,4 @@ type ErrQuotaExceeded struct {
 
 func (e ErrQuotaExceeded) Error() string {
 	return fmt.Sprintf("quota exceeded for tool %s (user: %s): %s", e.Tool, e.UserID, e.Reason)
-}
-
-// truncateStr 截断字符串
-func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
