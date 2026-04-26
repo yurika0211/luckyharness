@@ -181,89 +181,58 @@ func TestParseOutboundMediaResponseImplicitDocument(t *testing.T) {
 	}
 }
 
-func TestMaterializeGeneratedDocumentSVG(t *testing.T) {
-	response := "可以，先给你一个可直接保存为 `quadratic.svg` 的示例：\n\n```svg\n<svg><rect width=\"10\" height=\"10\"/></svg>\n```"
-	text, media, err := materializeGeneratedDocuments(response)
+func TestResolveOutboundMediaResponseMediaTag(t *testing.T) {
+	text, media, err := resolveOutboundMediaResponse("已生成文件\nMEDIA:/tmp/report.pdf")
 	if err != nil {
-		t.Fatalf("materializeGeneratedDocuments: %v", err)
+		t.Fatalf("resolveOutboundMediaResponse: %v", err)
 	}
-	if !strings.Contains(text, "quadratic.svg") {
-		t.Fatalf("expected explanatory text to remain, got %q", text)
+	if text != "已生成文件" {
+		t.Fatalf("unexpected text: %q", text)
 	}
 	if len(media) != 1 || media[0].Kind != outboundMediaDocument {
-		t.Fatalf("expected one generated document, got %#v", media)
-	}
-	if !strings.HasSuffix(media[0].Source, ".svg") {
-		t.Fatalf("expected svg temp file, got %q", media[0].Source)
-	}
-	data, err := os.ReadFile(media[0].Source)
-	if err != nil {
-		t.Fatalf("read generated file: %v", err)
-	}
-	if !strings.Contains(string(data), "<svg>") {
-		t.Fatalf("unexpected generated file content: %q", string(data))
-	}
-	_ = os.Remove(media[0].Source)
-}
-
-func TestMaterializeGeneratedDocumentWithoutFilename(t *testing.T) {
-	response := "下面是图像文件内容：\n\n```svg\n<svg><circle cx=\"5\" cy=\"5\" r=\"5\"/></svg>\n```"
-	text, media, err := materializeGeneratedDocuments(response)
-	if err != nil {
-		t.Fatalf("materializeGeneratedDocuments: %v", err)
-	}
-	if !strings.Contains(text, "下面是图像文件内容") {
-		t.Fatalf("expected explanatory text to remain, got %q", text)
-	}
-	if len(media) != 1 {
-		t.Fatalf("expected one generated document, got %#v", media)
-	}
-	if media[0].Caption != "generated-1.svg" {
-		t.Fatalf("unexpected generated caption: %q", media[0].Caption)
-	}
-	_ = os.Remove(media[0].Source)
-}
-
-func TestMaterializeGeneratedDocumentsMultipleBlocks(t *testing.T) {
-	response := "保存为 `a.svg`\n```svg\n<svg><rect width=\"1\" height=\"1\"/></svg>\n```\n\n保存为 `b.json`\n```json\n{\"ok\":true}\n```"
-	text, media, err := materializeGeneratedDocuments(response)
-	if err != nil {
-		t.Fatalf("materializeGeneratedDocuments: %v", err)
-	}
-	if strings.Contains(text, "```") {
-		t.Fatalf("expected code fences removed, got %q", text)
-	}
-	if len(media) != 2 {
-		t.Fatalf("expected two generated documents, got %#v", media)
-	}
-	if media[0].Caption != "a.svg" || media[1].Caption != "b.json" {
-		t.Fatalf("unexpected captions: %#v", media)
-	}
-	for _, item := range media {
-		_ = os.Remove(item.Source)
+		t.Fatalf("expected MEDIA tag to resolve to document, got %#v", media)
 	}
 }
 
-func TestMaterializeGeneratedDocumentsMultipleUnnamedBlocks(t *testing.T) {
-	response := "给你两个文件：\n\n```json\n{\"ok\":true}\n```\n\n```svg\n<svg><circle r=\"5\"/></svg>\n```"
-	text, media, err := materializeGeneratedDocuments(response)
+func TestExtractLocalFilesIgnoresCodeBlocksAndInlineCode(t *testing.T) {
+	tmpDir := t.TempDir()
+	realPath := filepath.Join(tmpDir, "real.png")
+	if err := os.WriteFile(realPath, []byte("png"), 0600); err != nil {
+		t.Fatalf("write real path: %v", err)
+	}
+
+	content := "这个先发给你：" + realPath + "\n\n```bash\ncat " + realPath + "\n```\n还有 `" + realPath + "` 不要当附件。"
+	text, media, err := extractLocalFiles(content)
 	if err != nil {
-		t.Fatalf("materializeGeneratedDocuments: %v", err)
+		t.Fatalf("extractLocalFiles: %v", err)
 	}
-	if !strings.Contains(text, "给你两个文件") {
-		t.Fatalf("expected explanatory text to remain, got %q", text)
+	if !strings.Contains(text, "这个先发给你：") {
+		t.Fatalf("expected explanatory text, got %q", text)
 	}
-	if len(media) != 2 {
-		t.Fatalf("expected 2 generated documents, got %#v", media)
+	if !strings.Contains(text, "```bash") {
+		t.Fatalf("code block should remain untouched in text, got %q", text)
 	}
-	if !strings.HasSuffix(media[0].Caption, ".json") {
-		t.Fatalf("expected json caption, got %q", media[0].Caption)
+	if len(media) != 1 || media[0].Source != realPath {
+		t.Fatalf("expected exactly one extracted media file, got %#v", media)
 	}
-	if !strings.HasSuffix(media[1].Caption, ".svg") {
-		t.Fatalf("expected svg caption, got %q", media[1].Caption)
+}
+
+func TestExtractLocalFilesSandboxPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	realPath := filepath.Join(tmpDir, "chart.png")
+	if err := os.WriteFile(realPath, []byte("png"), 0600); err != nil {
+		t.Fatalf("write sandbox file: %v", err)
 	}
-	for _, item := range media {
-		_ = os.Remove(item.Source)
+	content := "文件在这里 sandbox:" + realPath
+	text, media, err := extractLocalFiles(content)
+	if err != nil {
+		t.Fatalf("extractLocalFiles: %v", err)
+	}
+	if text != "文件在这里" {
+		t.Fatalf("unexpected text: %q", text)
+	}
+	if len(media) != 1 || media[0].Source != "sandbox:"+realPath {
+		t.Fatalf("expected sandbox path media, got %#v", media)
 	}
 }
 

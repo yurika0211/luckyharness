@@ -7,6 +7,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -26,10 +27,12 @@ type outboundMedia struct {
 
 var (
 	tgMediaDirectivePattern = regexp.MustCompile(`(?i)^tg://(photo|document)\s+(\S+)(?:\s+(.*))?$`)
+	mediaTagPattern         = regexp.MustCompile(`(?im)^[\s` + "`" + `"'“”‘’]*MEDIA:\s*(?P<path>(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?|https?://\S+)[\s` + "`" + `"'“”‘’,.;:)\]}]*$`)
 	markdownImagePattern    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
 	markdownLinkPattern     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
-	fencedCodePattern       = regexp.MustCompile("(?s)```([A-Za-z0-9_+.-]*)\\n(.*?)\\n```")
-	filenameHintPattern     = regexp.MustCompile("(?i)(?:保存为|存为|另存为|save as|saved as|filename[:：]?|file[:：]?)\\s*`?([A-Za-z0-9._/-]+\\.[A-Za-z0-9]+)`?")
+	fencedCodePattern       = regexp.MustCompile("(?s)```.*?```")
+	inlineCodePattern       = regexp.MustCompile("`[^`\n]+`")
+	localFilePattern        = regexp.MustCompile(`(?i)(?:sandbox:/|file://|~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|pdf|txt|md|json|csv|docx?|xlsx?|pptx?|zip|rar|7z|svg|xml|html?|js|ts|py|go|ya?ml)\b`)
 )
 
 func resolveOutboundMediaResponse(response string) (string, []outboundMedia, error) {
@@ -37,7 +40,7 @@ func resolveOutboundMediaResponse(response string) (string, []outboundMedia, err
 	if len(media) > 0 {
 		return text, media, nil
 	}
-	return materializeGeneratedDocuments(response)
+	return extractLocalFiles(response)
 }
 
 func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
@@ -63,20 +66,53 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 	}
 
 	text = strings.TrimSpace(strings.Join(kept, "\n"))
+	text, media = extractExplicitMediaTags(text, media)
+	text, media = extractMarkdownMedia(text, media)
+	text = normalizeOutboundText(text)
+	return text, dedupeOutboundMedia(media)
+}
+
+func extractExplicitMediaTags(text string, existing []outboundMedia) (string, []outboundMedia) {
+	matches := mediaTagPattern.FindAllStringSubmatchIndex(text, -1)
+	if len(matches) == 0 {
+		return text, existing
+	}
+
+	var ranges [][2]int
+	for _, match := range matches {
+		if len(match) < 4 {
+			continue
+		}
+		rawPath := strings.TrimSpace(text[match[2]:match[3]])
+		rawPath = trimWrappedPath(rawPath)
+		kind, ok := inferMediaKind(rawPath)
+		if !ok {
+			continue
+		}
+		existing = append(existing, outboundMedia{
+			Kind:   kind,
+			Source: rawPath,
+		})
+		ranges = append(ranges, [2]int{match[0], match[1]})
+	}
+
+	return removeRanges(text, ranges), existing
+}
+
+func extractMarkdownMedia(text string, existing []outboundMedia) (string, []outboundMedia) {
 	if strings.Contains(text, "![") {
 		text = markdownImagePattern.ReplaceAllStringFunc(text, func(match string) string {
 			m := markdownImagePattern.FindStringSubmatch(match)
 			if m == nil {
 				return match
 			}
-			media = append(media, outboundMedia{
+			existing = append(existing, outboundMedia{
 				Kind:    outboundMediaPhoto,
 				Source:  strings.TrimSpace(m[2]),
 				Caption: strings.TrimSpace(m[1]),
 			})
 			return ""
 		})
-		text = strings.TrimSpace(text)
 	}
 
 	if strings.Contains(text, "](") {
@@ -85,24 +121,21 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 			if m == nil {
 				return match
 			}
-
 			source := strings.TrimSpace(m[2])
 			kind, ok := inferMediaKind(source)
 			if !ok {
 				return match
 			}
-
-			media = append(media, outboundMedia{
+			existing = append(existing, outboundMedia{
 				Kind:    kind,
 				Source:  source,
 				Caption: strings.TrimSpace(m[1]),
 			})
 			return ""
 		})
-		text = strings.TrimSpace(text)
 	}
 
-	if len(media) == 0 {
+	if len(existing) == 0 {
 		if kind, ok := detectImplicitMedia(text); ok {
 			return "", []outboundMedia{{
 				Kind:   kind,
@@ -111,7 +144,53 @@ func parseOutboundMediaResponse(response string) (string, []outboundMedia) {
 		}
 	}
 
-	return normalizeOutboundText(text), media
+	return strings.TrimSpace(text), existing
+}
+
+func extractLocalFiles(content string) (string, []outboundMedia, error) {
+	text := strings.TrimSpace(content)
+	if text == "" {
+		return "", nil, nil
+	}
+
+	masked := maskCodeRegions(text)
+	indexes := localFilePattern.FindAllStringIndex(masked, -1)
+	if len(indexes) == 0 {
+		return normalizeOutboundText(text), nil, nil
+	}
+
+	var media []outboundMedia
+	var ranges [][2]int
+	for _, idx := range indexes {
+		if len(idx) != 2 {
+			continue
+		}
+		rawPath := strings.TrimSpace(text[idx[0]:idx[1]])
+		rawPath = trimWrappedPath(rawPath)
+		pathForFS := normalizeLocalMediaPath(rawPath)
+		if pathForFS == "" {
+			continue
+		}
+		info, err := os.Stat(pathForFS)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		kind, ok := inferMediaKind(rawPath)
+		if !ok {
+			continue
+		}
+		media = append(media, outboundMedia{
+			Kind:   kind,
+			Source: rawPath,
+		})
+		ranges = append(ranges, [2]int{idx[0], idx[1]})
+	}
+
+	if len(media) == 0 {
+		return normalizeOutboundText(text), nil, nil
+	}
+
+	return removeRanges(text, ranges), dedupeOutboundMedia(media), nil
 }
 
 func detectImplicitMedia(text string) (outboundMediaKind, bool) {
@@ -127,7 +206,7 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 	switch ext {
 	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
 		return outboundMediaPhoto, true
-	case ".pdf", ".txt", ".md", ".json", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".svg", ".xml", ".html", ".htm", ".js", ".ts", ".py", ".go", ".yaml", ".yml":
+	case ".pdf", ".txt", ".md", ".json", ".csv", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z", ".svg", ".xml", ".html", ".htm", ".js", ".ts", ".py", ".go", ".yaml", ".yml":
 		return outboundMediaDocument, true
 	default:
 		return "", false
@@ -135,12 +214,9 @@ func inferMediaKind(source string) (outboundMediaKind, bool) {
 }
 
 func mediaSourceExt(source string) string {
-	source = strings.TrimSpace(source)
+	source = normalizeLocalMediaPath(source)
 	if source == "" {
 		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(source), "sandbox:/") {
-		source = strings.TrimPrefix(source, "sandbox:")
 	}
 	if strings.HasPrefix(strings.ToLower(source), "file://") {
 		if u, err := url.Parse(source); err == nil {
@@ -151,6 +227,114 @@ func mediaSourceExt(source string) string {
 		return path.Ext(u.Path)
 	}
 	return filepath.Ext(source)
+}
+
+func normalizeLocalMediaPath(source string) string {
+	source = trimWrappedPath(source)
+	if source == "" {
+		return ""
+	}
+	lower := strings.ToLower(source)
+	if strings.HasPrefix(lower, "sandbox:/") {
+		return strings.TrimPrefix(source, "sandbox:")
+	}
+	if strings.HasPrefix(lower, "file://") {
+		u, err := url.Parse(source)
+		if err == nil && strings.TrimSpace(u.Path) != "" {
+			return u.Path
+		}
+	}
+	if strings.HasPrefix(source, "~/") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, strings.TrimPrefix(source, "~/"))
+		}
+	}
+	return source
+}
+
+func trimWrappedPath(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.Trim(s, "`\"'“”‘’")
+	s = strings.TrimRight(s, ",.;:)}]")
+	return strings.TrimSpace(s)
+}
+
+func maskCodeRegions(s string) string {
+	runes := []rune(s)
+	mask := func(start, end int) {
+		for i := start; i < end && i < len(runes); i++ {
+			if runes[i] != '\n' {
+				runes[i] = ' '
+			}
+		}
+	}
+
+	for _, idx := range fencedCodePattern.FindAllStringIndex(s, -1) {
+		mask(idx[0], idx[1])
+	}
+	for _, idx := range inlineCodePattern.FindAllStringIndex(string(runes), -1) {
+		mask(idx[0], idx[1])
+	}
+	return string(runes)
+}
+
+func removeRanges(text string, ranges [][2]int) string {
+	if len(ranges) == 0 {
+		return normalizeOutboundText(text)
+	}
+
+	slices.SortFunc(ranges, func(a, b [2]int) int {
+		switch {
+		case a[0] < b[0]:
+			return -1
+		case a[0] > b[0]:
+			return 1
+		default:
+			return 0
+		}
+	})
+
+	var merged [][2]int
+	for _, r := range ranges {
+		if len(merged) == 0 || r[0] > merged[len(merged)-1][1] {
+			merged = append(merged, r)
+			continue
+		}
+		if r[1] > merged[len(merged)-1][1] {
+			merged[len(merged)-1][1] = r[1]
+		}
+	}
+
+	var b strings.Builder
+	cursor := 0
+	for _, r := range merged {
+		if cursor < r[0] {
+			b.WriteString(text[cursor:r[0]])
+		}
+		cursor = r[1]
+	}
+	if cursor < len(text) {
+		b.WriteString(text[cursor:])
+	}
+	return normalizeOutboundText(b.String())
+}
+
+func dedupeOutboundMedia(media []outboundMedia) []outboundMedia {
+	if len(media) <= 1 {
+		return media
+	}
+
+	seen := make(map[string]struct{}, len(media))
+	out := make([]outboundMedia, 0, len(media))
+	for _, item := range media {
+		key := string(item.Kind) + "\x00" + item.Source + "\x00" + item.Caption
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func normalizeOutboundText(text string) string {
@@ -215,124 +399,19 @@ func summarizeOutboundMedia(media []outboundMedia) string {
 	return "📎 已发送 " + strings.Join(parts, "、")
 }
 
-func materializeGeneratedDocuments(response string) (string, []outboundMedia, error) {
-	text := strings.TrimSpace(response)
+func telegramMediaDeliveryGuidance(text string) string {
+	text = strings.TrimSpace(text)
+	const guidance = "[Telegram delivery rule]\nIf you want Telegram to send a file, image, or other artifact, save it to a real local file first and include a standalone line exactly like MEDIA:/absolute/path/to/file.ext . Do not use markdown links for local files. Do not paste full file contents unless the user explicitly asks for inline content."
 	if text == "" {
-		return "", nil, nil
+		return guidance
 	}
-
-	matches := fencedCodePattern.FindAllStringSubmatchIndex(text, -1)
-	if len(matches) == 0 {
-		return "", nil, nil
-	}
-
-	var built strings.Builder
-	cursor := 0
-	media := make([]outboundMedia, 0, len(matches))
-	docIndex := 0
-
-	for _, match := range matches {
-		built.WriteString(text[cursor:match[0]])
-		cursor = match[1]
-
-		lang := strings.TrimSpace(text[match[2]:match[3]])
-		body := strings.TrimSpace(text[match[4]:match[5]])
-		if body == "" {
-			built.WriteString(text[match[0]:match[1]])
-			continue
-		}
-
-		filename := detectGeneratedFilenameNear(text, match[0], match[1])
-		ext := strings.ToLower(filepath.Ext(filename))
-		if ext == "" {
-			ext = extensionFromFenceLang(lang)
-		}
-		if ext == "" {
-			built.WriteString(text[match[0]:match[1]])
-			continue
-		}
-
-		docIndex++
-		if strings.TrimSpace(filename) == "" {
-			filename = fmt.Sprintf("generated-%d%s", docIndex, ext)
-		}
-
-		tmpFile, err := os.CreateTemp("", "luckyharness-tg-*"+ext)
-		if err != nil {
-			return "", nil, fmt.Errorf("create temp artifact: %w", err)
-		}
-		if _, err := tmpFile.WriteString(body + "\n"); err != nil {
-			tmpFile.Close()
-			return "", nil, fmt.Errorf("write temp artifact: %w", err)
-		}
-		if err := tmpFile.Close(); err != nil {
-			return "", nil, fmt.Errorf("close temp artifact: %w", err)
-		}
-
-		media = append(media, outboundMedia{
-			Kind:    outboundMediaDocument,
-			Source:  tmpFile.Name(),
-			Caption: filepath.Base(filename),
-		})
-	}
-
-	built.WriteString(text[cursor:])
-	if len(media) == 0 {
-		return "", nil, nil
-	}
-
-	return normalizeOutboundText(built.String()), media, nil
+	return text + "\n\n" + guidance
 }
 
-func detectGeneratedFilenameNear(text string, blockStart int, blockEnd int) string {
-	prefix := text[:blockStart]
-	matches := filenameHintPattern.FindAllStringSubmatch(prefix, -1)
-	if len(matches) > 0 {
-		last := matches[len(matches)-1]
-		if len(last) >= 2 {
-			return filepath.Base(strings.TrimSpace(last[1]))
-		}
+func debugDescribeOutboundResponse(response string) string {
+	text, media, err := resolveOutboundMediaResponse(response)
+	if err != nil {
+		return "error: " + err.Error()
 	}
-
-	suffix := text[blockEnd:]
-	matches = filenameHintPattern.FindAllStringSubmatch(suffix, -1)
-	if len(matches) > 0 {
-		first := matches[0]
-		if len(first) >= 2 {
-			return filepath.Base(strings.TrimSpace(first[1]))
-		}
-	}
-
-	return ""
-}
-
-func extensionFromFenceLang(lang string) string {
-	switch strings.ToLower(strings.TrimSpace(lang)) {
-	case "svg":
-		return ".svg"
-	case "json":
-		return ".json"
-	case "html":
-		return ".html"
-	case "xml":
-		return ".xml"
-	case "csv":
-		return ".csv"
-	case "md", "markdown":
-		return ".md"
-	case "txt", "text":
-		return ".txt"
-	case "yaml", "yml":
-		return ".yaml"
-	case "javascript", "js":
-		return ".js"
-	case "typescript", "ts":
-		return ".ts"
-	case "python", "py":
-		return ".py"
-	case "go", "golang":
-		return ".go"
-	default:
-		return ""
-	}
+	return fmt.Sprintf("text=%q media=%d", text, len(media))
 }

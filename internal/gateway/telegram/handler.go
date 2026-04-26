@@ -623,6 +623,7 @@ func (h *Handler) handleChat(ctx context.Context, msg *gateway.Message, text str
 	if msg.IsGroupTrigger && msg.Sender.DisplayName() != "" {
 		inputText = fmt.Sprintf("[%s]: %s", msg.Sender.DisplayName(), text)
 	}
+	inputText = telegramMediaDeliveryGuidance(inputText)
 
 	// 自然语言进度模式：直接按步骤发独立消息，最终结论也作为“最后一条新消息”发送。
 	// 这样可以避免结论写回到最早的占位流消息，导致视觉上跑到最上面。
