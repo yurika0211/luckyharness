@@ -31,10 +31,11 @@
 - LLM 主配置：`provider`, `api_key`, `api_base`, `model`, `max_tokens`, `temperature`
 - Provider 额外请求头：`extra_headers`
 - 重试/熔断/限流：`retry`, `circuit_breaker`, `rate_limit`
-- Agent Loop：`agent.max_iterations`, `agent.timeout_seconds`, `agent.auto_approve`
+- Agent Loop：`agent.max_iterations`, `agent.timeout_seconds`, `agent.auto_approve`, `agent.repeat_tool_call_limit`, `agent.tool_only_iteration_limit`, `agent.duplicate_fetch_limit`
 - API Server：`server.addr`, `server.api_keys`, `server.enable_cors`, `server.rate_limit`
 - 消息网关：`msg_gateway.platform`, `msg_gateway.telegram.token`, `msg_gateway.onebot.*`
 - Telegram 中间步骤展示：`msg_gateway.telegram.progress_as_messages`
+- Telegram 最终回答前附加工具摘要：`msg_gateway.telegram.show_tool_details_in_result`
 
 ## 生效方式
 
@@ -45,4 +46,33 @@
 ```bash
 pkill -9 lh
 lh serve
+```
+
+## Agent 重复工具限制
+
+可用字段：
+
+- `agent.repeat_tool_call_limit`
+  - 同一工具签名（工具名 + 参数）允许重复的次数上限
+  - 默认：`3`
+- `agent.tool_only_iteration_limit`
+  - 连续“只有工具调用、没有正文回答”的轮次上限
+  - 默认：`3`
+- `agent.duplicate_fetch_limit`
+  - 同一 URL 允许执行 `web_fetch` 的次数上限
+  - 默认：`1`
+
+示例：
+
+```json
+{
+  "agent": {
+    "max_iterations": 10,
+    "timeout_seconds": 60,
+    "auto_approve": false,
+    "repeat_tool_call_limit": 2,
+    "tool_only_iteration_limit": 2,
+    "duplicate_fetch_limit": 1
+  }
+}
 ```
