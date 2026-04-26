@@ -13,10 +13,11 @@ import (
 type Modality string
 
 const (
-	ModalityText  Modality = "text"
-	ModalityImage Modality = "image"
-	ModalityAudio Modality = "audio"
-	ModalityVideo Modality = "video"
+	ModalityText     Modality = "text"
+	ModalityImage    Modality = "image"
+	ModalityAudio    Modality = "audio"
+	ModalityVideo    Modality = "video"
+	ModalityDocument Modality = "document"
 )
 
 // Input represents a multi-modal input item
@@ -35,9 +36,9 @@ type Input struct {
 type AnalysisResult struct {
 	InputID    string            `json:"input_id"`
 	Modality   Modality          `json:"modality"`
-	Text       string            `json:"text"`                // Extracted/understood text
-	Summary    string            `json:"summary,omitempty"`   // Brief summary
-	Labels     []string          `json:"labels,omitempty"`    // Classification labels
+	Text       string            `json:"text"`                 // Extracted/understood text
+	Summary    string            `json:"summary,omitempty"`    // Brief summary
+	Labels     []string          `json:"labels,omitempty"`     // Classification labels
 	Confidence float64           `json:"confidence,omitempty"` // Confidence score 0-1
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	Duration   time.Duration     `json:"duration,omitempty"` // Processing duration

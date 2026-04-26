@@ -11,7 +11,7 @@ func humanizeThinkingProgress(content string) string {
 	if content == "" {
 		return ""
 	}
-	return ensureSentenceSuffix("我先理一下当前进度：" + content)
+	return ensureSentenceSuffix("我先陪你把这条思路慢慢捋顺喔：" + content)
 }
 
 func humanizeToolCallProgress(step int, name, args string) string {
@@ -27,54 +27,54 @@ func humanizeToolCallProgress(step int, name, args string) string {
 
 	if strings.Contains(lowerName, "skill") {
 		if skillName := pickArg(parsed, "skill", "skill_name", "name", "id"); skillName != "" {
-			return fmt.Sprintf("先做第 %d 步：准备调用技能「%s」，补齐这类任务的处理链路。", step, clipOneLine(skillName, 60))
+			return fmt.Sprintf("我先借一下技能「%s」的处理套路呀，帮你把这一步走稳一点。", clipOneLine(skillName, 60))
 		}
-		return fmt.Sprintf("先做第 %d 步：准备调用技能链路，补齐这个问题的专业上下文。", step)
+		return "我先调一下现成的技能链路呀，把这类问题的处理框架先搭稳。"
 	}
 
 	switch lowerName {
 	case "web_search":
 		if q := pickArg(parsed, "query", "q", "keyword"); q != "" {
-			return fmt.Sprintf("先做第 %d 步：联网搜索 %s，确认可用信息源。", step, quoteAndTrim(q, 90))
+			return fmt.Sprintf("我先替你去网上找一轮资料呀，重点盯着 %s。", quoteAndTrim(q, 90))
 		}
-		return fmt.Sprintf("先做第 %d 步：联网搜索相关资料，确认外部信息。", step)
+		return "我先去外面帮你扫一圈资料呀，看看有没有更靠谱的线索。"
 	case "web_fetch":
 		if u := pickArg(parsed, "url", "uri", "link"); u != "" {
-			return fmt.Sprintf("先做第 %d 步：打开页面并核对原文：%s。", step, clipOneLine(u, 100))
+			return fmt.Sprintf("我把这页原文打开看看呀，先替你核对细节：%s。", clipOneLine(u, 100))
 		}
-		return fmt.Sprintf("先做第 %d 步：读取网页正文，提取关键事实。", step)
+		return "我先把网页正文捞出来呀，看看里面到底写了什么。"
 	case "shell":
 		if cmd := pickArg(parsed, "cmd", "command", "script"); cmd != "" {
-			return fmt.Sprintf("先做第 %d 步：执行命令检查当前状态：%s。", step, clipOneLine(cmd, 100))
+			return fmt.Sprintf("我先在终端里替你查一下现状呀，跑这条命令看看：%s。", clipOneLine(cmd, 100))
 		}
-		return fmt.Sprintf("先做第 %d 步：执行命令核对当前环境。", step)
+		return "我先去终端里探一下路呀，确认当前环境到底是什么状态。"
 	case "file_read":
 		if p := pickArg(parsed, "path", "file", "filepath", "filename"); p != "" {
-			return fmt.Sprintf("先做第 %d 步：查看文件 %s，确认现状。", step, clipOneLine(p, 100))
+			return fmt.Sprintf("我先陪你翻一下文件 %s 呀，看看里面现在是什么情况。", clipOneLine(p, 100))
 		}
-		return fmt.Sprintf("先做第 %d 步：读取文件内容，确认上下文。", step)
+		return "我先把相关文件读一遍呀，免得后面判断跑偏。"
 	case "file_write":
 		if p := pickArg(parsed, "path", "file", "filepath", "filename"); p != "" {
-			return fmt.Sprintf("先做第 %d 步：更新文件 %s，落地本次修改。", step, clipOneLine(p, 100))
+			return fmt.Sprintf("我先把修改落到 %s 里呀，这样你后面接着看会更安心。", clipOneLine(p, 100))
 		}
-		return fmt.Sprintf("先做第 %d 步：写入文件，落地本次修改。", step)
+		return "我先把这次改动真正写进去呀，后面再陪你一起收口。"
 	case "recall":
 		if q := pickArg(parsed, "query", "q", "keyword"); q != "" {
-			return fmt.Sprintf("先做第 %d 步：回查历史上下文 %s。", step, quoteAndTrim(q, 90))
+			return fmt.Sprintf("我先回头翻一下之前的上下文呀，看看 %s 有没有旧线索。", quoteAndTrim(q, 90))
 		}
-		return fmt.Sprintf("先做第 %d 步：回查历史上下文，避免遗漏。", step)
+		return "我先把之前的上下文翻出来呀，避免漏掉已经说过的关键信息。"
 	case "remember":
-		return fmt.Sprintf("先做第 %d 步：记录关键信息，方便后续复用。", step)
+		return "这个点值得记一下呀，我先替你收进记忆里，后面就不用重复解释了。"
 	case "current_time":
-		return fmt.Sprintf("先做第 %d 步：确认当前时间与时区信息。", step)
+		return "我先确认一下现在的时间和时区呀，免得时间线搞错。"
 	}
 
 	if keyHint := pickArg(parsed,
 		"query", "url", "path", "cmd", "command",
 		"title", "task_id", "name"); keyHint != "" {
-		return fmt.Sprintf("先做第 %d 步：调用工具 %s，处理 %s。", step, n, clipOneLine(keyHint, 100))
+		return fmt.Sprintf("我先借工具 %s 处理一下 %s 呀，把这块缺口替你补上。", n, clipOneLine(keyHint, 100))
 	}
-	return fmt.Sprintf("先做第 %d 步：调用工具 %s，补齐这一步信息。", step, n)
+	return fmt.Sprintf("我先调一下 %s 呀，把这一小段信息替你补全。", n)
 }
 
 func humanizeToolResultProgress(step int, name, result string) string {
@@ -86,41 +86,41 @@ func humanizeToolResultProgress(step int, name, result string) string {
 
 	switch lowerName {
 	case "web_search":
-		return fmt.Sprintf("第 %d 步完成：搜索结果已拿到，我继续筛选最相关的内容。", step)
+		return "这一轮搜索结果我已经拿到了呀，我先帮你把有用的和噪音分开。"
 	case "web_fetch":
-		return fmt.Sprintf("第 %d 步完成：页面内容已读取，我继续提取关键细节。", step)
+		return "原文我已经读过了呀，接着帮你拎里面真正关键的部分。"
 	case "shell":
-		return fmt.Sprintf("第 %d 步完成：命令已经执行完，我继续根据输出推进。", step)
+		return "命令已经跑完啦，我正顺着输出继续帮你判断。"
 	case "file_read":
-		return fmt.Sprintf("第 %d 步完成：目标文件已读完，我继续定位关键信息。", step)
+		return "文件我已经看过了呀，接着帮你抓重点。"
 	case "file_write":
-		return fmt.Sprintf("第 %d 步完成：文件已更新，我继续做后续校验。", step)
+		return "改动已经写进去了呀，我再顺手帮你做一轮确认。"
 	case "recall":
-		return fmt.Sprintf("第 %d 步完成：历史上下文已核对，我继续往下处理。", step)
+		return "前面的上下文我已经翻过了呀，现在继续帮你往下收拢。"
 	case "remember":
-		return fmt.Sprintf("第 %d 步完成：关键信息已记录。", step)
+		return "这条信息我已经记住啦，后面我们可以直接接着用。"
 	case "current_time":
-		return fmt.Sprintf("第 %d 步完成：时间信息已确认。", step)
+		return "时间线已经核对好了呀，这块不会再跑偏。"
 	}
 
 	if strings.Contains(lowerName, "skill") {
-		return fmt.Sprintf("第 %d 步完成：技能链路已执行完成，我继续整理结论。", step)
+		return "技能链路已经跑完啦，我现在把结果慢慢往结论里收。"
 	}
 
 	if summary := humanizeToolResult(name, result); summary != "" {
 		summary = strings.TrimPrefix(summary, "我")
 		summary = strings.TrimSpace(summary)
-		return ensureSentenceSuffix(fmt.Sprintf("第 %d 步完成：%s", step, summary))
+		return ensureSentenceSuffix("好呀，我已经把这一步带回来了，" + summary)
 	}
-	return fmt.Sprintf("第 %d 步完成：工具调用已返回结果。", step)
+	return "这一步已经有结果啦，我继续帮你往下整理。"
 }
 
 func wrapFinalConclusion(finalOutput string) string {
 	finalOutput = strings.TrimSpace(finalOutput)
 	if finalOutput == "" {
-		return "结论：当前轮没有可展示的最终内容。"
+		return "我这轮暂时还没整理出能直接递给你的结论呀。"
 	}
-	return "结论：\n" + finalOutput
+	return "我整理好啦，下面这部分你可以直接看：\n" + finalOutput
 }
 
 func humanizeToolCall(name, args string) string {
@@ -196,33 +196,33 @@ func humanizeToolResult(name, result string) string {
 	switch n {
 	case "web_search":
 		if strings.Contains(text, "Results for:") {
-			return "我先找到了一批相关搜索结果，里面已经有官方页面和学生经验帖。"
+			return "我先捞到了一批相关结果呀，里面已经能看到几个比较靠谱的入口。"
 		}
 		if strings.Contains(strings.ToLower(text), "no results found") {
-			return "我试着搜了一轮，但这一轮没有拿到有效结果。"
+			return "我先替你搜了一轮，不过这次还没捞到像样的结果呀。"
 		}
-		return "我先查到了一些和这个问题直接相关的搜索结果。"
+		return "我先查到了一批和这个问题贴得比较近的资料呀。"
 
 	case "web_fetch":
 		if strings.Contains(strings.ToLower(text), "failed to fetch") {
-			return "我尝试读取网页正文，但这一页没有成功抓下来。"
+			return "我试着把网页正文抓下来，不过这页没顺利拿到呀。"
 		}
-		return "我把网页正文也读了一遍，拿到了一些可直接引用的细节。"
+		return "我把网页正文过了一遍呀，里面有几处细节可以直接拿来用。"
 
 	case "file_read":
-		return "我读到了文件里的关键片段。"
+		return "我已经翻到文件里的关键片段啦。"
 
 	case "recall":
 		if strings.Contains(text, "没有找到") {
-			return "我先查了历史上下文，不过这件事之前没有现成记录。"
+			return "我回头翻了之前的记录，不过这件事暂时没有现成线索呀。"
 		}
-		return "我先回顾了一下之前相关的上下文。"
+		return "我先把之前相关的上下文顺了一遍呀。"
 
 	case "current_time":
-		return "我顺手确认了当前时间信息。"
+		return "我顺手把时间信息也核对过了呀。"
 	}
 
-	return fmt.Sprintf("我已经拿到了 %s 这一步的结果。", n)
+	return fmt.Sprintf("我已经把 %s 这一步的结果带回来啦。", n)
 }
 
 func parseToolCallArgs(raw string) map[string]any {

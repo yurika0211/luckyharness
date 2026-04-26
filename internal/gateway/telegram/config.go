@@ -3,6 +3,7 @@ package telegram
 // Config holds Telegram-specific configuration.
 type Config struct {
 	Token         string   // Bot token
+	Proxy         string   // Optional proxy URL for Telegram API (http/https/socks5)
 	AllowedChats  []string // Chat ID whitelist (empty = allow all)
 	AdminIDs      []string // Admin user IDs
 	MaxMessageLen int      // Max message length before splitting (default 4000)

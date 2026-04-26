@@ -20,6 +20,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // agentProvider 定义 Handler 需要从 Agent 获得的能力接口。
@@ -35,6 +36,7 @@ type agentProvider interface {
 	Chat(ctx context.Context, userInput string) (string, error)
 	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	Metrics() *metrics.Metrics
 	Memory() *memory.Store
 }
@@ -97,6 +99,10 @@ func (a agentProviderAdapter) ChatWithSession(ctx context.Context, sessionID, us
 
 func (a agentProviderAdapter) ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error) {
 	return a.inner.ChatWithSessionStream(ctx, sessionID, userInput)
+}
+
+func (a agentProviderAdapter) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
+	return a.inner.AnalyzeAttachments(ctx, attachments)
 }
 
 func (a agentProviderAdapter) Metrics() *metrics.Metrics {
@@ -447,25 +453,7 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 	// v0.36.0: 如果有附件，构造多媒体描述
 	inputText := msg.Text
 	if len(msg.Attachments) > 0 {
-		var mediaDesc strings.Builder
-		mediaDesc.WriteString(inputText)
-		if inputText != "" {
-			mediaDesc.WriteString("\n\n")
-		}
-		mediaDesc.WriteString("[多媒体内容]\n")
-		for i, att := range msg.Attachments {
-			switch att.Type {
-			case gateway.AttachmentImage:
-				mediaDesc.WriteString(fmt.Sprintf("📷 图片 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
-			case gateway.AttachmentAudio:
-				mediaDesc.WriteString(fmt.Sprintf("🎤 语音 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
-			case gateway.AttachmentVideo:
-				mediaDesc.WriteString(fmt.Sprintf("🎬 视频 %d: %s (URL: %s)\n", i+1, att.FileName, att.FileURL))
-			case gateway.AttachmentDocument:
-				mediaDesc.WriteString(fmt.Sprintf("📎 文件 %d: %s (%s, URL: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
-			}
-		}
-		inputText = mediaDesc.String()
+		inputText = h.composeAttachmentInput(ctx, inputText, msg.Attachments)
 	}
 
 	// Regular text in private chats → forward to Agent
@@ -475,6 +463,38 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 
 	// Group chats: only respond if mentioned or replied to (already filtered by adapter)
 	return h.dispatchChatAsync(ctx, msg, inputText)
+}
+
+func (h *Handler) composeAttachmentInput(ctx context.Context, baseText string, attachments []gateway.Attachment) string {
+	var sections []string
+	if strings.TrimSpace(baseText) != "" {
+		sections = append(sections, strings.TrimSpace(baseText))
+	}
+
+	if h.agent != nil {
+		analysis, err := h.agent.AnalyzeAttachments(ctx, attachments)
+		if err == nil && strings.TrimSpace(analysis) != "" {
+			sections = append(sections, analysis)
+			return strings.Join(sections, "\n\n")
+		}
+	}
+
+	var mediaDesc strings.Builder
+	mediaDesc.WriteString("[Multimedia Attachments]\n")
+	for i, att := range attachments {
+		switch att.Type {
+		case gateway.AttachmentImage:
+			mediaDesc.WriteString(fmt.Sprintf("Image %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
+		case gateway.AttachmentAudio:
+			mediaDesc.WriteString(fmt.Sprintf("Audio %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
+		case gateway.AttachmentVideo:
+			mediaDesc.WriteString(fmt.Sprintf("Video %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
+		case gateway.AttachmentDocument:
+			mediaDesc.WriteString(fmt.Sprintf("Document %d: %s (mime: %s, url: %s)\n", i+1, att.FileName, att.MimeType, att.FileURL))
+		}
+	}
+	sections = append(sections, strings.TrimSpace(mediaDesc.String()))
+	return strings.Join(sections, "\n\n")
 }
 
 // handleCommand dispatches bot commands.
@@ -638,6 +658,84 @@ func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
 	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
 }
 
+func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
+	if h.adapter == nil || msg == nil {
+		return fmt.Errorf("telegram: adapter or message is nil")
+	}
+
+	text, media, err := resolveOutboundMediaResponse(response)
+	if err != nil {
+		return err
+	}
+	if len(media) == 0 {
+		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+			return h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response)
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, response)
+	}
+
+	replyToMsgID := ""
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		replyToMsgID = msg.ID
+	}
+
+	if strings.TrimSpace(text) != "" {
+		if replyToMsgID != "" {
+			if err := h.adapter.SendWithReply(ctx, msg.Chat.ID, replyToMsgID, text); err != nil {
+				return err
+			}
+		} else if err := h.adapter.Send(ctx, msg.Chat.ID, text); err != nil {
+			return err
+		}
+	}
+
+	return h.sendAssistantMedia(ctx, msg, media)
+}
+
+func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, media []outboundMedia) error {
+	if h.adapter == nil || msg == nil || len(media) == 0 {
+		return nil
+	}
+
+	replyToMsgID := ""
+	if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+		replyToMsgID = msg.ID
+	}
+
+	for _, item := range media {
+		switch item.Kind {
+		case outboundMediaPhoto:
+			if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, replyToMsgID, item.Source, item.Caption); err != nil {
+				return err
+			}
+		case outboundMediaDocument:
+			if err := h.adapter.SendDocument(ctx, msg.Chat.ID, replyToMsgID, item.Source, item.Caption); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response string) {
+	if msg == nil || h.adapter == nil {
+		return
+	}
+
+	sendCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := h.sendAssistantResponse(sendCtx, msg, response); err != nil {
+		fallback := fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200))
+		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
+			_ = h.adapter.SendWithReply(sendCtx, msg.Chat.ID, msg.ID, fallback)
+			return
+		}
+		_ = h.adapter.Send(sendCtx, msg.Chat.ID, fallback)
+	}
+}
+
 // handleChatNarrativeStream 自然语言进度模式（不使用流式占位消息）。
 // 中间步骤和最终结论都作为独立消息发送，保证“结论在最后”。
 func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
@@ -664,7 +762,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			case isTaskCanceledError(err):
 				h.sendProgressMessage(msg, "🛑 当前任务已停止")
 			default:
-				h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", truncateString(err.Error(), 200)))
+				h.sendProgressMessage(msg, fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
 			}
 			return nil
 		}
@@ -733,7 +831,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 				if h.effectiveShowToolDetailsInResult() && finalOutput != "" {
 					finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 				}
-				h.sendProgressMessage(msg, wrapFinalConclusion(finalOutput))
+				h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 				sentResult = true
 				ended = true
 
@@ -762,7 +860,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			if h.effectiveShowToolDetailsInResult() {
 				finalOutput = prependToolNarratives(toolNarratives, finalOutput)
 			}
-			h.sendProgressMessage(msg, wrapFinalConclusion(finalOutput))
+			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			h.sendProgressMessage(msg, "⏱ 请求超时")
 		case errors.Is(chatCtx.Err(), context.Canceled):
@@ -805,7 +903,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				sender.Finish()
 				return nil
 			}
-			sender.SetResult(fmt.Sprintf("❌ Error: %s", truncateString(err.Error(), 200)))
+			sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(err.Error(), 200)))
 			sender.Finish()
 			return nil
 		}
@@ -904,9 +1002,25 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				if narrativeMode {
 					finalOutput = wrapFinalConclusion(finalOutput)
 				}
-				// 最终结果替换整个消息
-				sender.SetResult(finalOutput)
-				sender.Finish()
+				textOnly, media, resolveErr := resolveOutboundMediaResponse(finalOutput)
+				if resolveErr != nil {
+					sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
+					sender.Finish()
+				} else if len(media) > 0 {
+					placeholder := textOnly
+					if strings.TrimSpace(placeholder) == "" {
+						placeholder = summarizeOutboundMedia(media)
+					}
+					sender.SetResult(placeholder)
+					sender.Finish()
+					if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
+						h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
+					}
+				} else {
+					// 最终结果替换整个消息
+					sender.SetResult(finalOutput)
+					sender.Finish()
+				}
 				sentResult = true
 				ended = true
 
@@ -947,7 +1061,21 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		}
 		switch {
 		case finalContent.Len() > 0:
-			sender.SetResult(finalOutput)
+			textOnly, media, resolveErr := resolveOutboundMediaResponse(finalOutput)
+			if resolveErr != nil {
+				sender.SetResult(fmt.Sprintf("❌ Error: %s", utils.TruncateKeepLength(resolveErr.Error(), 200)))
+			} else if len(media) > 0 {
+				placeholder := textOnly
+				if strings.TrimSpace(placeholder) == "" {
+					placeholder = summarizeOutboundMedia(media)
+				}
+				sender.SetResult(placeholder)
+				if err := h.sendAssistantMedia(context.Background(), msg, media); err != nil {
+					h.sendProgressMessage(msg, fmt.Sprintf("❌ Failed to send media response: %s", utils.TruncateKeepLength(err.Error(), 200)))
+				}
+			} else {
+				sender.SetResult(finalOutput)
+			}
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
 			sender.SetResult("⏱ 请求超时")
 		case errors.Is(chatCtx.Err(), context.Canceled):
@@ -986,14 +1114,6 @@ func prependToolNarratives(lines []string, finalOutput string) string {
 	return b.String()
 }
 
-// truncateString 截断字符串
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen-3] + "..."
-}
-
 // handleChatSync 非流式对话处理（回退方案）
 func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text, sessionID string) error {
 	// 启动 typing indicator
@@ -1024,11 +1144,7 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, text
 		}
 	}
 
-	// 群聊中始终 reply to 原消息，方便上下文追踪
-	if msg.Chat.Type != gateway.ChatPrivate {
-		return h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response)
-	}
-	return h.adapter.Send(ctx, msg.Chat.ID, response)
+	return h.sendAssistantResponse(ctx, msg, response)
 }
 
 // handleModel shows or sets the current model.
@@ -1254,7 +1370,7 @@ func (h *Handler) handleCron(ctx context.Context, msg *gateway.Message) error {
 			if err != nil {
 				// 执行失败，通知聊天
 				_ = h.adapter.Send(context.Background(), msg.Chat.ID,
-					fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", name, truncateString(err.Error(), 200)))
+					fmt.Sprintf("⏰ 定时任务 [%s] 执行失败: %s", name, utils.TruncateKeepLength(err.Error(), 200)))
 				return err
 			}
 
@@ -1467,15 +1583,5 @@ func (h *Handler) handleRestart(ctx context.Context, msg *gateway.Message) error
 
 // formatDuration 格式化运行时间
 func formatDuration(d time.Duration) string {
-	days := int(d.Hours() / 24)
-	hours := int(d.Hours()) % 24
-	mins := int(d.Minutes()) % 60
-
-	if days > 0 {
-		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
-	}
-	if hours > 0 {
-		return fmt.Sprintf("%dh %dm", hours, mins)
-	}
-	return fmt.Sprintf("%dm %ds", mins, int(d.Seconds())%60)
+	return utils.FormatDurationCompact(d)
 }

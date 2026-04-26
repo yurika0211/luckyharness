@@ -2,6 +2,8 @@ package telegram
 
 import (
 	"context"
+	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -50,6 +52,61 @@ func TestNewAdapterDefaults(t *testing.T) {
 	assert.Equal(t, 4000, adapter.cfg.MaxMessageLen)
 	assert.Equal(t, 1, adapter.cfg.RateLimit)
 	assert.Equal(t, 30, adapter.cfg.PollTimeout)
+}
+
+func TestNewHTTPClientNoProxy(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test-token"})
+	client, err := adapter.newHTTPClient()
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+	assert.Nil(t, client.Transport)
+}
+
+func TestNewHTTPClientHTTPProxy(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test-token", Proxy: "http://127.0.0.1:7897"})
+	client, err := adapter.newHTTPClient()
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+
+	transport, ok := client.Transport.(*http.Transport)
+	if assert.True(t, ok) {
+		reqURL, parseErr := url.Parse("https://api.telegram.org")
+		assert.NoError(t, parseErr)
+		proxyURL, proxyErr := transport.Proxy(&http.Request{URL: reqURL})
+		assert.NoError(t, proxyErr)
+		if assert.NotNil(t, proxyURL) {
+			assert.Equal(t, "http://127.0.0.1:7897", proxyURL.String())
+		}
+	}
+}
+
+func TestNewHTTPClientSOCKS5Proxy(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test-token", Proxy: "socks5://127.0.0.1:7890"})
+	client, err := adapter.newHTTPClient()
+	assert.NoError(t, err)
+	assert.NotNil(t, client)
+
+	transport, ok := client.Transport.(*http.Transport)
+	if assert.True(t, ok) {
+		assert.Nil(t, transport.Proxy)
+		assert.NotNil(t, transport.DialContext)
+	}
+}
+
+func TestNewHTTPClientInvalidProxy(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test-token", Proxy: "://bad proxy"})
+	client, err := adapter.newHTTPClient()
+	assert.Nil(t, client)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parse proxy URL")
+}
+
+func TestNewHTTPClientUnsupportedProxyScheme(t *testing.T) {
+	adapter := NewAdapter(Config{Token: "test-token", Proxy: "ftp://127.0.0.1:21"})
+	client, err := adapter.newHTTPClient()
+	assert.Nil(t, client)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported proxy scheme")
 }
 
 func TestAdapterStartNoToken(t *testing.T) {

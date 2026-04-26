@@ -151,6 +151,7 @@ type MsgGatewayConfig struct {
 // MsgGatewayTelegram Telegram 网关配置
 type MsgGatewayTelegram struct {
 	Token                     string `json:"token,omitempty"`
+	Proxy                     string `json:"proxy,omitempty"`                        // Telegram API proxy URL (http/https/socks5)
 	ChatTimeoutSeconds        int    `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
 	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
@@ -798,6 +799,8 @@ func (m *Manager) Set(key, value string) error {
 	case "msg_gateway.telegram.token":
 		m.config.MsgGateway.Telegram.Token = value
 		m.config.MsgGateway.Token = value
+	case "msg_gateway.telegram.proxy":
+		m.config.MsgGateway.Telegram.Proxy = value
 	case "msg_gateway.telegram.chat_timeout_seconds":
 		var n int
 		fmt.Sscanf(value, "%d", &n)

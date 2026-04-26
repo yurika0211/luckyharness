@@ -20,45 +20,48 @@ import (
 	"github.com/yurika0211/luckyharness/internal/gateway"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/multimodal"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/rag"
 	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/soul"
 	"github.com/yurika0211/luckyharness/internal/tool"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
-	cfg           *config.Manager
-	soul          *soul.Soul
-	tmplMgr       *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
-	provider      provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
-	registry      *provider.Registry     // provider 注册表
-	catalog       *provider.ModelCatalog // 模型目录
-	tokenStore    *provider.TokenStore   // token 存储
-	memory        *memory.Store
-	shortTerm     *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
-	midTerm       *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
-	sessions      *session.Manager
-	tools         *tool.Registry
-	gateway       *tool.Gateway           // 统一工具网关
-	msgGateway    *gateway.GatewayManager // v0.6.0: 消息平台网关
-	mcpClient     *tool.MCPClient         // MCP 客户端
-	delegate      *tool.DelegateManager   // 子代理委派管理器
-	contextWin    *contextx.ContextWindow // 上下文窗口管理器
-	contextEst    *contextx.TokenEstimator
-	ragManager    *rag.RAGManager         // RAG 知识库管理器
-	ragPersist    *rag.Persistence        // RAG 持久化
-	streamIndexer *rag.StreamIndexer      // v0.23.0: 流式索引器
-	embedderReg   *embedder.Registry      // v0.21.0: 嵌入模型注册表
-	collabReg     *collab.Registry        // v0.22.0: Agent 协作注册表
-	collabMgr     *collab.DelegateManager // v0.22.0: 协作任务管理器
-	skills        []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
-	metrics       *metrics.Metrics        // v0.36.0: 指标收集器
-	cronEngine    *cron.Engine            // v0.36.0: 定时任务引擎
-	autonomy      *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
-	contextCache  *contextMessageCache
-	chatCount     int                     // 对话计数，用于触发自动摘要
+	cfg            *config.Manager
+	soul           *soul.Soul
+	tmplMgr        *soul.TemplateManager  // v0.19.0: SOUL 模板管理器
+	provider       provider.Provider      // 当前活跃 provider (可能是 FallbackChain)
+	registry       *provider.Registry     // provider 注册表
+	catalog        *provider.ModelCatalog // 模型目录
+	tokenStore     *provider.TokenStore   // token 存储
+	memory         *memory.Store
+	shortTerm      *memory.ShortTermBuffer // v0.43.0: 短期记忆滑动窗口
+	midTerm        *memory.MidTermStore    // v0.43.0: 中期会话摘要存储
+	sessions       *session.Manager
+	tools          *tool.Registry
+	gateway        *tool.Gateway           // 统一工具网关
+	msgGateway     *gateway.GatewayManager // v0.6.0: 消息平台网关
+	mcpClient      *tool.MCPClient         // MCP 客户端
+	delegate       *tool.DelegateManager   // 子代理委派管理器
+	contextWin     *contextx.ContextWindow // 上下文窗口管理器
+	contextEst     *contextx.TokenEstimator
+	ragManager     *rag.RAGManager         // RAG 知识库管理器
+	ragPersist     *rag.Persistence        // RAG 持久化
+	streamIndexer  *rag.StreamIndexer      // v0.23.0: 流式索引器
+	embedderReg    *embedder.Registry      // v0.21.0: 嵌入模型注册表
+	collabReg      *collab.Registry        // v0.22.0: Agent 协作注册表
+	collabMgr      *collab.DelegateManager // v0.22.0: 协作任务管理器
+	skills         []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
+	metrics        *metrics.Metrics        // v0.36.0: 指标收集器
+	cronEngine     *cron.Engine            // v0.36.0: 定时任务引擎
+	autonomy       *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
+	contextCache   *contextMessageCache
+	mediaProcessor *multimodal.Processor
+	chatCount      int // 对话计数，用于触发自动摘要
 }
 
 // New 创建 Agent
@@ -311,6 +314,23 @@ func New(cfg *config.Manager) (*Agent, error) {
 	// v0.36.0: 创建指标收集器
 	m := metrics.NewMetrics()
 
+	mediaProcessor := multimodal.NewProcessor()
+	_ = mediaProcessor.RegisterProvider(multimodal.NewLocalProvider(
+		multimodal.ModalityText,
+		multimodal.ModalityImage,
+		multimodal.ModalityAudio,
+		multimodal.ModalityVideo,
+		multimodal.ModalityDocument,
+	), true)
+	if c.APIKey != "" && (c.Provider == "openai" || strings.Contains(strings.ToLower(c.APIBase), "openai.com")) {
+		if openaiMedia, mediaErr := multimodal.NewOpenAIMediaProvider(multimodal.OpenAIMediaConfig{
+			APIKey:  c.APIKey,
+			APIBase: c.APIBase,
+		}); mediaErr == nil {
+			_ = mediaProcessor.RegisterProvider(openaiMedia, true)
+		}
+	}
+
 	// v0.36.0: 创建定时任务引擎
 	cronEngine := cron.NewEngine()
 	cronEngine.SetEventHandler(func(event cron.Event) {
@@ -412,34 +432,35 @@ func New(cfg *config.Manager) (*Agent, error) {
 	})
 
 	a := &Agent{
-		cfg:           cfg,
-		soul:          s,
-		tmplMgr:       tmplMgr,
-		provider:      p,
-		registry:      registry,
-		catalog:       catalog,
-		tokenStore:    tokenStore,
-		memory:        mem,
-		shortTerm:     shortTerm,
-		midTerm:       midTerm,
-		sessions:      sessions,
-		tools:         tools,
-		gateway:       toolGateway,
-		msgGateway:    gateway.NewGatewayManager(),
-		mcpClient:     mcpClient,
-		delegate:      delegateMgr,
-		contextWin:    contextWin,
-		contextEst:    contextEst,
-		ragManager:    ragManager,
-		ragPersist:    ragPersist,
-		streamIndexer: streamIndexer,
-		embedderReg:   embedderReg,
-		collabReg:     collabReg,
-		collabMgr:     collabMgr,
-		metrics:       m,
-		cronEngine:    cronEngine,
-		autonomy:      autonomyKit,
-		contextCache:  newContextMessageCache(64),
+		cfg:            cfg,
+		soul:           s,
+		tmplMgr:        tmplMgr,
+		provider:       p,
+		registry:       registry,
+		catalog:        catalog,
+		tokenStore:     tokenStore,
+		memory:         mem,
+		shortTerm:      shortTerm,
+		midTerm:        midTerm,
+		sessions:       sessions,
+		tools:          tools,
+		gateway:        toolGateway,
+		msgGateway:     gateway.NewGatewayManager(),
+		mcpClient:      mcpClient,
+		delegate:       delegateMgr,
+		contextWin:     contextWin,
+		contextEst:     contextEst,
+		ragManager:     ragManager,
+		ragPersist:     ragPersist,
+		streamIndexer:  streamIndexer,
+		embedderReg:    embedderReg,
+		collabReg:      collabReg,
+		collabMgr:      collabMgr,
+		metrics:        m,
+		cronEngine:     cronEngine,
+		autonomy:       autonomyKit,
+		contextCache:   newContextMessageCache(64),
+		mediaProcessor: mediaProcessor,
 	}
 
 	// v0.35.0: 自动加载 skills 目录
@@ -1476,16 +1497,16 @@ func (a *Agent) saveConversationMemory(userInput, assistantResponse string) {
 	// v0.43.0: 写入 ShortTermBuffer（滑动窗口 + 摘要压缩）
 	if a.shortTerm != nil {
 		a.shortTerm.Add("user", userInput)
-		a.shortTerm.Add("assistant", truncate(assistantResponse, 300))
+		a.shortTerm.Add("assistant", utils.Truncate(assistantResponse, 300))
 	}
 
 	// 同时写入旧 Store（兼容，用于长期记忆提升）
 	userCategory := inferCategory(userInput)
 	userImportance := inferImportance(userInput)
-	a.memory.SaveWithTier("User: "+truncate(userInput, 150), userCategory, memory.TierShort, userImportance)
+	a.memory.SaveWithTier("User: "+utils.Truncate(userInput, 150), userCategory, memory.TierShort, userImportance)
 
 	// 助手回复：只存摘要，不存完整内容
-	assistantSummary := truncate(assistantResponse, 150)
+	assistantSummary := utils.Truncate(assistantResponse, 150)
 	a.memory.SaveWithTier("Assistant: "+assistantSummary, "conversation", memory.TierShort, 0.2)
 }
 
@@ -1664,12 +1685,12 @@ func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
 			if err := a.memory.SaveLongTerm(content, category); err != nil {
 				return "", err
 			}
-			return fmt.Sprintf("✅ 已保存为长期记忆 [%s]: %s", category, truncate(content, 80)), nil
+			return fmt.Sprintf("✅ 已保存为长期记忆 [%s]: %s", category, utils.Truncate(content, 80)), nil
 		}
 		if err := a.memory.Save(content, category); err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("✅ 已保存为中期记忆 [%s]: %s", category, truncate(content, 80)), nil
+		return fmt.Sprintf("✅ 已保存为中期记忆 [%s]: %s", category, utils.Truncate(content, 80)), nil
 
 	case "recall":
 		query, _ := args["query"].(string)
@@ -1682,7 +1703,7 @@ func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
 			var sb strings.Builder
 			sb.WriteString("最近的记忆：\n")
 			for _, e := range recent {
-				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), truncate(e.Content, 80)))
+				sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), utils.Truncate(e.Content, 80)))
 			}
 			return sb.String(), nil
 		}
@@ -1698,7 +1719,7 @@ func (a *Agent) handleMemoryTool(name, arguments string) (string, error) {
 		}
 		for i := 0; i < limit; i++ {
 			e := results[i]
-			sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), truncate(e.Content, 80)))
+			sb.WriteString(fmt.Sprintf("- [%s/%s] %s\n", e.Category, e.Tier.String(), utils.Truncate(e.Content, 80)))
 		}
 		return sb.String(), nil
 
@@ -1958,14 +1979,6 @@ func (a *Agent) ConnectMCPServer(name, url, apiKey string) {
 
 	// 注册 MCP 工具
 	tool.RegisterMCPTools(a.tools, a.mcpClient)
-}
-
-// truncate 截断字符串
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // Sessions 返回会话管理器

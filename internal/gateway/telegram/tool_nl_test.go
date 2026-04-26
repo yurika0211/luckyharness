@@ -50,28 +50,28 @@ func TestHumanizeToolCall(t *testing.T) {
 func TestHumanizeProgressNarrative(t *testing.T) {
 	t.Run("thinking", func(t *testing.T) {
 		got := humanizeThinkingProgress("先看下 tasks 目录状态")
-		assert.Contains(t, got, "我先理一下当前进度：")
+		assert.Contains(t, got, "我先陪你把这条思路慢慢捋顺喔：")
 	})
 
 	t.Run("tool call narrative", func(t *testing.T) {
 		got := humanizeToolCallProgress(2, "file_read", `{"path":"tasks/QUEUE.md"}`)
-		assert.Contains(t, got, "先做第 2 步")
+		assert.Contains(t, got, "我先陪你翻一下文件")
 		assert.Contains(t, got, "tasks/QUEUE.md")
 	})
 
 	t.Run("skill narrative", func(t *testing.T) {
 		got := humanizeToolCallProgress(1, "skill_run", `{"skill_name":"deep-research"}`)
-		assert.Contains(t, got, "调用技能")
+		assert.Contains(t, got, "技能")
 		assert.Contains(t, got, "deep-research")
 	})
 
 	t.Run("tool result narrative", func(t *testing.T) {
 		got := humanizeToolResultProgress(3, "web_search", "ok")
-		assert.Contains(t, got, "第 3 步完成")
+		assert.Contains(t, got, "搜索结果")
 	})
 
 	t.Run("final conclusion wrapper", func(t *testing.T) {
 		got := wrapFinalConclusion("最终答案")
-		assert.Equal(t, "结论：\n最终答案", got)
+		assert.Equal(t, "我整理好啦，下面这部分你可以直接看：\n最终答案", got)
 	})
 }

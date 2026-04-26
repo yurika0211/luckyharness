@@ -55,6 +55,22 @@ func TestManagerSetAndGet(t *testing.T) {
 	}
 }
 
+func TestManagerSetTelegramProxy(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("msg_gateway.telegram.proxy", "http://127.0.0.1:7897"); err != nil {
+		t.Fatalf("Set telegram proxy: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.MsgGateway.Telegram.Proxy != "http://127.0.0.1:7897" {
+		t.Errorf("expected telegram proxy to be set, got %q", cfg.MsgGateway.Telegram.Proxy)
+	}
+}
+
 func TestManagerSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	homeDir := filepath.Join(tmpDir, ".luckyharness")
@@ -130,11 +146,11 @@ func TestInitHome(t *testing.T) {
 
 func TestModelRouterNewModelRouter(t *testing.T) {
 	config := ModelRouterConfig{
-		Enable:        true,
-		SimpleModel:   "gpt-4o-mini",
-		ComplexModel:  "gpt-4o",
-		LocalModel:    "qwen2.5-coder-32b",
-		LocalBaseURL:  "http://localhost:11434",
+		Enable:         true,
+		SimpleModel:    "gpt-4o-mini",
+		ComplexModel:   "gpt-4o",
+		LocalModel:     "qwen2.5-coder-32b",
+		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
 	}
 	router := NewModelRouter(config)
@@ -148,11 +164,11 @@ func TestModelRouterNewModelRouter(t *testing.T) {
 
 func TestModelRouterSelectModel(t *testing.T) {
 	config := ModelRouterConfig{
-		Enable:        true,
-		SimpleModel:   "gpt-4o-mini",
-		ComplexModel:  "gpt-4o",
-		LocalModel:    "qwen2.5-coder-32b",
-		LocalBaseURL:  "http://localhost:11434",
+		Enable:         true,
+		SimpleModel:    "gpt-4o-mini",
+		ComplexModel:   "gpt-4o",
+		LocalModel:     "qwen2.5-coder-32b",
+		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
 	}
 	router := NewModelRouter(config)
@@ -260,11 +276,11 @@ func TestIsLocalTask(t *testing.T) {
 
 func TestSelectModelForTask(t *testing.T) {
 	config := ModelRouterConfig{
-		Enable:        true,
-		SimpleModel:   "gpt-4o-mini",
-		ComplexModel:  "gpt-4o",
-		LocalModel:    "qwen2.5-coder-32b",
-		LocalBaseURL:  "http://localhost:11434",
+		Enable:         true,
+		SimpleModel:    "gpt-4o-mini",
+		ComplexModel:   "gpt-4o",
+		LocalModel:     "qwen2.5-coder-32b",
+		LocalBaseURL:   "http://localhost:11434",
 		TokenThreshold: 500,
 	}
 	router := NewModelRouter(config)
@@ -431,7 +447,7 @@ func TestManagerLoad_NonExistentFile(t *testing.T) {
 
 	// Load 可能会创建默认配置或返回空配置，不一定会报错
 	err = mgr.Load()
-	
+
 	// 验证行为：要么返回错误，要么创建默认配置
 	if err != nil {
 		t.Logf("Load non-existent file returned error: %v", err)

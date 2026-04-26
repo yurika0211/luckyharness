@@ -903,6 +903,9 @@ go run ./cmd/lh config set provider openai
 go run ./cmd/lh config set api_key sk-xxx
 go run ./cmd/lh config set model gpt-4o
 go run ./cmd/lh config set api_base https://api.openai.com/v1
+go run ./cmd/lh config set msg_gateway.platform telegram
+go run ./cmd/lh config set msg_gateway.telegram.token 123456:ABC-DEF
+go run ./cmd/lh config set msg_gateway.telegram.proxy http://127.0.0.1:7897
 go run ./cmd/lh config get api_base
 ```
 
@@ -917,7 +920,7 @@ export TG_TOKEN="123456:ABC-DEF"
 curl -x http://127.0.0.1:7897 -m 20 "https://api.telegram.org/bot${TG_TOKEN}/getMe"
 ```
 
-返回 `{"ok":true,...}` 后再启动网关：
+返回 `{"ok":true,...}` 后再启动网关。若你已把 `msg_gateway.telegram.proxy` 写入 `config.json`，则无需再 `export HTTPS_PROXY/HTTP_PROXY`：
 
 ```bash
 export HTTPS_PROXY=http://127.0.0.1:7897

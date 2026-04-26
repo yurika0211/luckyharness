@@ -2138,6 +2138,31 @@ func TestV054HandleMessageWithAttachments(t *testing.T) {
 	_ = handler
 }
 
+func TestV054ComposeAttachmentInputUsesAgentAnalysis(t *testing.T) {
+	handler := &Handler{
+		agent: &mockAgentProvider{
+			analyzeFn: func(ctx context.Context, attachments []gateway.Attachment) (string, error) {
+				return "[Multimodal Analysis]\nImage 1:\n- summary: chart screenshot", nil
+			},
+		},
+	}
+
+	out := handler.composeAttachmentInput(context.Background(), "check this", []gateway.Attachment{
+		{
+			Type:     gateway.AttachmentImage,
+			FileName: "photo.jpg",
+			FileURL:  "https://example.com/photo.jpg",
+		},
+	})
+
+	if !strings.Contains(out, "[Multimodal Analysis]") {
+		t.Fatalf("expected analysis block, got %q", out)
+	}
+	if strings.Contains(out, "[Multimedia Attachments]") {
+		t.Fatalf("expected agent analysis to replace metadata fallback, got %q", out)
+	}
+}
+
 func TestV054HandleMessageWithAudioAttachment(t *testing.T) {
 	msg := &gateway.Message{
 		Text: "listen to this",
@@ -2558,6 +2583,7 @@ type mockAgentProvider struct {
 	chatFunc      func(ctx context.Context, userInput string) (string, error)
 	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
 	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	switchModelFn func(modelID string) error
 }
 
@@ -2614,6 +2640,13 @@ func (m *mockAgentProvider) ChatWithSessionStream(ctx context.Context, sessionID
 	ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "mock response"}
 	close(ch)
 	return ch, nil
+}
+
+func (m *mockAgentProvider) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
+	if m.analyzeFn != nil {
+		return m.analyzeFn(ctx, attachments)
+	}
+	return "", nil
 }
 
 func (m *mockAgentProvider) Metrics() *metrics.Metrics {

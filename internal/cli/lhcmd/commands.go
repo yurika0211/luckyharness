@@ -167,6 +167,12 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MaxTokens)
 	case "temperature":
 		fmt.Println(cfg.Temperature)
+	case "msg_gateway.platform":
+		fmt.Println(cfg.MsgGateway.Platform)
+	case "msg_gateway.api_addr":
+		fmt.Println(cfg.MsgGateway.APIAddr)
+	case "msg_gateway.telegram.proxy":
+		fmt.Println(cfg.MsgGateway.Telegram.Proxy)
 	default:
 		if v, ok := cfg.Extra[key]; ok {
 			fmt.Println(v)
@@ -753,7 +759,10 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		if token == "" {
 			return fmt.Errorf("telegram 需要 --token 参数（或在 config.json 里设置 msg_gateway.telegram.token）")
 		}
-		tgAdapter := telegram.NewAdapter(telegram.Config{Token: token})
+		tgAdapter := telegram.NewAdapter(telegram.Config{
+			Token: token,
+			Proxy: cfg.MsgGateway.Telegram.Proxy,
+		})
 		handler := telegram.NewHandler(tgAdapter, a)
 		// 持久化 chatID→sessionID 映射，重启后恢复会话
 		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "telegram"))

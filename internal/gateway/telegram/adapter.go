@@ -3,17 +3,23 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	xproxy "golang.org/x/net/proxy"
 
 	"github.com/yurika0211/luckyharness/internal/gateway"
 )
+
+const defaultAttachmentDownloadLimit = 8 << 20
 
 // Adapter implements gateway.Gateway for Telegram.
 type Adapter struct {
@@ -71,7 +77,12 @@ func (a *Adapter) Start(ctx context.Context) error {
 		return fmt.Errorf("telegram: bot token is required")
 	}
 
-	bot, err := tgbotapi.NewBotAPI(a.cfg.Token)
+	client, err := a.newHTTPClient()
+	if err != nil {
+		return err
+	}
+
+	bot, err := tgbotapi.NewBotAPIWithClient(a.cfg.Token, tgbotapi.APIEndpoint, client)
 	if err != nil {
 		return fmt.Errorf("telegram: create bot: %w", err)
 	}
@@ -88,6 +99,99 @@ func (a *Adapter) Start(ctx context.Context) error {
 	go a.poll(pollCtx)
 
 	return nil
+}
+
+func (a *Adapter) newHTTPClient() (*http.Client, error) {
+	if strings.TrimSpace(a.cfg.Proxy) == "" {
+		return &http.Client{}, nil
+	}
+
+	proxyURL, err := url.Parse(a.cfg.Proxy)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: parse proxy URL: %w", err)
+	}
+
+	transport := &http.Transport{}
+
+	switch strings.ToLower(proxyURL.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(proxyURL)
+	case "socks5", "socks5h":
+		baseDialer := &net.Dialer{}
+		dialer, err := xproxy.FromURL(proxyURL, baseDialer)
+		if err != nil {
+			return nil, fmt.Errorf("telegram: create SOCKS5 proxy dialer: %w", err)
+		}
+		if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+			transport.DialContext = contextDialer.DialContext
+		} else {
+			transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("telegram: unsupported proxy scheme %q", proxyURL.Scheme)
+	}
+
+	return &http.Client{Transport: transport}, nil
+}
+
+func parseReplyToMessageID(replyToMsgID string) (int, error) {
+	if strings.TrimSpace(replyToMsgID) == "" {
+		return 0, nil
+	}
+
+	replyToID, err := strconv.Atoi(replyToMsgID)
+	if err != nil {
+		return 0, fmt.Errorf("telegram: invalid reply-to message ID %q: %w", replyToMsgID, err)
+	}
+	return replyToID, nil
+}
+
+func telegramRequestFileData(source string) (tgbotapi.RequestFileData, error) {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil, fmt.Errorf("telegram: empty media source")
+	}
+
+	if strings.HasPrefix(strings.ToLower(source), "sandbox:/") {
+		source = strings.TrimPrefix(source, "sandbox:")
+	}
+
+	if strings.HasPrefix(strings.ToLower(source), "file://") {
+		u, err := url.Parse(source)
+		if err != nil {
+			return nil, fmt.Errorf("telegram: parse file URL: %w", err)
+		}
+		if strings.TrimSpace(u.Path) == "" {
+			return nil, fmt.Errorf("telegram: file URL has empty path")
+		}
+		if _, err := os.Stat(u.Path); err != nil {
+			return nil, fmt.Errorf("telegram: stat media file: %w", err)
+		}
+		return tgbotapi.FilePath(u.Path), nil
+	}
+
+	if u, err := url.Parse(source); err == nil && (u.Scheme == "http" || u.Scheme == "https") {
+		return tgbotapi.FileURL(source), nil
+	}
+
+	info, err := os.Stat(source)
+	if err != nil {
+		return nil, fmt.Errorf("telegram: stat media file: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("telegram: media source %q is a directory", source)
+	}
+	return tgbotapi.FilePath(source), nil
+}
+
+func truncateTelegramCaption(caption string) string {
+	caption = strings.TrimSpace(caption)
+	if len(caption) <= 1024 {
+		return caption
+	}
+	return caption[:1021] + "..."
 }
 
 // Stop gracefully shuts down the adapter.
@@ -150,6 +254,72 @@ func (a *Adapter) SendWithReply(ctx context.Context, chatID string, replyToMsgID
 		a.waitRateLimit(chatID)
 	}
 
+	return nil
+}
+
+// SendPhoto sends a photo to a chat, optionally replying to a message.
+func (a *Adapter) SendPhoto(_ context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	replyToID, err := parseReplyToMessageID(replyToMsgID)
+	if err != nil {
+		return err
+	}
+
+	fileData, err := telegramRequestFileData(source)
+	if err != nil {
+		return err
+	}
+
+	msg := tgbotapi.NewPhoto(chatIDInt, fileData)
+	msg.Caption = truncateTelegramCaption(caption)
+	if replyToID > 0 {
+		msg.ReplyToMessageID = replyToID
+	}
+
+	if _, err := a.bot.Send(msg); err != nil {
+		return fmt.Errorf("telegram: send photo: %w", err)
+	}
+	return nil
+}
+
+// SendDocument sends a document to a chat, optionally replying to a message.
+func (a *Adapter) SendDocument(_ context.Context, chatID string, replyToMsgID string, source string, caption string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+
+	replyToID, err := parseReplyToMessageID(replyToMsgID)
+	if err != nil {
+		return err
+	}
+
+	fileData, err := telegramRequestFileData(source)
+	if err != nil {
+		return err
+	}
+
+	msg := tgbotapi.NewDocument(chatIDInt, fileData)
+	msg.Caption = truncateTelegramCaption(caption)
+	if replyToID > 0 {
+		msg.ReplyToMessageID = replyToID
+	}
+
+	if _, err := a.bot.Send(msg); err != nil {
+		return fmt.Errorf("telegram: send document: %w", err)
+	}
 	return nil
 }
 
@@ -564,6 +734,9 @@ func (a *Adapter) convertMessage(tgMsg *tgbotapi.Message) *gateway.Message {
 		Text:      tgMsg.Text,
 		Timestamp: time.Unix(int64(tgMsg.Date), 0),
 	}
+	if strings.TrimSpace(msg.Text) == "" {
+		msg.Text = tgMsg.Caption
+	}
 
 	// v0.36.0: 提取多媒体附件
 	a.extractAttachments(tgMsg, msg)
@@ -622,6 +795,7 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 		// 尝试下载图片
 		if url, err := a.bot.GetFileDirectURL(photo.FileID); err == nil {
 			att.FileURL = url
+			a.populateAttachmentData(&att)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
@@ -637,6 +811,7 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 		}
 		if url, err := a.bot.GetFileDirectURL(tgMsg.Voice.FileID); err == nil {
 			att.FileURL = url
+			a.populateAttachmentData(&att)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
@@ -652,6 +827,7 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 		}
 		if url, err := a.bot.GetFileDirectURL(tgMsg.Audio.FileID); err == nil {
 			att.FileURL = url
+			a.populateAttachmentData(&att)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
@@ -667,6 +843,7 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 		}
 		if url, err := a.bot.GetFileDirectURL(tgMsg.Video.FileID); err == nil {
 			att.FileURL = url
+			a.populateAttachmentData(&att)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
@@ -682,9 +859,47 @@ func (a *Adapter) extractAttachments(tgMsg *tgbotapi.Message, msg *gateway.Messa
 		}
 		if url, err := a.bot.GetFileDirectURL(tgMsg.Document.FileID); err == nil {
 			att.FileURL = url
+			a.populateAttachmentData(&att)
 		}
 		msg.Attachments = append(msg.Attachments, att)
 	}
+}
+
+func (a *Adapter) populateAttachmentData(att *gateway.Attachment) {
+	if att == nil || strings.TrimSpace(att.FileURL) == "" {
+		return
+	}
+	if att.FileSize > defaultAttachmentDownloadLimit {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, att.FileURL, nil)
+	if err != nil {
+		return
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return
+	}
+
+	reader := io.LimitReader(resp.Body, defaultAttachmentDownloadLimit+1)
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return
+	}
+	if len(data) > defaultAttachmentDownloadLimit {
+		return
+	}
+	att.Data = data
 }
 
 // isMentioned checks if the bot is mentioned in the message.

@@ -95,6 +95,7 @@
     "api_addr": "127.0.0.1:9090",
     "telegram": {
       "token": "",
+      "proxy": "",
       "chat_timeout_seconds": 600,
       "progress_as_messages": true,
       "progress_as_natural_language": false,

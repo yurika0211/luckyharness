@@ -7,14 +7,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
 // LocalProvider implements Provider for local text processing
 // (no external API calls — useful for text modality and testing)
 type LocalProvider struct {
-	mu          sync.RWMutex
-	modalities  []Modality
-	analyzed    int
+	mu         sync.RWMutex
+	modalities []Modality
+	analyzed   int
 }
 
 // NewLocalProvider creates a new local processing provider
@@ -63,9 +64,19 @@ func (lp *LocalProvider) Analyze(ctx context.Context, input *Input) (*AnalysisRe
 	switch input.Modality {
 	case ModalityText:
 		result.Text = string(input.Data)
-		result.Summary = truncateString(string(input.Data), 200)
+		result.Summary = utils.Truncate(string(input.Data), 200)
 		result.Confidence = 1.0
 		result.Labels = []string{"text"}
+
+	case ModalityDocument:
+		result.Text = fmt.Sprintf("[Document: %s, %d bytes]", input.MimeType, len(input.Data))
+		result.Summary = fmt.Sprintf("Document file (%s, %d bytes)", input.MimeType, len(input.Data))
+		result.Labels = []string{"document", input.MimeType}
+		result.Confidence = 0.4
+		result.Metadata = map[string]string{
+			"size":      fmt.Sprintf("%d", len(input.Data)),
+			"mime_type": input.MimeType,
+		}
 
 	case ModalityImage:
 		// Local image processing: extract metadata
@@ -74,7 +85,7 @@ func (lp *LocalProvider) Analyze(ctx context.Context, input *Input) (*AnalysisRe
 		result.Labels = []string{"image", input.MimeType}
 		result.Confidence = 0.5 // Low confidence without vision model
 		result.Metadata = map[string]string{
-			"size":     fmt.Sprintf("%d", len(input.Data)),
+			"size":      fmt.Sprintf("%d", len(input.Data)),
 			"mime_type": input.MimeType,
 		}
 
@@ -134,19 +145,13 @@ func (lp *LocalProvider) AnalyzedCount() int {
 	return lp.analyzed
 }
 
-// truncateString truncates a string to maxLen characters
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
-}
-
 // DetectModality detects the modality of an input based on MIME type
 func DetectModality(mimeType string) Modality {
 	switch {
 	case mimeType == "text/plain" || mimeType == "text/markdown" || mimeType == "text/html":
 		return ModalityText
+	case mimeType == "application/pdf":
+		return ModalityDocument
 	case len(mimeType) >= 5 && mimeType[:5] == "image":
 		return ModalityImage
 	case len(mimeType) >= 5 && mimeType[:5] == "audio":
