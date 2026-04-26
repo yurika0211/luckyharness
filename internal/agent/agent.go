@@ -529,11 +529,6 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 
 	response := result.Response
 
-	// 保存到会话
-	sess.AddMessage("user", userInput)
-	sess.AddMessage("assistant", response)
-	_ = sess.Save()
-
 	// 自动记忆（去重 + 智能分类 + 截断）
 	a.chatCount++
 	a.saveConversationMemory(userInput, response)
@@ -702,7 +697,7 @@ func (s *streamConvergenceState) hasContinuation() bool {
 }
 
 func (s *streamConvergenceState) toolCallSig(name, arguments string) string {
-	return name + "|" + arguments
+	return toolCallSignature(name, arguments)
 }
 
 func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolCall, assistantContent string) (bool, []string) {

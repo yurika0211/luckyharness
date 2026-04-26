@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,12 +21,7 @@ import (
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
-// shell 上下文解析正则
-var (
-	cdPattern     = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)cd\s+(.+?)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
-	exportPattern = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)export\s+([A-Za-z_][A-Za-z0-9_]*)=(.+?)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
-	unsetPattern  = regexp.MustCompile(`(?i)(?:^|;|\|&&|\s)unset\s+([A-Za-z_][A-Za-z0-9_]*)(?:\s*;|\s*&&|\s*\|\||\s*$)`)
-)
+var shellCommandSeparator = regexp.MustCompile(`\s*(?:;|&&|\|\|)\s*`)
 
 // LoopState 代表 Agent Loop 的状态
 type LoopState int
@@ -120,6 +116,28 @@ func appendContinuation(dst *strings.Builder, part string) {
 	dst.WriteString(part)
 }
 
+func canonicalToolArguments(arguments string) string {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return ""
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(trimmed), &decoded); err != nil {
+		return trimmed
+	}
+
+	canonical, err := json.Marshal(decoded)
+	if err != nil {
+		return trimmed
+	}
+	return string(canonical)
+}
+
+func toolCallSignature(name, arguments string) string {
+	return name + "|" + canonicalToolArguments(arguments)
+}
+
 func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
 	if cfg.MaxIterations > 0 {
 		loopCfg.MaxIterations = cfg.MaxIterations
@@ -208,10 +226,9 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		result.Response = response
 		result.State = StateDone
 
-		// v0.24.1: 将对话添加到会话
+		// 会话中保留 provider 级消息顺序：user -> assistant(tool call) -> tool -> assistant(final)
 		if sess != nil {
-			sess.AddMessage("user", userInput)
-			sess.AddMessage("assistant", response)
+			sess.AddProviderMessage(provider.Message{Role: "assistant", Content: response})
 		}
 
 		// v0.35.0: 将本轮对话索引进 RAG（异步，不阻塞返回）
@@ -237,12 +254,12 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	detailedSearchEvidenceInContext := 0
 	forceSearchSynthesis := false
 	var continuedResponse strings.Builder
-	toolCallSig := func(name, arguments string) string {
-		return name + "|" + arguments
-	}
 
 	// 构建初始消息
 	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
+	if sess != nil {
+		sess.AddProviderMessage(provider.Message{Role: "user", Content: userInput})
+	}
 
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)
@@ -316,7 +333,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			repeatedSigs := make([]string, 0, len(resp.ToolCalls))
 			allRepeated := true
 			for _, tc := range resp.ToolCalls {
-				sig := toolCallSig(tc.Name, tc.Arguments)
+				sig := toolCallSignature(tc.Name, tc.Arguments)
 				repeatedSigs = append(repeatedSigs, sig)
 				toolCallRepeatCount[sig]++
 				if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
@@ -377,25 +394,19 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				ToolMessage provider.Message
 			}
 
-			// 分析依赖：shell/file_write/remember 等有状态工具必须串行
-			// 无状态工具（web_search, web_fetch, file_read, current_time, recall）可并发
-			var parallelGroup []int // 可并发的工具索引
-			var serialGroup []int   // 必须串行的工具索引
-
-			for i, tc := range resp.ToolCalls {
-				if a.isToolParallelSafe(tc.Name) {
-					parallelGroup = append(parallelGroup, i)
-				} else {
-					serialGroup = append(serialGroup, i)
+			allParallelSafe := true
+			for _, tc := range resp.ToolCalls {
+				if !a.isToolParallelSafe(tc.Name) {
+					allParallelSafe = false
+					break
 				}
 			}
 
 			resultCh := make(chan toolExecResult, len(resp.ToolCalls))
 
-			// 并发执行无状态工具
-			if len(parallelGroup) > 0 {
-				for _, idx := range parallelGroup {
-					tc := resp.ToolCalls[idx]
+			// 同一批次只要出现一个有状态工具，就整体串行执行，避免共享状态交叉污染。
+			if allParallelSafe {
+				for idx, tc := range resp.ToolCalls {
 					go func(idx int, tc provider.ToolCall) {
 						start := time.Now()
 						toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
@@ -425,36 +436,34 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 						}
 					}(idx, tc)
 				}
-			}
+			} else {
+				for idx, tc := range resp.ToolCalls {
+					start := time.Now()
+					toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
+					duration := time.Since(start)
 
-			// 串行执行有状态工具
-			for _, idx := range serialGroup {
-				tc := resp.ToolCalls[idx]
-				start := time.Now()
-				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
-				duration := time.Since(start)
+					tcLog := toolCallLog{
+						Name:      tc.Name,
+						Arguments: tc.Arguments,
+						Duration:  duration,
+					}
+					if err != nil {
+						toolResult = fmt.Sprintf("Error: %v", err)
+						tcLog.Result = toolResult
+					} else {
+						tcLog.Result = toolResult
+					}
 
-				tcLog := toolCallLog{
-					Name:      tc.Name,
-					Arguments: tc.Arguments,
-					Duration:  duration,
-				}
-				if err != nil {
-					toolResult = fmt.Sprintf("Error: %v", err)
-					tcLog.Result = toolResult
-				} else {
-					tcLog.Result = toolResult
-				}
-
-				resultCh <- toolExecResult{
-					Index:    idx,
-					ToolCall: tcLog,
-					ToolMessage: provider.Message{
-						Role:       "tool",
-						Content:    toolResult,
-						ToolCallID: tc.ID,
-						Name:       tc.Name,
-					},
+					resultCh <- toolExecResult{
+						Index:    idx,
+						ToolCall: tcLog,
+						ToolMessage: provider.Message{
+							Role:       "tool",
+							Content:    toolResult,
+							ToolCallID: tc.ID,
+							Name:       tc.Name,
+						},
+					}
 				}
 			}
 
@@ -472,7 +481,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
 				contextToolMsg := r.ToolMessage
 				contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
-				toolCallLastResult[toolCallSig(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
+				toolCallLastResult[toolCallSignature(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
 				if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
 					toolURLLastResult[key] = r.ToolCall.Result
 				}
@@ -894,42 +903,82 @@ func (a *Agent) executeToolWithSession(name, arguments string, autoApprove bool,
 
 // updateShellContext 从 shell 执行结果中提取 cwd 和 env 变更
 func (a *Agent) updateShellContext(sess *session.Session, command, output string) {
-	// 检测 cd 命令：提取目标目录并验证
-	cdMatch := cdPattern.FindStringSubmatch(command)
-	if len(cdMatch) >= 2 {
-		target := strings.TrimSpace(cdMatch[1])
-		if target != "" {
-			// 验证目录是否存在
-			if abs, err := filepath.Abs(target); err == nil {
-				if info, err := os.Stat(abs); err == nil && info.IsDir() {
-					sess.SetCwd(abs)
+	_ = output
+
+	currentCwd := strings.TrimSpace(sess.GetCwd())
+	for _, segment := range splitShellCommands(command) {
+		segment = strings.TrimSpace(segment)
+		if segment == "" || strings.Contains(segment, "|") {
+			continue
+		}
+
+		lower := strings.ToLower(segment)
+		switch {
+		case strings.HasPrefix(lower, "cd "):
+			target := strings.TrimSpace(segment[len("cd "):])
+			if target == "" {
+				continue
+			}
+			resolved := resolveShellPath(currentCwd, target)
+			if info, err := os.Stat(resolved); err == nil && info.IsDir() {
+				sess.SetCwd(resolved)
+				currentCwd = resolved
+			}
+		case strings.HasPrefix(lower, "export "):
+			key, value, ok := parseShellExport(segment[len("export "):])
+			if ok {
+				sess.SetEnv(key, value)
+			}
+		case strings.HasPrefix(lower, "unset "):
+			for _, key := range strings.Fields(segment[len("unset "):]) {
+				key = strings.TrimSpace(key)
+				if key != "" {
+					sess.UnsetEnv(key)
 				}
 			}
 		}
 	}
+}
 
-	// 检测 export 命令
-	exportMatches := exportPattern.FindAllStringSubmatch(command, -1)
-	for _, m := range exportMatches {
-		if len(m) >= 3 {
-			key := strings.TrimSpace(m[1])
-			val := strings.TrimSpace(m[2])
-			if key != "" {
-				sess.SetEnv(key, val)
-			}
-		}
+func splitShellCommands(command string) []string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return nil
 	}
+	return shellCommandSeparator.Split(trimmed, -1)
+}
 
-	// 检测 unset 命令
-	unsetMatches := unsetPattern.FindAllStringSubmatch(command, -1)
-	for _, m := range unsetMatches {
-		if len(m) >= 2 {
-			key := strings.TrimSpace(m[1])
-			if key != "" {
-				sess.UnsetEnv(key)
-			}
-		}
+func resolveShellPath(baseCwd, target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
 	}
+	if filepath.IsAbs(target) {
+		return filepath.Clean(target)
+	}
+	if baseCwd != "" {
+		return filepath.Clean(filepath.Join(baseCwd, target))
+	}
+	if abs, err := filepath.Abs(target); err == nil {
+		return abs
+	}
+	return filepath.Clean(target)
+}
+
+func parseShellExport(expr string) (string, string, bool) {
+	key, value, ok := strings.Cut(strings.TrimSpace(expr), "=")
+	if !ok {
+		return "", "", false
+	}
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if key == "" {
+		return "", "", false
+	}
+	if unquoted, err := strconv.Unquote(value); err == nil {
+		value = unquoted
+	}
+	return key, value, true
 }
 
 // buildMessages 构建消息列表

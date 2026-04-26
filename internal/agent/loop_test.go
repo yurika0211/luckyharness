@@ -1,9 +1,12 @@
 package agent
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/yurika0211/luckyharness/internal/session"
 	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
@@ -119,5 +122,39 @@ func TestExecuteToolMaybeDedupSkipsDuplicateFetch(t *testing.T) {
 	}
 	if !strings.Contains(out, "Fetched content") {
 		t.Fatalf("expected cached content to be reused, got %q", out)
+	}
+}
+
+func TestToolCallSignatureCanonicalizesArguments(t *testing.T) {
+	sig1 := toolCallSignature("web_fetch", `{"url":"https://example.com","max_chars":500}`)
+	sig2 := toolCallSignature("web_fetch", `{"max_chars":500,"url":"https://example.com"}`)
+	if sig1 != sig2 {
+		t.Fatalf("expected canonical signatures to match, got %q vs %q", sig1, sig2)
+	}
+}
+
+func TestUpdateShellContextUsesSessionCwdAndEnv(t *testing.T) {
+	baseDir := t.TempDir()
+	subDir := filepath.Join(baseDir, "child")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+
+	sess := session.NewSession("test", t.TempDir())
+	sess.SetCwd(baseDir)
+	sess.SetEnv("OLD_KEY", "old")
+
+	a := &Agent{}
+	a.updateShellContext(sess, `cd child && export GREETING="hello world" && unset OLD_KEY`, "")
+
+	if got := sess.GetCwd(); got != subDir {
+		t.Fatalf("expected cwd %q, got %q", subDir, got)
+	}
+	env := sess.GetEnv()
+	if env["GREETING"] != "hello world" {
+		t.Fatalf("expected GREETING to be unquoted, got %q", env["GREETING"])
+	}
+	if _, ok := env["OLD_KEY"]; ok {
+		t.Fatal("expected OLD_KEY to be removed")
 	}
 }

@@ -102,8 +102,8 @@ func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userI
 	messages := make([]provider.Message, 0, 8)
 
 	systemPrompt := ""
-	if p.agent != nil && p.agent.soul != nil {
-		systemPrompt = p.agent.soul.SystemPrompt()
+	if p.agent != nil {
+		systemPrompt = p.agent.buildSystemPrompt(sess)
 	}
 	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
 	if p.agent == nil || p.agent.provider == nil {

@@ -240,6 +240,81 @@ func TestAgentChatWithSessionMockProvider(t *testing.T) {
 	if content != expectedResp.Content {
 		t.Errorf("expected content %q, got %q", expectedResp.Content, content)
 	}
+
+	sess, ok := a.sessions.Get(sessionID)
+	if !ok {
+		t.Fatalf("session %s not found", sessionID)
+	}
+	msgs := sess.GetMessages()
+	if len(msgs) != 2 {
+		t.Fatalf("expected 2 persisted messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Hello" {
+		t.Fatalf("unexpected first message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != expectedResp.Content {
+		t.Fatalf("unexpected second message: %+v", msgs[1])
+	}
+}
+
+func TestRunLoopWithSessionPersistsProviderMessagesInOrder(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockProvider := mocks.NewMockProvider(ctrl)
+	gomock.InOrder(
+		mockProvider.EXPECT().
+			Chat(gomock.Any(), gomock.Any()).
+			Return(&provider.Response{
+				Content: "Let me check",
+				ToolCalls: []provider.ToolCall{
+					{ID: "call_1", Name: "missing_tool", Arguments: "{}"},
+				},
+			}, nil),
+		mockProvider.EXPECT().
+			Chat(gomock.Any(), gomock.Any()).
+			Return(&provider.Response{
+				Content: "Done",
+			}, nil),
+	)
+
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	a.provider = mockProvider
+
+	sess := a.sessions.New()
+	result, err := a.RunLoopWithSession(context.Background(), sess, "Need tool", DefaultLoopConfig())
+	if err != nil {
+		t.Fatalf("RunLoopWithSession() error = %v", err)
+	}
+	if result.Response != "Done" {
+		t.Fatalf("expected final response %q, got %q", "Done", result.Response)
+	}
+
+	msgs := sess.GetMessages()
+	if len(msgs) != 4 {
+		t.Fatalf("expected 4 session messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "Need tool" {
+		t.Fatalf("unexpected user message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || len(msgs[1].ToolCalls) != 1 || msgs[1].Content != "Let me check" {
+		t.Fatalf("unexpected assistant tool-call message: %+v", msgs[1])
+	}
+	if msgs[2].Role != "tool" || msgs[2].Name != "missing_tool" || msgs[2].ToolCallID != "call_1" {
+		t.Fatalf("unexpected tool message: %+v", msgs[2])
+	}
+	if msgs[3].Role != "assistant" || msgs[3].Content != "Done" {
+		t.Fatalf("unexpected final assistant message: %+v", msgs[3])
+	}
 }
 
 // TestAgentChatWithSessionStreamMockProvider 测试 Agent.ChatWithSessionStream 使用 mock
