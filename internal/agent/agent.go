@@ -46,6 +46,7 @@ type Agent struct {
 	mcpClient     *tool.MCPClient         // MCP 客户端
 	delegate      *tool.DelegateManager   // 子代理委派管理器
 	contextWin    *contextx.ContextWindow // 上下文窗口管理器
+	contextEst    *contextx.TokenEstimator
 	ragManager    *rag.RAGManager         // RAG 知识库管理器
 	ragPersist    *rag.Persistence        // RAG 持久化
 	streamIndexer *rag.StreamIndexer      // v0.23.0: 流式索引器
@@ -56,6 +57,7 @@ type Agent struct {
 	metrics       *metrics.Metrics        // v0.36.0: 指标收集器
 	cronEngine    *cron.Engine            // v0.36.0: 定时任务引擎
 	autonomy      *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
+	contextCache  *contextMessageCache
 	chatCount     int                     // 对话计数，用于触发自动摘要
 }
 
@@ -235,6 +237,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		MemoryBudget:         800,
 		SummarizeThreshold:   0.8,
 	})
+	contextEst := contextx.NewTokenEstimator(c.MaxTokens)
 
 	// 创建 RAG 知识库管理器
 	// v0.21.0: 使用 Embedder Registry 管理嵌入模型
@@ -426,6 +429,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		mcpClient:     mcpClient,
 		delegate:      delegateMgr,
 		contextWin:    contextWin,
+		contextEst:    contextEst,
 		ragManager:    ragManager,
 		ragPersist:    ragPersist,
 		streamIndexer: streamIndexer,
@@ -435,6 +439,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		metrics:       m,
 		cronEngine:    cronEngine,
 		autonomy:      autonomyKit,
+		contextCache:  newContextMessageCache(64),
 	}
 
 	// v0.35.0: 自动加载 skills 目录
@@ -541,34 +546,7 @@ func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, user
 
 // chatStreamSimple 是不使用工具的简单流式聊天（作为 RunLoop 的回退）。
 func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, userInput string) (string, error) {
-
-	// 构建消息列表：system + 记忆 + RAG + 会话历史 + 新消息
-	messages := []provider.Message{
-		{Role: "system", Content: a.soul.SystemPrompt()},
-	}
-
-	// 加入分层记忆上下文
-	messages = a.buildMemoryContext(messages)
-
-	// 加入 RAG 检索上下文
-	messages = a.buildRAGContext(ctx, messages, userInput)
-
-	// 加入已有会话历史（多轮对话上下文，滑动窗口）
-	existingMsgs := sess.GetMessages(20) // v0.44.0: 只取最近 20 轮
-	if len(existingMsgs) > 0 {
-		messages = append(messages, existingMsgs...)
-	}
-
-	// 加入用户消息
-	sess.AddMessage("user", userInput)
-	messages = append(messages, provider.Message{Role: "user", Content: userInput})
-
-	// 上下文窗口管理：裁剪消息到窗口内
-	contextMessages := a.toContextMessages(messages)
-	fitted, trimResult := a.contextWin.Fit(contextMessages)
-	if trimResult.Trimmed {
-		messages = a.fromContextMessages(fitted)
-	}
+	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
 	// 调用 Provider
 	ch, err := a.provider.ChatStream(ctx, messages)
@@ -620,24 +598,14 @@ func (a *Agent) chatStreamSimple(ctx context.Context, sess *session.Session, use
 // ChatStream 执行流式对话
 func (a *Agent) ChatStream(ctx context.Context, userInput string) (<-chan provider.StreamChunk, error) {
 	sess := a.sessions.New()
-
-	messages := []provider.Message{
-		{Role: "system", Content: a.soul.SystemPrompt()},
-	}
-
-	messages = a.buildMemoryContext(messages)
-
-	sess.AddMessage("user", userInput)
-	messages = append(messages, provider.Message{Role: "user", Content: userInput})
-
-	// 上下文窗口管理：裁剪消息到窗口内
-	contextMessages := a.toContextMessages(messages)
-	fitted, trimResult := a.contextWin.Fit(contextMessages)
-	if trimResult.Trimmed {
-		messages = a.fromContextMessages(fitted)
-	}
+	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
 	return a.provider.ChatStream(ctx, messages)
+}
+
+func (a *Agent) buildContextMessages(ctx context.Context, sess *session.Session, userInput string, opts contextBuildOptions) []provider.Message {
+	planner := newContextPlanner(a, opts)
+	return planner.Build(ctx, sess, userInput)
 }
 
 // ChatEvent 是流式对话事件，包含思考过程和内容
@@ -694,7 +662,15 @@ type streamConvergenceState struct {
 	continuedResponse        strings.Builder
 	toolCallRepeatCount      map[string]int
 	toolCallLastResult       map[string]string
+	toolURLRepeatCount       map[string]int
+	toolURLLastResult        map[string]string
 	consecutiveToolOnlyIters int
+	successfulSearchEvidence int
+	detailedSearchEvidence   int
+	forceSearchSynthesis     bool
+	repeatToolCallLimit      int
+	toolOnlyIterationLimit   int
+	duplicateFetchLimit      int
 }
 
 func (s *streamConvergenceState) hasContinuation() bool {
@@ -712,6 +688,12 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 	if s.toolCallRepeatCount == nil {
 		s.toolCallRepeatCount = make(map[string]int)
 	}
+	if s.repeatToolCallLimit <= 0 {
+		s.repeatToolCallLimit = 3
+	}
+	if s.toolOnlyIterationLimit <= 0 {
+		s.toolOnlyIterationLimit = 3
+	}
 	trimmed := strings.TrimSpace(assistantContent)
 	if trimmed == "" {
 		s.consecutiveToolOnlyIters++
@@ -725,12 +707,18 @@ func (s *streamConvergenceState) trackToolCallPattern(toolCalls []provider.ToolC
 		sig := s.toolCallSig(tc.Name, tc.Arguments)
 		repeatedSigs = append(repeatedSigs, sig)
 		s.toolCallRepeatCount[sig]++
-		if s.toolCallRepeatCount[sig] < 3 {
+		if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
+			if s.toolURLRepeatCount == nil {
+				s.toolURLRepeatCount = make(map[string]int)
+			}
+			s.toolURLRepeatCount[key]++
+		}
+		if s.toolCallRepeatCount[sig] < s.repeatToolCallLimit {
 			allRepeated = false
 		}
 	}
 
-	if (allRepeated && trimmed == "") || s.consecutiveToolOnlyIters >= 3 {
+	if (allRepeated && trimmed == "") || s.consecutiveToolOnlyIters >= s.toolOnlyIterationLimit {
 		return true, repeatedSigs
 	}
 	return false, nil
@@ -741,6 +729,12 @@ func (s *streamConvergenceState) rememberToolCallResult(name, arguments, result 
 		s.toolCallLastResult = make(map[string]string)
 	}
 	s.toolCallLastResult[s.toolCallSig(name, arguments)] = result
+	if key := normalizedToolTarget(name, arguments); key != "" {
+		if s.toolURLLastResult == nil {
+			s.toolURLLastResult = make(map[string]string)
+		}
+		s.toolURLLastResult[key] = result
+	}
 }
 
 func (s *streamConvergenceState) repeatedToolLoopMessage(repeatedSigs []string) string {
@@ -780,19 +774,7 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 	go func() {
 		defer close(events)
 
-		// 构建消息
-		messages := a.buildMessages(userInput)
-
-		// 注入会话历史
-		existingMsgs := sess.GetMessages()
-		if len(existingMsgs) > 0 {
-			base := messages[:len(messages)-1]
-			messages = append(base, existingMsgs...)
-			messages = append(messages, provider.Message{Role: "user", Content: userInput})
-		}
-
-		// 上下文窗口裁剪
-		messages = a.fitContextWindow(messages)
+		messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
 		// 构建 function calling 工具定义
 		fcMgr := function.NewManager(a.tools)
@@ -803,12 +785,14 @@ func (a *Agent) ChatWithSessionStream(ctx context.Context, sessionID string, use
 
 		loopCfg := DefaultLoopConfig()
 		cfg := a.cfg.Get()
-		if cfg.Agent.MaxIterations > 0 {
-			loopCfg.MaxIterations = cfg.Agent.MaxIterations
-		}
+		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 		loopCfg.AutoApprove = true
 		sanitizeLoopConfig(&loopCfg)
-		state := &streamConvergenceState{}
+		state := &streamConvergenceState{
+			repeatToolCallLimit:    loopCfg.RepeatToolCallLimit,
+			toolOnlyIterationLimit: loopCfg.ToolOnlyIterationLimit,
+			duplicateFetchLimit:    loopCfg.DuplicateFetchLimit,
+		}
 
 		// 🧠 思考阶段（第一轮）
 		events <- ChatEvent{Type: ChatEventThinking, Content: "Thinking... (round 1)"}
@@ -965,7 +949,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			for _, idx := range parallelIdx {
 				tc := toolCalls[idx]
 				go func(idx int, tc provider.ToolCall) {
-					toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+					toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
 					if err != nil {
 						toolResult = fmt.Sprintf("Error: %v", err)
 					}
@@ -983,7 +967,7 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			// 串行执行有状态工具
 			for _, idx := range serialIdx {
 				tc := toolCalls[idx]
-				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
 				if err != nil {
 					toolResult = fmt.Sprintf("Error: %v", err)
 				}
@@ -1013,9 +997,20 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 					Result:  r.ShortResult,
 					Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
 				}
+				contextResult := compactToolResultForContext(r.ToolName, r.Result)
+				if isUsefulSearchEvidence(r.ToolName, r.Result) {
+					state.successfulSearchEvidence++
+					if r.ToolName == "web_search" {
+						if state.detailedSearchEvidence >= 2 {
+							contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
+						} else {
+							state.detailedSearchEvidence++
+						}
+					}
+				}
 				messages = append(messages, provider.Message{
 					Role:       "tool",
-					Content:    r.Result,
+					Content:    contextResult,
 					ToolCallID: r.ToolCallID,
 					Name:       r.ToolName,
 				})
@@ -1026,6 +1021,10 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 
 			// 裁剪上下文，继续下一轮
 			messages = a.fitContextWindow(messages)
+			if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
+				state.forceSearchSynthesis = true
+				messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
+			}
 			if remaining <= 1 {
 				if state.hasContinuation() {
 					a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
@@ -1114,8 +1113,13 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 	var resp *provider.Response
 	var err error
-	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-		resp, err = fcProvider.ChatWithOptions(ctx, messages, callOpts)
+	iterCallOpts := callOpts
+	if state.forceSearchSynthesis {
+		iterCallOpts.Tools = nil
+		iterCallOpts.ToolChoice = "none"
+	}
+	if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
+		resp, err = fcProvider.ChatWithOptions(ctx, messages, iterCallOpts)
 	} else {
 		resp, err = a.provider.Chat(ctx, messages)
 	}
@@ -1178,7 +1182,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		for _, idx := range parallelIdx {
 			tc := resp.ToolCalls[idx]
 			go func(idx int, tc provider.ToolCall) {
-				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
 				if err != nil {
 					toolResult = fmt.Sprintf("Error: %v", err)
 				}
@@ -1196,7 +1200,7 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 		// 串行执行有状态工具
 		for _, idx := range serialIdx {
 			tc := resp.ToolCalls[idx]
-			toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, true, sess)
+			toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, true, sess, state.toolURLRepeatCount, state.toolURLLastResult, state.duplicateFetchLimit)
 			if err != nil {
 				toolResult = fmt.Sprintf("Error: %v", err)
 			}
@@ -1225,9 +1229,20 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 				Result:  r.ShortResult,
 				Content: fmt.Sprintf("📋 %s → %s", r.ToolName, r.ShortResult),
 			}
+			contextResult := compactToolResultForContext(r.ToolName, r.Result)
+			if isUsefulSearchEvidence(r.ToolName, r.Result) {
+				state.successfulSearchEvidence++
+				if r.ToolName == "web_search" {
+					if state.detailedSearchEvidence >= 2 {
+						contextResult = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
+					} else {
+						state.detailedSearchEvidence++
+					}
+				}
+			}
 			messages = append(messages, provider.Message{
 				Role:       "tool",
-				Content:    r.Result,
+				Content:    contextResult,
 				ToolCallID: r.ToolCallID,
 				Name:       r.ToolName,
 			})
@@ -1238,6 +1253,10 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 
 		// 裁剪上下文，递归继续
 		messages = a.fitContextWindow(messages)
+		if !state.forceSearchSynthesis && shouldForceSearchSynthesis(state.successfulSearchEvidence, state.consecutiveToolOnlyIters) {
+			state.forceSearchSynthesis = true
+			messages = append(messages, provider.Message{Role: "user", Content: searchSynthesisPrompt})
+		}
 		if remaining <= 1 {
 			if state.hasContinuation() {
 				a.finalizeStream(events, sess, userInput, strings.TrimSpace(state.continuedResponse.String())+lengthTruncatedNotice)
@@ -2085,7 +2104,20 @@ func (a *Agent) toContextMessages(messages []provider.Message) []contextx.Messag
 			case strings.HasPrefix(msg.Content, "[Recent Context"):
 				priority = contextx.PriorityLow
 				category = "memory_short"
+			case strings.HasPrefix(msg.Content, "[Session History"):
+				priority = contextx.PriorityNormal
+				category = "memory_mid"
+			case strings.HasPrefix(msg.Content, "[Conversation Summary"), strings.HasPrefix(msg.Content, "[Conversation Themes"):
+				priority = contextx.PriorityLow
+				category = "conversation_summary"
+			case strings.HasPrefix(msg.Content, "## Retrieved Knowledge"), strings.HasPrefix(msg.Content, "[Retrieved Knowledge"):
+				priority = contextx.PriorityHigh
+				category = "rag"
 			}
+		}
+		if msg.Role == "tool" {
+			priority = contextx.PriorityNormal
+			category = "tool_result"
 		}
 
 		result[i] = contextx.Message{

@@ -113,13 +113,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	loopCfg := agent.DefaultLoopConfig()
 	cfg := mgr.Get()
-	if cfg.Agent.MaxIterations > 0 {
-		loopCfg.MaxIterations = cfg.Agent.MaxIterations
-	}
-	if cfg.Agent.TimeoutSeconds > 0 {
-		loopCfg.Timeout = time.Duration(cfg.Agent.TimeoutSeconds) * time.Second
-	}
-	loopCfg.AutoApprove = cfg.Agent.AutoApprove
+	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	if cmd.Flags().Changed("yolo") {
 		loopCfg.AutoApprove = yolo
 	}

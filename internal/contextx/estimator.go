@@ -1,7 +1,9 @@
 package contextx
 
 import (
+	"hash/fnv"
 	"math"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -28,6 +30,8 @@ const (
 // TokenEstimator 估算文本的 token 数量
 type TokenEstimator struct {
 	modelContextWindow int // 模型上下文窗口大小
+	mu                 sync.RWMutex
+	cache              map[uint64]int
 }
 
 // NewTokenEstimator 创建 Token 估算器
@@ -37,6 +41,7 @@ func NewTokenEstimator(modelContextWindow int) *TokenEstimator {
 	}
 	return &TokenEstimator{
 		modelContextWindow: modelContextWindow,
+		cache:              make(map[uint64]int),
 	}
 }
 
@@ -45,6 +50,14 @@ func (te *TokenEstimator) Estimate(text string) int {
 	if text == "" {
 		return 0
 	}
+
+	key := tokenEstimateCacheKey(text)
+	te.mu.RLock()
+	if cached, ok := te.cache[key]; ok {
+		te.mu.RUnlock()
+		return cached
+	}
+	te.mu.RUnlock()
 
 	contentType := detectContentType(text)
 	charsPerToken := charsPerToken(contentType)
@@ -56,7 +69,15 @@ func (te *TokenEstimator) Estimate(text string) int {
 	// 特殊 token 开销：每条消息约 +4 (role 标记等)
 	// 这里只估算文本本身，消息开销在 MessageEstimate 中处理
 
-	return int(math.Ceil(tokens))
+	estimated := int(math.Ceil(tokens))
+	te.mu.Lock()
+	// 简单上限，避免无界增长
+	if len(te.cache) > 4096 {
+		te.cache = make(map[uint64]int, 2048)
+	}
+	te.cache[key] = estimated
+	te.mu.Unlock()
+	return estimated
 }
 
 // EstimateMessages 估算消息列表的总 token 数量
@@ -198,4 +219,10 @@ func isCodeChar(r rune) bool {
 		r == '&' || r == '|' || r == '!' || r == '@' ||
 		r == '#' || r == '$' || r == '%' || r == '^' ||
 		r == '*' || r == '~' || r == '`'
+}
+
+func tokenEstimateCacheKey(text string) uint64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(text))
+	return h.Sum64()
 }

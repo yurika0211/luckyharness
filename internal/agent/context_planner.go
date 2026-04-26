@@ -1,0 +1,680 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/logger"
+	"github.com/yurika0211/luckyharness/internal/memory"
+	"github.com/yurika0211/luckyharness/internal/provider"
+	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/tool"
+)
+
+type contextBuildOptions struct {
+	IncludeRAG     bool
+	IncludeHistory bool
+	HistoryRecent  int
+	HistoryMiddle  int
+}
+
+func defaultContextBuildOptions() contextBuildOptions {
+	return contextBuildOptions{
+		IncludeRAG:     true,
+		IncludeHistory: true,
+		HistoryRecent:  6,
+		HistoryMiddle:  12,
+	}
+}
+
+type contextBudget struct {
+	System     int
+	Memory     int
+	RAG        int
+	History    int
+	ToolResult int
+}
+
+type contextPlanner struct {
+	agent   *Agent
+	est     *contextx.TokenEstimator
+	budget  contextBudget
+	options contextBuildOptions
+}
+
+func newContextPlanner(a *Agent, options contextBuildOptions) *contextPlanner {
+	cfg := contextx.DefaultWindowConfig()
+	if a != nil && a.contextWin != nil {
+		cfg = a.contextWin.Config()
+	}
+	available := cfg.MaxTokens - cfg.ReservedTokens
+	if available <= 0 {
+		available = cfg.MaxTokens / 2
+	}
+	if available <= 0 {
+		available = 2048
+	}
+
+	budget := contextBudget{
+		System:     int(float64(available) * 0.15),
+		Memory:     int(float64(available) * 0.10),
+		RAG:        int(float64(available) * 0.20),
+		History:    int(float64(available) * 0.25),
+		ToolResult: int(float64(available) * 0.30),
+	}
+
+	if budget.System < 256 {
+		budget.System = 256
+	}
+	if budget.Memory < 128 {
+		budget.Memory = 128
+	}
+	if budget.RAG < 256 {
+		budget.RAG = 256
+	}
+	if budget.History < 256 {
+		budget.History = 256
+	}
+	if budget.ToolResult < 256 {
+		budget.ToolResult = 256
+	}
+
+	return &contextPlanner{
+		agent:   a,
+		est:     resolveTokenEstimator(a, cfg.MaxTokens),
+		budget:  budget,
+		options: options,
+	}
+}
+
+func (p *contextPlanner) Build(ctx context.Context, sess *session.Session, userInput string) []provider.Message {
+	if key, ok := p.cacheKey(sess, userInput); ok && p.agent != nil && p.agent.contextCache != nil {
+		if cached, entry, hit := p.agent.contextCache.Get(key); hit {
+			p.logContextReport("cache_hit", key, entry)
+			return cached
+		}
+	}
+
+	messages := make([]provider.Message, 0, 8)
+
+	systemPrompt := ""
+	if p.agent != nil && p.agent.soul != nil {
+		systemPrompt = p.agent.soul.SystemPrompt()
+	}
+	systemParts := []string{p.fitTextToBudget(aOrEmpty(systemPrompt), p.budget.System)}
+	if p.agent == nil || p.agent.provider == nil {
+		if tools := p.buildToolCatalog(); tools != "" {
+			systemParts = append(systemParts, tools)
+		}
+	} else if _, ok := p.agent.provider.(provider.FunctionCallingProvider); !ok {
+		if tools := p.buildToolCatalog(); tools != "" {
+			systemParts = append(systemParts, tools)
+		}
+	}
+	systemContent := strings.TrimSpace(strings.Join(filterEmptyStrings(systemParts), "\n\n"))
+	if systemContent != "" {
+		messages = append(messages, provider.Message{Role: "system", Content: systemContent})
+	}
+
+	messages = append(messages, p.buildMemoryMessages(userInput)...)
+	if p.options.IncludeRAG {
+		if ragMsg := p.buildRAGMessage(ctx, userInput); ragMsg.Content != "" {
+			messages = append(messages, ragMsg)
+		}
+	}
+	if p.options.IncludeHistory && sess != nil {
+		messages = append(messages, p.buildHistoryMessages(sess)...)
+	}
+	messages = append(messages, provider.Message{Role: "user", Content: userInput})
+
+	if p.agent == nil {
+		return messages
+	}
+	messages = p.agent.fitContextWindow(messages)
+	report := p.buildContextReport(messages)
+	if key, ok := p.cacheKey(sess, userInput); ok && p.agent.contextCache != nil {
+		p.agent.contextCache.Set(key, contextCacheEntry{
+			messages:     messages,
+			totalTokens:  report.totalTokens,
+			bucketTokens: report.bucketTokens,
+		})
+		p.logContextReport("cache_store", key, contextCacheEntry{
+			messages:     messages,
+			totalTokens:  report.totalTokens,
+			bucketTokens: report.bucketTokens,
+		})
+	}
+	return messages
+}
+
+type contextReport struct {
+	totalTokens  int
+	bucketTokens map[string]int
+	bucketCounts map[string]int
+}
+
+func (p *contextPlanner) buildContextReport(messages []provider.Message) contextReport {
+	report := contextReport{
+		bucketTokens: map[string]int{
+			"system":      0,
+			"memory":      0,
+			"rag":         0,
+			"history":     0,
+			"tool_result": 0,
+			"user":        0,
+		},
+		bucketCounts: map[string]int{
+			"system":      0,
+			"memory":      0,
+			"rag":         0,
+			"history":     0,
+			"tool_result": 0,
+			"user":        0,
+		},
+	}
+
+	for _, msg := range messages {
+		tokens := p.est.Estimate(msg.Content) + 4
+		report.totalTokens += tokens
+		name := classifyContextBucket(msg)
+		report.bucketTokens[name] += tokens
+		report.bucketCounts[name]++
+	}
+	return report
+}
+
+func (p *contextPlanner) logContextReport(mode string, key uint64, entry contextCacheEntry) {
+	if p.agent == nil || p.agent.cfg == nil {
+		return
+	}
+	if !p.agent.cfg.Get().Agent.ContextDebug {
+		return
+	}
+
+	logger.Info("context planner report",
+		"mode", mode,
+		"cache_key", key,
+		"messages", len(entry.messages),
+		"cached_tokens_total", entry.totalTokens,
+		"cached_system_tokens", entry.bucketTokens["system"],
+		"cached_memory_tokens", entry.bucketTokens["memory"],
+		"cached_rag_tokens", entry.bucketTokens["rag"],
+		"cached_history_tokens", entry.bucketTokens["history"],
+		"cached_tool_tokens", entry.bucketTokens["tool_result"],
+		"cached_user_tokens", entry.bucketTokens["user"],
+	)
+}
+
+func classifyContextBucket(msg provider.Message) string {
+	if msg.Role == "user" {
+		return "user"
+	}
+	if msg.Role == "tool" {
+		return "tool_result"
+	}
+	if msg.Role != "system" {
+		return "history"
+	}
+	switch {
+	case strings.HasPrefix(msg.Content, "[Core Memory"),
+		strings.HasPrefix(msg.Content, "[Working Memory"),
+		strings.HasPrefix(msg.Content, "[Session History"),
+		strings.HasPrefix(msg.Content, "[Recent Context"):
+		return "memory"
+	case strings.HasPrefix(msg.Content, "## Retrieved Knowledge"),
+		strings.HasPrefix(msg.Content, "[Retrieved Knowledge"):
+		return "rag"
+	case strings.HasPrefix(msg.Content, "[Conversation Summary"),
+		strings.HasPrefix(msg.Content, "[Conversation Themes"):
+		return "history"
+	default:
+		return "system"
+	}
+}
+
+func (p *contextPlanner) cacheKey(sess *session.Session, userInput string) (uint64, bool) {
+	if p.agent == nil {
+		return 0, false
+	}
+
+	payload := map[string]any{
+		"user_input": userInput,
+		"options":    p.options,
+		"budget":     p.budget,
+	}
+
+	if p.agent.soul != nil {
+		payload["system_prompt"] = p.agent.soul.SystemPrompt()
+	}
+	if p.agent.provider != nil {
+		_, fc := p.agent.provider.(provider.FunctionCallingProvider)
+		payload["function_calling"] = fc
+	}
+	if p.agent.memory != nil {
+		payload["recent_memory"] = p.agent.memory.Recent(8)
+	}
+	if p.agent.shortTerm != nil {
+		payload["short_summary"] = p.agent.shortTerm.Summary()
+	}
+	if p.agent.midTerm != nil && strings.TrimSpace(userInput) != "" {
+		payload["midterm"] = p.agent.midTerm.SearchSummaries(userInput, 2)
+	}
+	if p.agent.ragManager != nil {
+		stats := p.agent.ragManager.Stats()
+		payload["rag_doc_count"] = stats.DocumentCount
+	}
+	if sess != nil {
+		payload["session_id"] = sess.ID
+		payload["session_title"] = sess.Title
+		payload["session_message_count"] = sess.MessageCount()
+		payload["session_updated_at"] = sess.UpdatedAt.UnixNano()
+	}
+
+	return makeContextCacheKey(payload), true
+}
+
+func resolveTokenEstimator(a *Agent, maxTokens int) *contextx.TokenEstimator {
+	if a != nil && a.contextEst != nil {
+		a.contextEst.SetModelContextWindow(maxTokens)
+		return a.contextEst
+	}
+	return contextx.NewTokenEstimator(maxTokens)
+}
+
+func (p *contextPlanner) buildToolCatalog() string {
+	if p.agent == nil || p.agent.tools == nil {
+		return ""
+	}
+	tools := p.agent.Tools().ListEnabled()
+	if len(tools) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("[Available Tools]\n")
+	for _, t := range tools {
+		permLabel := "🟢"
+		if t.Permission == tool.PermApprove {
+			permLabel = "🟡"
+		}
+		b.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
+	}
+	return p.fitTextToBudget(b.String(), maxInt(96, p.budget.System/4))
+}
+
+func (p *contextPlanner) buildMemoryMessages(query string) []provider.Message {
+	var messages []provider.Message
+
+	if core := p.buildCoreMemoryMessage(query); core.Content != "" {
+		messages = append(messages, core)
+	}
+	if relevant := p.buildRelevantMemoryMessage(query); relevant.Content != "" {
+		messages = append(messages, relevant)
+	}
+	if midterm := p.buildMidtermSummaryMessage(query); midterm.Content != "" {
+		messages = append(messages, midterm)
+	}
+	if short := p.buildShortTermSummaryMessage(); short.Content != "" {
+		messages = append(messages, short)
+	}
+
+	return messages
+}
+
+func (p *contextPlanner) buildCoreMemoryMessage(query string) provider.Message {
+	if p.agent == nil || p.agent.memory == nil {
+		return provider.Message{}
+	}
+	longs := p.agent.memory.ByTier(memory.TierLong)
+	if len(longs) == 0 {
+		return provider.Message{}
+	}
+	selected := make([]string, 0, 3)
+	queryLower := strings.ToLower(query)
+	for _, e := range longs {
+		if queryLower == "" || strings.Contains(strings.ToLower(e.Content), queryLower) || len(selected) == 0 {
+			selected = append(selected, "- "+e.Content)
+		}
+		if len(selected) >= 3 {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return provider.Message{}
+	}
+	content := "[Core Memory]\n" + strings.Join(selected, "\n")
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/3))}
+}
+
+func (p *contextPlanner) buildRelevantMemoryMessage(query string) provider.Message {
+	if p.agent == nil || p.agent.memory == nil {
+		return provider.Message{}
+	}
+	if strings.TrimSpace(query) == "" {
+		return provider.Message{}
+	}
+	results := p.agent.memory.Search(query)
+	if len(results) == 0 {
+		return provider.Message{}
+	}
+	limit := minInt(4, len(results))
+	lines := make([]string, 0, limit)
+	for i := 0; i < limit; i++ {
+		e := results[i]
+		lines = append(lines, fmt.Sprintf("- [%s/%s] %s", e.Category, e.Tier.String(), truncate(e.Content, 120)))
+	}
+	content := "[Working Memory]\n" + strings.Join(lines, "\n")
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/2))}
+}
+
+func (p *contextPlanner) buildMidtermSummaryMessage(query string) provider.Message {
+	if p.agent == nil || p.agent.midTerm == nil || strings.TrimSpace(query) == "" {
+		return provider.Message{}
+	}
+	summaries := p.agent.midTerm.SearchSummaries(query, 2)
+	if len(summaries) == 0 {
+		return provider.Message{}
+	}
+	var b strings.Builder
+	b.WriteString("[Session History — Mid-term]\n")
+	for _, sm := range summaries {
+		b.WriteString("- ")
+		if len(sm.Topics) > 0 {
+			b.WriteString("[" + strings.Join(sm.Topics, ", ") + "] ")
+		}
+		b.WriteString(truncate(sm.RawSummary, 180))
+		b.WriteString("\n")
+	}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(b.String(), maxInt(96, p.budget.Memory/3))}
+}
+
+func (p *contextPlanner) buildShortTermSummaryMessage() provider.Message {
+	if p.agent == nil || p.agent.shortTerm == nil {
+		return provider.Message{}
+	}
+	summary := strings.TrimSpace(p.agent.shortTerm.Summary())
+	if summary == "" {
+		return provider.Message{}
+	}
+	content := "[Recent Context]\n" + summary
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(content, maxInt(96, p.budget.Memory/3))}
+}
+
+func (p *contextPlanner) buildRAGMessage(ctx context.Context, query string) provider.Message {
+	if p.agent == nil || p.agent.ragManager == nil || strings.TrimSpace(query) == "" {
+		return provider.Message{}
+	}
+	stats := p.agent.ragManager.Stats()
+	if stats.DocumentCount == 0 {
+		return provider.Message{}
+	}
+	ragCtx, _, err := p.agent.ragManager.SearchWithContext(ctx, query)
+	if err != nil || ragCtx == "" {
+		return provider.Message{}
+	}
+	return provider.Message{Role: "system", Content: p.fitTextToBudget(ragCtx, p.budget.RAG)}
+}
+
+func (p *contextPlanner) buildHistoryMessages(sess *session.Session) []provider.Message {
+	all := sess.GetMessages()
+	if len(all) == 0 {
+		return nil
+	}
+
+	recentCount := p.options.HistoryRecent
+	if recentCount <= 0 {
+		recentCount = 6
+	}
+	if recentCount > len(all) {
+		recentCount = len(all)
+	}
+
+	middleCount := p.options.HistoryMiddle
+	if middleCount < 0 {
+		middleCount = 0
+	}
+
+	recentStart := len(all) - recentCount
+	if recentStart < 0 {
+		recentStart = 0
+	}
+
+	var messages []provider.Message
+	if recentStart > 0 {
+		middleStart := recentStart - middleCount
+		if middleStart < 0 {
+			middleStart = 0
+		}
+		if middleStart > 0 {
+			if themes := summarizeConversationRange(all[:middleStart], "[Conversation Themes]", p.est, maxInt(96, p.budget.History/4)); themes != "" {
+				messages = append(messages, provider.Message{Role: "system", Content: themes})
+			}
+		}
+		if middleStart < recentStart {
+			if summary := summarizeConversationRange(all[middleStart:recentStart], "[Conversation Summary]", p.est, maxInt(96, p.budget.History/3)); summary != "" {
+				messages = append(messages, provider.Message{Role: "system", Content: summary})
+			}
+		}
+	}
+
+	recentBudget := maxInt(128, p.budget.History/2)
+	used := 0
+	for _, msg := range all[recentStart:] {
+		msg = p.compactHistoryMessage(msg)
+		tokens := p.est.Estimate(msg.Content) + 4
+		if used+tokens > recentBudget && len(messages) > 0 {
+			continue
+		}
+		used += tokens
+		messages = append(messages, msg)
+	}
+
+	return messages
+}
+
+func (p *contextPlanner) compactHistoryMessage(msg provider.Message) provider.Message {
+	if msg.Role == "tool" {
+		msg.Content = compactToolResultForContext(msg.Name, msg.Content)
+		return msg
+	}
+	if len(msg.Content) > 800 {
+		msg.Content = p.fitTextToBudget(msg.Content, 240)
+	}
+	return msg
+}
+
+func (p *contextPlanner) fitTextToBudget(text string, tokenBudget int) string {
+	text = strings.TrimSpace(text)
+	if text == "" || tokenBudget <= 0 {
+		return ""
+	}
+	if p.est.Estimate(text) <= tokenBudget {
+		return text
+	}
+	runes := []rune(text)
+	lo, hi := 0, len(runes)
+	best := ""
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		candidate := string(runes[:mid])
+		if mid < len(runes) {
+			candidate = strings.TrimSpace(candidate) + "\n...[truncated]"
+		}
+		if p.est.Estimate(candidate) <= tokenBudget {
+			best = candidate
+			lo = mid + 1
+		} else {
+			hi = mid - 1
+		}
+	}
+	if best == "" {
+		return ""
+	}
+	return best
+}
+
+func summarizeConversationRange(messages []provider.Message, header string, est *contextx.TokenEstimator, tokenBudget int) string {
+	if len(messages) == 0 || tokenBudget <= 0 {
+		return ""
+	}
+	var userLines []string
+	var assistantLines []string
+	var toolLines []string
+	for _, msg := range messages {
+		text := strings.TrimSpace(msg.Content)
+		if text == "" {
+			continue
+		}
+		switch msg.Role {
+		case "user":
+			userLines = append(userLines, "- "+truncate(text, 100))
+		case "assistant":
+			assistantLines = append(assistantLines, "- "+truncate(text, 100))
+		case "tool":
+			summary := summarizeToolResult(msg.Name, text)
+			if summary != "" {
+				toolLines = append(toolLines, "- "+summary)
+			}
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("\n")
+	if len(userLines) > 0 {
+		b.WriteString("User topics:\n")
+		for _, line := range dedupStrings(userLines, 4) {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if len(assistantLines) > 0 {
+		b.WriteString("Assistant progress:\n")
+		for _, line := range dedupStrings(assistantLines, 4) {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+	if len(toolLines) > 0 {
+		b.WriteString("Tool evidence:\n")
+		for _, line := range dedupStrings(toolLines, 4) {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+	}
+
+	out := strings.TrimSpace(b.String())
+	if out == "" {
+		return ""
+	}
+	if est.Estimate(out) <= tokenBudget {
+		return out
+	}
+	runes := []rune(out)
+	for len(runes) > 0 {
+		runes = runes[:len(runes)-1]
+		candidate := strings.TrimSpace(string(runes)) + "\n...[truncated]"
+		if est.Estimate(candidate) <= tokenBudget {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func dedupStrings(items []string, limit int) []string {
+	if limit <= 0 {
+		limit = len(items)
+	}
+	seen := make(map[string]struct{}, len(items))
+	out := make([]string, 0, minInt(len(items), limit))
+	for _, item := range items {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func toContextMessage(msg provider.Message) contextx.Message {
+	return contextx.Message{
+		Role:      msg.Role,
+		Content:   msg.Content,
+		Name:      msg.Name,
+		Timestamp: time.Now(),
+	}
+}
+
+func summarizeToolResult(toolName, result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	switch toolName {
+	case "web_search":
+		query := extractLineAfterPrefix(result, "Results for:")
+		if query != "" {
+			return fmt.Sprintf("Searched for %s and collected source candidates.", query)
+		}
+		if strings.Contains(strings.ToLower(result), "no results found") {
+			return "Search returned no useful results."
+		}
+		return "Collected search results from external sources."
+	case "web_fetch":
+		if strings.Contains(strings.ToLower(result), "failed to fetch") {
+			return "Tried to fetch a page body but the fetch failed."
+		}
+		title := extractLineAfterPrefix(result, "# ")
+		if title != "" {
+			return fmt.Sprintf("Fetched page content: %s.", title)
+		}
+		return "Fetched page content and extracted key details."
+	default:
+		return truncate(result, 120)
+	}
+}
+
+func extractLineAfterPrefix(text, prefix string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, prefix) {
+			return strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		}
+	}
+	return ""
+}
+
+func filterEmptyStrings(items []string) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
+func aOrEmpty(s string) string {
+	return strings.TrimSpace(s)
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}

@@ -63,13 +63,7 @@ func startREPL(mgr *config.Manager) error {
 	fmt.Println()
 
 	loopCfg := agent.DefaultLoopConfig()
-	if cfg.Agent.MaxIterations > 0 {
-		loopCfg.MaxIterations = cfg.Agent.MaxIterations
-	}
-	if cfg.Agent.TimeoutSeconds > 0 {
-		loopCfg.Timeout = time.Duration(cfg.Agent.TimeoutSeconds) * time.Second
-	}
-	loopCfg.AutoApprove = cfg.Agent.AutoApprove
+	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 

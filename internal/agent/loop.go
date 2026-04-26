@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/function"
 	"github.com/yurika0211/luckyharness/internal/logger"
 	"github.com/yurika0211/luckyharness/internal/provider"
@@ -52,17 +54,23 @@ func (s LoopState) String() string {
 
 // LoopConfig 是 Agent Loop 的配置
 type LoopConfig struct {
-	MaxIterations int           // 最大循环次数
-	Timeout       time.Duration // 单次循环超时
-	AutoApprove   bool          // 自动批准工具调用 (--yolo)
+	MaxIterations          int           // 最大循环次数
+	Timeout                time.Duration // 单次循环超时
+	AutoApprove            bool          // 自动批准工具调用 (--yolo)
+	RepeatToolCallLimit    int           // 相同工具签名重复上限
+	ToolOnlyIterationLimit int           // 连续纯工具轮次上限
+	DuplicateFetchLimit    int           // 同一 URL 抓取上限
 }
 
 // DefaultLoopConfig 返回默认 Loop 配置
 func DefaultLoopConfig() LoopConfig {
 	return LoopConfig{
-		MaxIterations: 10,
-		Timeout:       60 * time.Second,
-		AutoApprove:   false,
+		MaxIterations:          10,
+		Timeout:                60 * time.Second,
+		AutoApprove:            false,
+		RepeatToolCallLimit:    3,
+		ToolOnlyIterationLimit: 3,
+		DuplicateFetchLimit:    1,
 	}
 }
 
@@ -72,8 +80,10 @@ const maxAllowedIterations = 100
 const (
 	maxEmptyResponseRetries      = 2
 	maxLengthContinuationRetries = 3
+	searchSynthesisThreshold     = 2
 	emptyResponseRecoveryPrompt  = "Your last response was empty. Please provide a direct, complete answer to my previous request. Avoid tool calls unless required."
 	lengthRecoveryPrompt         = "Continue exactly from where you stopped. Do not repeat previous content."
+	searchSynthesisPrompt        = "You now have enough search evidence from previous tool results. Synthesize a direct, source-aware answer now. Do not call any more tools unless a critical factual gap remains unresolved."
 	emptyFinalResponseMessage    = "I couldn't produce a complete answer this round. Please retry."
 	lengthTruncatedNotice        = "\n\n[Output may be truncated after multiple continuation attempts.]"
 )
@@ -92,6 +102,15 @@ func sanitizeLoopConfig(cfg *LoopConfig) {
 	if cfg.Timeout > 10*time.Minute {
 		cfg.Timeout = 10 * time.Minute
 	}
+	if cfg.RepeatToolCallLimit <= 0 {
+		cfg.RepeatToolCallLimit = 3
+	}
+	if cfg.ToolOnlyIterationLimit <= 0 {
+		cfg.ToolOnlyIterationLimit = 3
+	}
+	if cfg.DuplicateFetchLimit <= 0 {
+		cfg.DuplicateFetchLimit = 1
+	}
 }
 
 func appendContinuation(dst *strings.Builder, part string) {
@@ -99,6 +118,25 @@ func appendContinuation(dst *strings.Builder, part string) {
 		return
 	}
 	dst.WriteString(part)
+}
+
+func ApplyAgentLoopConfig(loopCfg *LoopConfig, cfg config.AgentLoopConfig) {
+	if cfg.MaxIterations > 0 {
+		loopCfg.MaxIterations = cfg.MaxIterations
+	}
+	if cfg.TimeoutSeconds > 0 {
+		loopCfg.Timeout = time.Duration(cfg.TimeoutSeconds) * time.Second
+	}
+	loopCfg.AutoApprove = cfg.AutoApprove
+	if cfg.RepeatToolCallLimit > 0 {
+		loopCfg.RepeatToolCallLimit = cfg.RepeatToolCallLimit
+	}
+	if cfg.ToolOnlyIterationLimit > 0 {
+		loopCfg.ToolOnlyIterationLimit = cfg.ToolOnlyIterationLimit
+	}
+	if cfg.DuplicateFetchLimit > 0 {
+		loopCfg.DuplicateFetchLimit = cfg.DuplicateFetchLimit
+	}
 }
 
 // LoopResult 是 Agent Loop 的执行结果
@@ -190,30 +228,21 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	}
 	toolCallRepeatCount := make(map[string]int)
 	toolCallLastResult := make(map[string]string)
+	toolURLRepeatCount := make(map[string]int)
+	toolURLLastResult := make(map[string]string)
 	consecutiveToolOnlyIters := 0
 	emptyResponseRetries := 0
 	lengthRecoveryCount := 0
+	successfulSearchEvidenceCount := 0
+	detailedSearchEvidenceInContext := 0
+	forceSearchSynthesis := false
 	var continuedResponse strings.Builder
 	toolCallSig := func(name, arguments string) string {
 		return name + "|" + arguments
 	}
 
 	// 构建初始消息
-	messages := a.buildMessages(userInput)
-
-	// 注入会话历史（多轮上下文，滑动窗口）
-	if sess != nil {
-		existingMsgs := sess.GetMessages(20) // v0.44.0: 只取最近 20 轮
-		if len(existingMsgs) > 0 {
-			// 插入到用户消息之前
-			base := messages[:len(messages)-1] // 去掉最后的 user message
-			messages = append(base, existingMsgs...)
-			messages = append(messages, provider.Message{Role: "user", Content: userInput})
-		}
-	}
-
-	// 上下文窗口裁剪
-	messages = a.fitContextWindow(messages)
+	messages := a.buildContextMessages(ctx, sess, userInput, defaultContextBuildOptions())
 
 	// v0.16.0: 构建 function calling 工具定义
 	fcMgr := function.NewManager(a.tools)
@@ -247,10 +276,15 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 		loopCtx, cancel := context.WithTimeout(ctx, loopCfg.Timeout)
 		var resp *provider.Response
 		var err error
+		iterCallOpts := callOpts
+		if forceSearchSynthesis {
+			iterCallOpts.Tools = nil
+			iterCallOpts.ToolChoice = "none"
+		}
 
 		// 尝试使用 FunctionCallingProvider 接口
-		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(callOpts.Tools) > 0 {
-			resp, err = fcProvider.ChatWithOptions(loopCtx, messages, callOpts)
+		if fcProvider, ok := a.provider.(provider.FunctionCallingProvider); ok && len(iterCallOpts.Tools) > 0 {
+			resp, err = fcProvider.ChatWithOptions(loopCtx, messages, iterCallOpts)
 		} else {
 			resp, err = a.provider.Chat(loopCtx, messages)
 		}
@@ -285,11 +319,22 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				sig := toolCallSig(tc.Name, tc.Arguments)
 				repeatedSigs = append(repeatedSigs, sig)
 				toolCallRepeatCount[sig]++
-				if toolCallRepeatCount[sig] < 3 {
+				if key := normalizedToolTarget(tc.Name, tc.Arguments); key != "" {
+					toolURLRepeatCount[key]++
+				}
+				if toolCallRepeatCount[sig] < loopCfg.RepeatToolCallLimit {
 					allRepeated = false
 				}
 			}
-			if (allRepeated && strings.TrimSpace(resp.Content) == "") || consecutiveToolOnlyIters >= 3 {
+			if (allRepeated && strings.TrimSpace(resp.Content) == "") || consecutiveToolOnlyIters >= loopCfg.ToolOnlyIterationLimit {
+				if !forceSearchSynthesis && successfulSearchEvidenceCount > 0 {
+					forceSearchSynthesis = true
+					messages = append(messages, provider.Message{
+						Role:    "user",
+						Content: searchSynthesisPrompt,
+					})
+					continue
+				}
 				var b strings.Builder
 				b.WriteString("Detected repeated tool-call loop and stopped early to avoid timeout.\n")
 				b.WriteString("Latest tool outputs:\n")
@@ -353,7 +398,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 					tc := resp.ToolCalls[idx]
 					go func(idx int, tc provider.ToolCall) {
 						start := time.Now()
-						toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess)
+						toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
 						duration := time.Since(start)
 
 						tcLog := toolCallLog{
@@ -386,7 +431,7 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 			for _, idx := range serialGroup {
 				tc := resp.ToolCalls[idx]
 				start := time.Now()
-				toolResult, err := a.executeToolWithSession(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess)
+				toolResult, err := a.executeToolMaybeDedup(tc.Name, tc.Arguments, loopCfg.AutoApprove, sess, toolURLRepeatCount, toolURLLastResult, loopCfg.DuplicateFetchLimit)
 				duration := time.Since(start)
 
 				tcLog := toolCallLog{
@@ -425,10 +470,25 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 
 			for _, r := range allResults {
 				result.ToolCalls = append(result.ToolCalls, r.ToolCall)
-				messages = append(messages, r.ToolMessage)
+				contextToolMsg := r.ToolMessage
+				contextToolMsg.Content = compactToolResultForContext(contextToolMsg.Name, contextToolMsg.Content)
 				toolCallLastResult[toolCallSig(r.ToolCall.Name, r.ToolCall.Arguments)] = r.ToolCall.Result
+				if key := normalizedToolTarget(r.ToolCall.Name, r.ToolCall.Arguments); key != "" {
+					toolURLLastResult[key] = r.ToolCall.Result
+				}
+				if isUsefulSearchEvidence(r.ToolCall.Name, r.ToolCall.Result) {
+					successfulSearchEvidenceCount++
+					if r.ToolCall.Name == "web_search" {
+						if detailedSearchEvidenceInContext >= 2 {
+							contextToolMsg.Content = "[Additional web_search results omitted to save context. Use the earlier search evidence to synthesize the answer.]"
+						} else {
+							detailedSearchEvidenceInContext++
+						}
+					}
+				}
+				messages = append(messages, contextToolMsg)
 				if sess != nil {
-					sess.AddProviderMessage(r.ToolMessage)
+					sess.AddProviderMessage(contextToolMsg)
 				}
 			}
 
@@ -442,6 +502,14 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 				if saveErr := sess.Save(); saveErr != nil {
 					logger.Warn("agent session save failed", "session_id", sessionID, "error", saveErr)
 				}
+			}
+
+			if !forceSearchSynthesis && shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOnlyIters) {
+				forceSearchSynthesis = true
+				messages = append(messages, provider.Message{
+					Role:    "user",
+					Content: searchSynthesisPrompt,
+				})
 			}
 
 			continue // 继续循环，让 LLM 处理工具结果
@@ -514,6 +582,97 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	return result, fmt.Errorf("max iterations (%d) reached", loopCfg.MaxIterations)
 }
 
+func shouldForceSearchSynthesis(successfulSearchEvidenceCount, consecutiveToolOnlyIters int) bool {
+	if successfulSearchEvidenceCount >= 3 && consecutiveToolOnlyIters >= 1 {
+		return true
+	}
+	return successfulSearchEvidenceCount >= searchSynthesisThreshold && consecutiveToolOnlyIters >= 2
+}
+
+func isUsefulSearchEvidence(toolName, result string) bool {
+	if toolName != "web_search" && toolName != "web_fetch" {
+		return false
+	}
+	out := strings.TrimSpace(result)
+	if out == "" {
+		return false
+	}
+	lower := strings.ToLower(out)
+	if strings.HasPrefix(lower, "error:") {
+		return false
+	}
+	if strings.Contains(lower, "no results found for") {
+		return false
+	}
+	if strings.Contains(lower, "all search sources failed") {
+		return false
+	}
+	return true
+}
+
+func normalizedToolTarget(toolName, arguments string) string {
+	if toolName != "web_fetch" {
+		return ""
+	}
+
+	var args map[string]any
+	if arguments == "" {
+		return ""
+	}
+	if err := json.Unmarshal([]byte(arguments), &args); err != nil {
+		return ""
+	}
+	rawURL, _ := args["url"].(string)
+	rawURL = strings.TrimSpace(rawURL)
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	u.Fragment = ""
+	u.Host = strings.ToLower(u.Host)
+	return u.String()
+}
+
+func (a *Agent) executeToolMaybeDedup(name, arguments string, autoApprove bool, sess *session.Session, toolURLRepeatCount map[string]int, toolURLLastResult map[string]string, duplicateFetchLimit int) (string, error) {
+	if key := normalizedToolTarget(name, arguments); key != "" && toolURLRepeatCount[key] > duplicateFetchLimit {
+		if cached := strings.TrimSpace(toolURLLastResult[key]); cached != "" {
+			return fmt.Sprintf("Skipped duplicate %s for %s. Reuse previous fetched content.\n\n%s", name, key, cached), nil
+		}
+		return fmt.Sprintf("Skipped duplicate %s for %s. Reuse earlier fetched content.", name, key), nil
+	}
+	return a.executeToolWithSession(name, arguments, autoApprove, sess)
+}
+
+func compactToolResultForContext(toolName, result string) string {
+	out := strings.TrimSpace(result)
+	if out == "" {
+		return result
+	}
+
+	summary := summarizeToolResult(toolName, out)
+	if summary != "" && toolName != "file_list" {
+		out = fmt.Sprintf("[Tool Summary]\n- tool: %s\n- finding: %s\n\n%s", toolName, summary, out)
+	}
+
+	limit := 4000
+	switch toolName {
+	case "web_search":
+		limit = 900
+	case "web_fetch":
+		limit = 1800
+	case "file_list":
+		limit = 600
+	}
+
+	if len(out) <= limit {
+		return out
+	}
+	return out[:limit] + "\n... (truncated for context)"
+}
+
 // extractRequiredToolNames 从用户输入中提取显式点名的工具（按出现顺序）。
 func (a *Agent) extractRequiredToolNames(input string) []string {
 	type hit struct {
@@ -549,6 +708,9 @@ func (a *Agent) extractRequiredToolNames(input string) []string {
 
 // fitContextWindow 裁剪消息列表到上下文窗口内
 func (a *Agent) fitContextWindow(messages []provider.Message) []provider.Message {
+	if a == nil || a.contextWin == nil {
+		return messages
+	}
 	contextMessages := a.toContextMessages(messages)
 	fitted, trimResult := a.contextWin.Fit(contextMessages)
 	if trimResult.Trimmed {
@@ -588,7 +750,7 @@ func (a *Agent) RunLoopStream(ctx context.Context, userInput string, loopCfg Loo
 	go func() {
 		defer close(events)
 
-		messages := a.buildMessages(userInput)
+		messages := a.buildContextMessages(ctx, nil, userInput, defaultContextBuildOptions())
 
 		// v0.16.0: 构建 function calling 工具定义
 		fcMgr := function.NewManager(a.tools)
@@ -772,77 +934,7 @@ func (a *Agent) updateShellContext(sess *session.Session, command, output string
 
 // buildMessages 构建消息列表
 func (a *Agent) buildMessages(userInput string) []provider.Message {
-	messages := []provider.Message{
-		{Role: "system", Content: a.soul.SystemPrompt()},
-	}
-
-	// 加入记忆上下文
-	recent := a.memory.Recent(5)
-	if len(recent) > 0 {
-		var memCtx strings.Builder
-		memCtx.WriteString("[Recent Memory]\n")
-		for _, e := range recent {
-			memCtx.WriteString("- " + e.Content + "\n")
-		}
-		messages = append(messages, provider.Message{Role: "system", Content: memCtx.String()})
-	}
-
-	// v0.35.0: RAG 检索相关上下文
-	if a.ragManager != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		ragContext, results, err := a.ragManager.SearchWithContext(ctx, userInput)
-		cancel()
-		if err == nil && ragContext != "" && len(results) > 0 {
-			messages = append(messages, provider.Message{Role: "system", Content: ragContext})
-		}
-	}
-
-	// v0.16.0: 工具描述不再放在 system prompt 中
-	// 改为通过 OpenAI function calling 的 tools 参数传递
-	// 如果 provider 不支持 FunctionCallingProvider，则回退到 system prompt 方式
-	if _, ok := a.provider.(provider.FunctionCallingProvider); !ok {
-		tools := a.Tools().ListEnabled()
-		if len(tools) > 0 {
-			var toolCtx strings.Builder
-			toolCtx.WriteString("[Available Tools]\n")
-			for _, t := range tools {
-				permLabel := "🟢"
-				if t.Permission == tool.PermApprove {
-					permLabel = "🟡"
-				}
-				toolCtx.WriteString(fmt.Sprintf("- %s %s: %s\n", permLabel, t.Name, t.Description))
-			}
-			messages = append(messages, provider.Message{Role: "system", Content: toolCtx.String()})
-		}
-	}
-
-	// v0.56.4: 移除全量 skill 列表从 system prompt
-	// 原因：96 个 skill 摘要占 60KB，导致响应时间 15-65 秒
-	// 改为：通过 RAG 检索相关 skill，或用户显式调用 skill_read
-	// if len(a.skills) > 0 {
-	// 	var skillCtx strings.Builder
-	// 	skillCtx.WriteString("[Available Skills — use skill_read(name) to get full SKILL.md]\n")
-	// 	for _, s := range a.skills {
-	// 		if s.Summary != "" {
-	// 			skillCtx.WriteString(fmt.Sprintf("- %s: %s | %s\n", s.Name, s.Description, s.Summary))
-	// 		} else {
-	// 			skillCtx.WriteString(fmt.Sprintf("- %s: %s\n", s.Name, s.Description))
-	// 		}
-	// 	}
-	// 	messages = append(messages, provider.Message{Role: "system", Content: skillCtx.String()})
-	// }
-
-	// 用户消息
-	messages = append(messages, provider.Message{Role: "user", Content: userInput})
-
-	// v0.56.4 DEBUG
-	totalLen := 0
-	for _, m := range messages {
-		totalLen += len(m.Content)
-	}
-	_ = totalLen // 避免未使用变量警告
-
-	return messages
+	return a.buildContextMessages(context.Background(), nil, userInput, defaultContextBuildOptions())
 }
 
 // isToolParallelSafe 检查工具是否可安全并发执行
