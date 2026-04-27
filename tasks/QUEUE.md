@@ -11,6 +11,27 @@
 
 ## 任务队列
 
+### v0.93.0: telegram handler 包覆盖率冲刺 65% (60.6%→65.0%) ✅
+**状态**: Done
+**完成时间**: 2026-04-27 12:00
+**telegram handler 包覆盖率**: 60.6% → **65.0%** (+4.4pp)
+**总体覆盖率**: 70.3% → 70.6% (+0.3pp)
+
+新增 9 个测试函数 (20+ 子用例):
+- ✅ TestAgentProviderAdapter: resolve* 函数 nil/with-config
+- ✅ TestHandlerEffectiveMethods: effective* 方法
+- ✅ TestFormatDuration: 6 个时长格式化用例
+- ✅ TestTruncateString: 3 个截断用例
+- ✅ TestPrependToolNarratives: 4 个工具叙事拼接 (含去重)
+- ✅ TestIsTaskCanceledError/IsTaskTimeoutError
+- ✅ TestHandlerChatSessionsPath
+- ✅ TestHandlerTaskManagement: begin/cancel/finish
+- ✅ TestHandlerGetResetSession: session CRUD
+
+**提交记录**: 8d327ea
+
+---
+
 ### v0.91.0: eval 包覆盖率冲刺 90% (67.2%→94.9%) ✅
 **状态**: Done
 **完成时间**: 2026-04-27 10:15
