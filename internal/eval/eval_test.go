@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -659,3 +660,193 @@ func TestExtractSignificantWords(t *testing.T) {
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
+// ---------------------------------------------------------------------------
+// v0.91.0: Coverage boost — Name(), AddEvaluator, SaveReport, LoadTestCasesFromFile edge cases
+// ---------------------------------------------------------------------------
+
+func TestEvaluatorNames(t *testing.T) {
+	// Cover all Name() methods (currently 0%)
+	names := []struct {
+		ev      Evaluator
+		want    string
+	}{
+		{&AccuracyEvaluator{}, "accuracy"},
+		{&RelevanceEvaluator{}, "relevance"},
+		{&LatencyEvaluator{}, "latency"},
+		{&TokenUsageEvaluator{}, "token_usage"},
+		{&ToolCallAccuracyEvaluator{}, "tool_call_accuracy"},
+	}
+	for _, tt := range names {
+		got := tt.ev.Name()
+		if got != tt.want {
+			t.Errorf("%T.Name() = %q, want %q", tt.ev, got, tt.want)
+		}
+	}
+}
+
+func TestBenchmarkRunner_AddEvaluator(t *testing.T) {
+	mock := &mockAgentRunner{}
+	br := NewBenchmarkRunner(mock, 0.5)
+	if len(br.evaluators) != 5 {
+		t.Fatalf("expected 5 default evaluators, got %d", len(br.evaluators))
+	}
+	br.AddEvaluator(&AccuracyEvaluator{})
+	if len(br.evaluators) != 6 {
+		t.Fatalf("expected 6 evaluators after add, got %d", len(br.evaluators))
+	}
+	br.AddEvaluator(&LatencyEvaluator{})
+	if len(br.evaluators) != 7 {
+		t.Fatalf("expected 7 evaluators after second add, got %d", len(br.evaluators))
+	}
+}
+
+func TestSaveReport(t *testing.T) {
+	tmpDir := t.TempDir()
+	result := &BenchmarkResult{
+		ID:          "save-report-test",
+		Name:        "Save Report Benchmark",
+		TotalCases:  1,
+		PassRate:    1.0,
+		AvgScore:    0.9,
+		PassedCases: 1,
+	}
+	// Test all 3 formats
+	for _, fmt := range []ReportFormat{ReportText, ReportJSON, ReportYAML} {
+		path := tmpDir + "/report_" + string(fmt)
+		if err := SaveReport(path, result, fmt); err != nil {
+			t.Errorf("SaveReport(%s): %v", fmt, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("read report %s: %v", fmt, err)
+		}
+		if len(data) == 0 {
+			t.Errorf("empty report for %s", fmt)
+		}
+	}
+}
+
+func TestSaveReport_Error(t *testing.T) {
+	result := &BenchmarkResult{ID: "err-test", Name: "Error Test"}
+	// Invalid format should error
+	_, err := GenerateReport(result, ReportFormat("invalid"))
+	if err == nil {
+		t.Error("expected error for invalid format, got nil")
+	}
+}
+
+func TestLoadTestCasesFromFile_SingleCase(t *testing.T) {
+	tmpDir := t.TempDir()
+	yaml := `id: single-1
+name: Single Case
+input:
+  query: "hello"
+expected:
+  response_contains: ["world"]
+`
+	path := tmpDir + "/single.yaml"
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cases, err := LoadTestCasesFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadTestCasesFromFile: %v", err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("expected 1 case, got %d", len(cases))
+	}
+	if cases[0].ID != "single-1" {
+		t.Errorf("expected ID single-1, got %s", cases[0].ID)
+	}
+}
+
+func TestLoadTestCasesFromFile_AutoID(t *testing.T) {
+	tmpDir := t.TempDir()
+	// YAML with no ID — should auto-generate
+	yaml := `name: No ID Case
+input:
+  query: "test"
+expected: {}
+`
+	path := tmpDir + "/no_id.yaml"
+	if err := os.WriteFile(path, []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cases, err := LoadTestCasesFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadTestCasesFromFile: %v", err)
+	}
+	if len(cases) != 1 {
+		t.Fatalf("expected 1 case, got %d", len(cases))
+	}
+	if cases[0].ID == "" {
+		t.Error("expected auto-generated ID, got empty")
+	}
+}
+
+func TestLoadTestCasesFromFile_InvalidYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	path := tmpDir + "/bad.yaml"
+	if err := os.WriteFile(path, []byte("not: valid: yaml: ["), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadTestCasesFromFile(path)
+	if err == nil {
+		t.Error("expected error for invalid YAML, got nil")
+	}
+}
+
+func TestLoadTestCasesFromDir_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	cases, err := LoadTestCasesFromDir(tmpDir)
+	if err != nil {
+		t.Fatalf("LoadTestCasesFromDir empty: %v", err)
+	}
+	if len(cases) != 0 {
+		t.Errorf("expected 0 cases, got %d", len(cases))
+	}
+}
+
+func TestLoadTestCasesFromDir_ReadError(t *testing.T) {
+	_, err := LoadTestCasesFromDir("/nonexistent/path")
+	if err == nil {
+		t.Error("expected error for nonexistent dir, got nil")
+	}
+}
+
+func TestNewBenchmarkRunner_Defaults(t *testing.T) {
+	mock := &mockAgentRunner{}
+	br := NewBenchmarkRunner(mock, 0.7)
+	if br.passThreshold != 0.7 {
+		t.Errorf("expected threshold 0.7, got %f", br.passThreshold)
+	}
+	if br.runner == nil {
+		t.Error("expected non-nil runner")
+	}
+}
+
+func TestBenchmarkRunner_Run_EvaluatorError(t *testing.T) {
+	// Runner with an evaluator that always errors
+	mock := &mockAgentRunner{response: "test"}
+	br := NewBenchmarkRunner(mock, 0.5)
+	br.SetEvaluators([]Evaluator{&erroringEvaluator{}})
+	cases := []TestCase{{ID: "err-eval", Name: "Error Eval", Input: EvalInput{Query: "q"}, Expected: ExpectedOutput{}}}
+	result := br.Run(context.Background(), cases)
+	if result.TotalCases != 1 {
+		t.Errorf("expected 1 total, got %d", result.TotalCases)
+	}
+	if result.PassedCases != 0 {
+		t.Errorf("expected 0 passed (evaluator errors), got %d", result.PassedCases)
+	}
+}
+
+// erroringEvaluator always returns an error
+type erroringEvaluator struct{}
+
+func (e *erroringEvaluator) Name() string { return "error_eval" }
+func (e *erroringEvaluator) Evaluate(_ context.Context, _ EvalInput, _ EvalOutput, _ ExpectedOutput) (Score, error) {
+	return Score{}, fmt.Errorf("always fails")
+}
+
+
+

@@ -121,14 +121,19 @@ func (te *TokenEstimator) ModelContextWindow() int {
 // SetModelContextWindow 设置模型上下文窗口大小
 func (te *TokenEstimator) SetModelContextWindow(window int) {
 	if window > 0 {
+		te.mu.Lock()
 		te.modelContextWindow = window
+		te.mu.Unlock()
 	}
 }
 
 // RemainingTokens 计算剩余可用 token 数量
 func (te *TokenEstimator) RemainingTokens(messages []Message) int {
 	used := te.EstimateMessages(messages)
-	remaining := te.modelContextWindow - used
+	te.mu.RLock()
+	window := te.modelContextWindow
+	te.mu.RUnlock()
+	remaining := window - used
 	if remaining < 0 {
 		return 0
 	}

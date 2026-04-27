@@ -15,6 +15,7 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -29,7 +30,7 @@ jobs:
         run: go mod download
 
       - name: Run tests
-        run: go test ./... -v -race
+        run: go test ./... -race -count=1 -timeout 10m
 
       - name: Build
         run: go build -o lh ./cmd/lh
