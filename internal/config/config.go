@@ -28,6 +28,9 @@ type Config struct {
 	// v0.37.0: Web 搜索配置
 	WebSearch WebSearchConfig `json:"web_search,omitempty"`
 
+	// Embedding 配置（供 RAG / 记忆向量化使用）
+	Embedding EmbeddingConfig `json:"embedding,omitempty"`
+
 	// v0.40.0: 流式输出模式 (native=真流式，simulated=非流式获取 + 模拟推送)
 	StreamMode string `json:"stream_mode,omitempty"`
 
@@ -63,6 +66,13 @@ type Config struct {
 
 	// v0.64.0: Messaging Gateway 配置
 	MsgGateway MsgGatewayConfig `json:"msg_gateway,omitempty"`
+}
+
+type EmbeddingConfig struct {
+	Model     string `json:"model,omitempty"`
+	APIKey    string `json:"api_key,omitempty"`
+	APIBase   string `json:"api_base,omitempty"`
+	Dimension int    `json:"dimension,omitempty"`
 }
 
 // LimitsConfig 限制配置
@@ -719,6 +729,16 @@ func (m *Manager) Set(key, value string) error {
 		m.config.APIBase = value
 	case "model":
 		m.config.Model = value
+	case "embedding.model":
+		m.config.Embedding.Model = value
+	case "embedding.api_key":
+		m.config.Embedding.APIKey = value
+	case "embedding.api_base":
+		m.config.Embedding.APIBase = value
+	case "embedding.dimension":
+		var n int
+		fmt.Sscanf(value, "%d", &n)
+		m.config.Embedding.Dimension = n
 	case "soul_path":
 		m.config.SoulPath = value
 	case "max_tokens":

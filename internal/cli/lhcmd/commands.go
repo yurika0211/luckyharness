@@ -161,6 +161,18 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.APIBase)
 	case "model":
 		fmt.Println(cfg.Model)
+	case "embedding.model":
+		fmt.Println(cfg.Embedding.Model)
+	case "embedding.api_base":
+		fmt.Println(cfg.Embedding.APIBase)
+	case "embedding.dimension":
+		fmt.Println(cfg.Embedding.Dimension)
+	case "embedding.api_key":
+		if cfg.Embedding.APIKey != "" {
+			fmt.Println(cfg.Embedding.APIKey[:8] + "...")
+		} else {
+			fmt.Println("(未设置)")
+		}
 	case "soul_path":
 		fmt.Println(cfg.SoulPath)
 	case "max_tokens":

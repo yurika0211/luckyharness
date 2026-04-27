@@ -29,6 +29,7 @@
 ## 常用字段
 
 - LLM 主配置：`provider`, `api_key`, `api_base`, `model`, `max_tokens`, `temperature`
+- Embedding / RAG 配置：`embedding.model`, `embedding.api_key`, `embedding.api_base`, `embedding.dimension`
 - Provider 额外请求头：`extra_headers`
 - 重试/熔断/限流：`retry`, `circuit_breaker`, `rate_limit`
 - Agent Loop：`agent.max_iterations`, `agent.timeout_seconds`, `agent.auto_approve`, `agent.repeat_tool_call_limit`, `agent.tool_only_iteration_limit`, `agent.duplicate_fetch_limit`

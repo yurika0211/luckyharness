@@ -550,6 +550,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 
 	loopCfg := agent.DefaultLoopConfig()
+	if s.agent != nil && s.agent.Config() != nil {
+		cfg := s.agent.Config().Get()
+		agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	}
 	if req.MaxIter > 0 {
 		loopCfg.MaxIterations = req.MaxIter
 	}
@@ -1756,6 +1760,10 @@ func (s *Server) handleFunctionCalling(w http.ResponseWriter, r *http.Request) {
 		}
 
 		loopCfg := agent.DefaultLoopConfig()
+		if s.agent != nil && s.agent.Config() != nil {
+			cfg := s.agent.Config().Get()
+			agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+		}
 		loopCfg.AutoApprove = req.AutoApprove
 		if req.MaxIter > 0 {
 			loopCfg.MaxIterations = req.MaxIter

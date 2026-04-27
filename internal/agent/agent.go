@@ -66,7 +66,8 @@ type Agent struct {
 	skills         []*tool.SkillInfo       // v0.35.0: 已加载的 skill 列表
 	metrics        *metrics.Metrics        // v0.36.0: 指标收集器
 	cronEngine     *cron.Engine            // v0.36.0: 定时任务引擎
-	autonomy       *autonomy.AutonomyKit   // v0.38.0: 自主工作套件
+	cronStore      *cron.Store
+	autonomy       *autonomy.AutonomyKit // v0.38.0: 自主工作套件
 	contextCache   *contextMessageCache
 	mediaProcessor *multimodal.Processor
 	chatCount      int // 对话计数，用于触发自动摘要
@@ -83,6 +84,18 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 	}
 
 	if c != nil {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.Embedding.APIKey)
+		}
+		if cfg.Model == "" {
+			cfg.Model = strings.TrimSpace(c.Embedding.Model)
+		}
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = strings.TrimSpace(c.Embedding.APIBase)
+		}
+		if cfg.Dimension <= 0 {
+			cfg.Dimension = c.Embedding.Dimension
+		}
 		if cfg.APIKey == "" {
 			cfg.APIKey = strings.TrimSpace(c.APIKey)
 		}
@@ -503,10 +516,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 		collabMgr:      collabMgr,
 		metrics:        m,
 		cronEngine:     cronEngine,
+		cronStore:      cron.NewStore(filepath.Join(cfg.HomeDir(), "cron_jobs.json")),
 		autonomy:       autonomyKit,
 		contextCache:   newContextMessageCache(64),
 		mediaProcessor: mediaProcessor,
 	}
+
+	a.registerCronTools()
 
 	// v0.35.0: 自动加载 skills 目录
 	skillsDir := cfg.HomeDir() + "/skills"
@@ -518,6 +534,11 @@ func New(cfg *config.Manager) (*Agent, error) {
 
 	// v0.36.0: 启动定时任务引擎
 	cronEngine.Start()
+	if restored, restoreErr := a.restoreCronJobs(); restoreErr != nil {
+		fmt.Printf("[cron] restore failed: %v\n", restoreErr)
+	} else if restored > 0 {
+		fmt.Printf("[cron] restored %d jobs\n", restored)
+	}
 
 	// v0.38.0: 设置 delegate 的 Agent 执行器，让 delegate_task 真正走 Agent Loop
 	delegateMgr.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
@@ -599,6 +620,10 @@ func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round in
 func (a *Agent) chatWithSession(ctx context.Context, sess *session.Session, userInput string) (string, error) {
 	// 优先使用 RunLoop（支持 function calling / 工具调用）
 	loopCfg := DefaultLoopConfig()
+	if a.cfg != nil {
+		cfg := a.cfg.Get()
+		ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+	}
 	loopCfg.AutoApprove = true // Telegram 场景自动批准工具调用
 
 	result, err := a.RunLoopWithSession(ctx, sess, userInput, loopCfg)
@@ -2090,6 +2115,11 @@ func (a *Agent) Metrics() *metrics.Metrics {
 // CronEngine 返回定时任务引擎
 func (a *Agent) CronEngine() *cron.Engine {
 	return a.cronEngine
+}
+
+// CronStore 返回 cron 持久化存储
+func (a *Agent) CronStore() *cron.Store {
+	return a.cronStore
 }
 
 // Memory 返回记忆存储

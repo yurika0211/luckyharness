@@ -22,6 +22,22 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
+type cronTaskMode string
+
+const (
+	cronTaskShell cronTaskMode = "shell"
+	cronTaskAgent cronTaskMode = "agent"
+)
+
+type cronAddSpec struct {
+	ID           string
+	Schedule     cron.Schedule
+	ScheduleText string
+	Command      string
+	Mode         cronTaskMode
+	Payload      string
+}
+
 // startREPL 启动交互式 REPL
 func startREPL(mgr *config.Manager) error {
 	a, err := agent.New(mgr)
@@ -29,8 +45,8 @@ func startREPL(mgr *config.Manager) error {
 		return fmt.Errorf("create agent: %w", err)
 	}
 
-	// 创建 Cron 引擎和 Watcher
-	cronEngine := cron.NewEngine()
+	// 使用 Agent 内部的 Cron 引擎，避免 REPL 与 Agent 各自维护一套任务状态
+	cronEngine := a.CronEngine()
 	watcher := cron.NewWatcher(cronEngine)
 
 	// 创建会话管理器
@@ -57,14 +73,15 @@ func startREPL(mgr *config.Manager) error {
 	defer configWatcher.Stop()
 
 	cfg := mgr.Get()
+	loopCfg := agent.DefaultLoopConfig()
+	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
+
 	fmt.Println("🍀 LuckyHarness Chat v0.15.0")
 	fmt.Printf("   Provider: %s | Model: %s\n", cfg.Provider, cfg.Model)
 	fmt.Printf("   会话: %s\n", currentSession.ID[:8])
 	fmt.Println("   输入 /quit 退出 | /help 查看命令 | /yolo 自动批准工具调用")
 	fmt.Println()
 
-	loopCfg := agent.DefaultLoopConfig()
-	agent.ApplyAgentLoopConfig(&loopCfg, cfg.Agent)
 	scanner := bufio.NewScanner(os.Stdin)
 	ctx := context.Background()
 
@@ -80,7 +97,7 @@ func startREPL(mgr *config.Manager) error {
 
 		// 处理命令
 		if strings.HasPrefix(input, "/") {
-			handled, exit := handleCommand(input, a, &loopCfg, cronEngine, watcher, sessionMgr, &currentSession, mgr)
+			handled, exit := handleCommand(input, a, &loopCfg, cronEngine, a.CronStore(), watcher, sessionMgr, &currentSession, mgr)
 			if exit {
 				break
 			}
@@ -124,7 +141,7 @@ func startREPL(mgr *config.Manager) error {
 }
 
 // handleCommand 处理 REPL 命令
-func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
+func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cronEngine *cron.Engine, cronStore *cron.Store, watcher *cron.Watcher, sessionMgr *session.Manager, currentSession **session.Session, cfgMgr *config.Manager) (handled bool, exit bool) {
 	parts := strings.SplitN(input, " ", 2)
 	cmd := parts[0]
 	arg := ""
@@ -164,6 +181,7 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		fmt.Println("  /session delete ID 删除会话")
 		fmt.Println("  /reload            重新加载配置")
 		fmt.Println("  /cron add <id> <schedule> <cmd>  添加定时任务")
+		fmt.Println("                   cmd 默认按 shell 执行；支持 agent:前缀")
 		fmt.Println("  /cron list         列出定时任务")
 		fmt.Println("  /cron remove <id>  移除定时任务")
 		fmt.Println("  /cron pause <id>  暂停定时任务")
@@ -413,7 +431,7 @@ func handleCommand(input string, a *agent.Agent, loopCfg *agent.LoopConfig, cron
 		return true, false
 
 	case "/cron":
-		return handleCronCommand(arg, cronEngine), false
+		return handleCronCommand(arg, cronEngine, cronStore, a, *loopCfg), false
 
 	case "/watch":
 		return handleWatchCommand(arg, watcher), false
@@ -459,7 +477,7 @@ func tierEmoji(t memory.Tier) string {
 }
 
 // handleCronCommand 处理 /cron 命令
-func handleCronCommand(arg string, engine *cron.Engine) bool {
+func handleCronCommand(arg string, engine *cron.Engine, store *cron.Store, a *agent.Agent, loopCfg agent.LoopConfig) bool {
 	parts := strings.Fields(arg)
 	if len(parts) == 0 {
 		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
@@ -469,37 +487,32 @@ func handleCronCommand(arg string, engine *cron.Engine) bool {
 	subCmd := parts[0]
 	switch subCmd {
 	case "add":
-		if len(parts) < 4 {
+		spec, err := parseCronAddSpec(parts)
+		if err != nil {
 			fmt.Println("用法: /cron add <id> <schedule> <command>")
 			fmt.Println("  schedule: 每天9点 | 每小时 | 每30分钟 | 每周一9点 | 工作日9点 | 0 9 * * *")
+			fmt.Println("  command:  默认 shell；如需 Agent 任务可用 agent:总结昨天日志")
+			fmt.Printf("❌ %v\n", err)
 			return true
 		}
-		id := parts[1]
-		scheduleStr := parts[2]
-		command := strings.Join(parts[3:], " ")
 
-		// 尝试自然语言解析，失败则尝试 cron 表达式
-		var schedule cron.Schedule
-		var err error
-		schedule, err = cron.ParseNaturalLanguage(scheduleStr)
-		if err != nil {
-			schedule, err = cron.ParseCronExpr(scheduleStr)
-			if err != nil {
-				fmt.Printf("❌ 无法解析调度表达式: %v\n", err)
-				return true
-			}
+		task := buildCronTask(spec, a, loopCfg)
+		meta := map[string]string{
+			"mode":          string(spec.Mode),
+			"command":       spec.Command,
+			"schedule_text": spec.ScheduleText,
 		}
-
-		// 创建简单任务（打印命令）
-		task := func() error {
-			fmt.Printf("\n⏰ [cron:%s] %s\n", id, command)
-			return nil
-		}
-
-		if err := engine.AddJob(id, "Cron: "+id, command, schedule, task); err != nil {
+		if err := engine.AddJobWithMeta(spec.ID, "Cron: "+spec.ID, spec.Command, spec.Schedule, task, meta); err != nil {
 			fmt.Printf("❌ %v\n", err)
 		} else {
-			fmt.Printf("✅ 定时任务已添加: %s (%s)\n", id, schedule)
+			if !engine.IsRunning() {
+				engine.Start()
+				fmt.Println("▶️ 调度引擎已自动启动")
+			}
+			fmt.Printf("✅ 定时任务已添加: %s (%s) [%s]\n", spec.ID, spec.Schedule, spec.Mode)
+			if err := saveCronStore(store, engine); err != nil {
+				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+			}
 		}
 
 	case "list":
@@ -523,8 +536,12 @@ func handleCronCommand(arg string, engine *cron.Engine) bool {
 				if !j.NextRun.IsZero() {
 					nextRun = j.NextRun.Format("2006-01-02 15:04:05")
 				}
-				fmt.Printf("  %s %s | %s | 下次: %s | 执行: %d | %s\n",
-					statusEmoji, j.ID, j.Schedule, nextRun, j.RunCount, j.Description)
+				mode := j.Metadata["mode"]
+				if mode == "" {
+					mode = "shell"
+				}
+				fmt.Printf("  %s %s | %s | 下次: %s | 执行: %d | [%s] %s\n",
+					statusEmoji, j.ID, j.Schedule, nextRun, j.RunCount, mode, j.Description)
 			}
 		}
 
@@ -537,6 +554,9 @@ func handleCronCommand(arg string, engine *cron.Engine) bool {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("✅ 定时任务已移除: %s\n", parts[1])
+			if err := saveCronStore(store, engine); err != nil {
+				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+			}
 		}
 
 	case "pause":
@@ -548,6 +568,9 @@ func handleCronCommand(arg string, engine *cron.Engine) bool {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("⏸️ 定时任务已暂停: %s\n", parts[1])
+			if err := saveCronStore(store, engine); err != nil {
+				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+			}
 		}
 
 	case "resume":
@@ -559,21 +582,170 @@ func handleCronCommand(arg string, engine *cron.Engine) bool {
 			fmt.Printf("❌ %v\n", err)
 		} else {
 			fmt.Printf("▶️ 定时任务已恢复: %s\n", parts[1])
+			if err := saveCronStore(store, engine); err != nil {
+				fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+			}
 		}
 
 	case "start":
 		engine.Start()
 		fmt.Println("▶️ 调度引擎已启动")
+		if err := saveCronStore(store, engine); err != nil {
+			fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+		}
 
 	case "stop":
 		engine.Stop()
 		fmt.Println("⏹️ 调度引擎已停止")
+		if err := saveCronStore(store, engine); err != nil {
+			fmt.Printf("⚠️  保存定时任务失败: %v\n", err)
+		}
 
 	default:
 		fmt.Printf("未知 cron 子命令: %s\n", subCmd)
 		fmt.Println("用法: /cron <add|list|remove|pause|resume|start|stop> [args]")
 	}
 	return true
+}
+
+func saveCronStore(store *cron.Store, engine *cron.Engine) error {
+	if store == nil {
+		return nil
+	}
+	return store.Save(engine)
+}
+
+func parseCronAddSpec(parts []string) (*cronAddSpec, error) {
+	if len(parts) < 4 {
+		return nil, fmt.Errorf("参数不足")
+	}
+
+	id := parts[1]
+	if id == "" {
+		return nil, fmt.Errorf("id 不能为空")
+	}
+
+	type candidate struct {
+		end int
+	}
+	candidates := make([]candidate, 0, 3)
+	if len(parts) >= 8 {
+		candidates = append(candidates, candidate{end: 7}) // 5-field cron expr
+	}
+	candidates = append(candidates, candidate{end: 3}) // single-token NL
+	if len(parts) >= 5 && looksLikeTwoTokenSchedule(parts[2], parts[3]) {
+		candidates = append(candidates, candidate{end: 4}) // 2-token datetime / spaced NL
+	}
+
+	for _, c := range candidates {
+		if len(parts) <= c.end {
+			continue
+		}
+		scheduleText := strings.Join(parts[2:c.end], " ")
+		command := strings.Join(parts[c.end:], " ")
+		if strings.TrimSpace(command) == "" {
+			continue
+		}
+
+		schedule, err := cron.ParseNaturalLanguage(scheduleText)
+		if err != nil {
+			schedule, err = cron.ParseCronExpr(scheduleText)
+			if err != nil {
+				continue
+			}
+		}
+
+		mode, payload := parseCronTaskCommand(command)
+		if payload == "" {
+			return nil, fmt.Errorf("command 不能为空")
+		}
+
+		return &cronAddSpec{
+			ID:           id,
+			Schedule:     schedule,
+			ScheduleText: scheduleText,
+			Command:      command,
+			Mode:         mode,
+			Payload:      payload,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("无法解析调度表达式或命令")
+}
+
+func looksLikeTwoTokenSchedule(first, second string) bool {
+	if second == "" {
+		return false
+	}
+	if strings.HasPrefix(first, "每周") || first == "工作日" || first == "明天" || first == "每天" {
+		return true
+	}
+	if len(first) == len("2006-01-02") && strings.Count(first, "-") == 2 {
+		return true
+	}
+	return false
+}
+
+func parseCronTaskCommand(command string) (cronTaskMode, string) {
+	trimmed := strings.TrimSpace(command)
+	lower := strings.ToLower(trimmed)
+
+	switch {
+	case strings.HasPrefix(lower, "agent:"):
+		return cronTaskAgent, strings.TrimSpace(trimmed[len("agent:"):])
+	case strings.HasPrefix(lower, "prompt:"):
+		return cronTaskAgent, strings.TrimSpace(trimmed[len("prompt:"):])
+	case strings.HasPrefix(lower, "shell:"):
+		return cronTaskShell, strings.TrimSpace(trimmed[len("shell:"):])
+	default:
+		return cronTaskShell, trimmed
+	}
+}
+
+func buildCronTask(spec *cronAddSpec, a *agent.Agent, loopCfg agent.LoopConfig) func() error {
+	return func() error {
+		fmt.Printf("\n⏰ [cron:%s] %s\n", spec.ID, spec.Command)
+
+		switch spec.Mode {
+		case cronTaskAgent:
+			if a == nil {
+				return fmt.Errorf("agent is not initialized")
+			}
+
+			runCfg := loopCfg
+			runCfg.AutoApprove = true
+
+			sess := a.Sessions().NewWithTitle("cron-" + spec.ID)
+			result, err := a.RunLoopWithSession(context.Background(), sess, spec.Payload, runCfg)
+			if err != nil {
+				return err
+			}
+			if strings.TrimSpace(result.Response) != "" {
+				fmt.Println(result.Response)
+			}
+			return nil
+
+		default:
+			if a == nil || a.Gateway() == nil {
+				return fmt.Errorf("agent gateway is not initialized")
+			}
+
+			res, err := a.Gateway().Execute("shell", map[string]any{
+				"command": spec.Payload,
+				"timeout": 300,
+			}, "")
+			if res != nil && strings.TrimSpace(res.Output) != "" {
+				fmt.Println(res.Output)
+			}
+			if err != nil {
+				return err
+			}
+			if res != nil && strings.Contains(res.Output, "[exit code:") {
+				return fmt.Errorf("shell command exited with non-zero status")
+			}
+			return nil
+		}
+	}
 }
 
 // handleWatchCommand 处理 /watch 命令

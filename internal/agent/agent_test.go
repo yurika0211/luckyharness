@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/yurika0211/luckyharness/internal/config"
 	"github.com/yurika0211/luckyharness/internal/contextx"
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/memory"
 	"github.com/yurika0211/luckyharness/internal/provider"
 	"github.com/yurika0211/luckyharness/internal/session"
@@ -83,15 +86,22 @@ func TestSplitIntoChunks_ChineseSentence(t *testing.T) {
 }
 
 func TestNewPrefersConfiguredEmbedderForRAG(t *testing.T) {
-	t.Setenv("EMBEDDING_MODEL_NAME", "jina-embeddings-v4")
-	t.Setenv("EMBEDDING_MODEL_KEY", "test-embedding-key")
-	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
-	t.Setenv("EMBEDDING_MODEL_DIMENSION", "2048")
-
 	tmpDir := t.TempDir()
 	cfg, err := config.NewManagerWithDir(tmpDir)
 	if err != nil {
 		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+	if err := cfg.Set("embedding.model", "jina-embeddings-v4"); err != nil {
+		t.Fatalf("Set embedding.model: %v", err)
+	}
+	if err := cfg.Set("embedding.api_key", "test-embedding-key"); err != nil {
+		t.Fatalf("Set embedding.api_key: %v", err)
+	}
+	if err := cfg.Set("embedding.api_base", "https://example.test/v1"); err != nil {
+		t.Fatalf("Set embedding.api_base: %v", err)
+	}
+	if err := cfg.Set("embedding.dimension", "2048"); err != nil {
+		t.Fatalf("Set embedding.dimension: %v", err)
 	}
 
 	a, err := New(cfg)
@@ -816,6 +826,43 @@ func (m *mockProvider) ChatStream(ctx context.Context, messages []provider.Messa
 	return ch, nil
 }
 func (m *mockProvider) Validate() error { return nil }
+
+type loopingFunctionProvider struct {
+	callCount int
+	toolName  string
+}
+
+func (p *loopingFunctionProvider) Name() string { return "looping-fc" }
+
+func (p *loopingFunctionProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
+	return nil, fmt.Errorf("unexpected Chat call")
+}
+
+func (p *loopingFunctionProvider) ChatStream(ctx context.Context, messages []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("unexpected ChatStream call")
+}
+
+func (p *loopingFunctionProvider) Validate() error { return nil }
+
+func (p *loopingFunctionProvider) ChatWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (*provider.Response, error) {
+	p.callCount++
+	if p.callCount <= 4 {
+		return &provider.Response{
+			ToolCalls: []provider.ToolCall{
+				{
+					ID:        fmt.Sprintf("call-%d", p.callCount),
+					Name:      p.toolName,
+					Arguments: `{"step":"same"}`,
+				},
+			},
+		}, nil
+	}
+	return &provider.Response{Content: "final answer"}, nil
+}
+
+func (p *loopingFunctionProvider) ChatStreamWithOptions(ctx context.Context, messages []provider.Message, opts provider.CallOptions) (<-chan provider.StreamChunk, error) {
+	return nil, fmt.Errorf("unexpected ChatStreamWithOptions call")
+}
 
 // --- v0.64.0 Agent Package Coverage Improvements ---
 
@@ -1699,6 +1746,43 @@ func TestAgent_Config(t *testing.T) {
 	}
 }
 
+func TestChatWithSessionAppliesAgentLoopConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+	cfg.Set("agent.repeat_tool_call_limit", "60")
+	cfg.Set("agent.tool_only_iteration_limit", "60")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	toolName := "noop_repeat"
+	a.Tools().Register(&tool.Tool{
+		Name:       toolName,
+		Enabled:    true,
+		Permission: tool.PermAuto,
+		Handler: func(args map[string]any) (string, error) {
+			return "", nil
+		},
+	})
+
+	a.provider = &loopingFunctionProvider{toolName: toolName}
+	sess := a.Sessions().New()
+
+	resp, err := a.ChatWithSession(context.Background(), sess.ID, "loop until done")
+	if err != nil {
+		t.Fatalf("ChatWithSession() error = %v", err)
+	}
+	if resp != "final answer" {
+		t.Fatalf("expected final answer, got %q", resp)
+	}
+}
+
 func TestAgent_Sessions(t *testing.T) {
 	a := &Agent{sessions: mustSessionManager(t)}
 	if a.Sessions() == nil {
@@ -1710,6 +1794,154 @@ func TestAgent_Gateway(t *testing.T) {
 	a := &Agent{gateway: nil}
 	if a.Gateway() != nil {
 		t.Error("Gateway() should be nil when not set")
+	}
+}
+
+func TestCronToolsLifecycle(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	addResp, err := a.Tools().Call("cron_add", map[string]any{
+		"id":       "job1",
+		"schedule": "每小时",
+		"mode":     "shell",
+		"command":  "echo hello-cron-tool",
+	})
+	if err != nil {
+		t.Fatalf("cron_add error = %v", err)
+	}
+	if !strings.Contains(addResp, `"id":"job1"`) {
+		t.Fatalf("unexpected cron_add response: %s", addResp)
+	}
+	if !a.CronEngine().IsRunning() {
+		t.Fatal("cron engine should be running after cron_add")
+	}
+	job, ok := a.CronEngine().GetJob("job1")
+	if !ok {
+		t.Fatal("expected job1 to exist")
+	}
+	if got := job.Metadata["mode"]; got != "shell" {
+		t.Fatalf("expected shell mode metadata, got %q", got)
+	}
+
+	listResp, err := a.Tools().Call("cron_list", nil)
+	if err != nil {
+		t.Fatalf("cron_list error = %v", err)
+	}
+	var listed map[string]any
+	if err := json.Unmarshal([]byte(listResp), &listed); err != nil {
+		t.Fatalf("unmarshal cron_list response: %v", err)
+	}
+	if listed["total"].(float64) < 1 {
+		t.Fatalf("expected at least one cron job, got %v", listed["total"])
+	}
+
+	if _, err := a.Tools().Call("cron_pause", map[string]any{"id": "job1"}); err != nil {
+		t.Fatalf("cron_pause error = %v", err)
+	}
+	job, _ = a.CronEngine().GetJob("job1")
+	if job.Status != cron.StatusPaused {
+		t.Fatalf("expected paused status, got %s", job.Status)
+	}
+
+	if _, err := a.Tools().Call("cron_resume", map[string]any{"id": "job1"}); err != nil {
+		t.Fatalf("cron_resume error = %v", err)
+	}
+	job, _ = a.CronEngine().GetJob("job1")
+	if job.Status != cron.StatusIdle {
+		t.Fatalf("expected idle status, got %s", job.Status)
+	}
+
+	if _, err := a.Tools().Call("cron_remove", map[string]any{"id": "job1"}); err != nil {
+		t.Fatalf("cron_remove error = %v", err)
+	}
+	if _, ok := a.CronEngine().GetJob("job1"); ok {
+		t.Fatal("expected job1 to be removed")
+	}
+}
+
+func TestCronAddAgentModeExecutesLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+	a.provider = &mockProvider{name: "test-mock"}
+
+	if _, err := a.Tools().Call("cron_add", map[string]any{
+		"id":       "agent-job",
+		"schedule": "每小时",
+		"mode":     "agent",
+		"command":  "say hello from cron agent",
+	}); err != nil {
+		t.Fatalf("cron_add(agent) error = %v", err)
+	}
+
+	job, ok := a.CronEngine().GetJob("agent-job")
+	if !ok {
+		t.Fatal("expected agent-job to exist")
+	}
+	if got := job.Metadata["mode"]; got != "agent" {
+		t.Fatalf("expected agent mode metadata, got %q", got)
+	}
+	if err := job.Task(); err != nil {
+		t.Fatalf("agent cron task error = %v", err)
+	}
+}
+
+func TestCronToolsPersistAcrossAgentRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a1, err := New(cfg)
+	if err != nil {
+		t.Fatalf("first New() error = %v", err)
+	}
+	if _, err := a1.Tools().Call("cron_add", map[string]any{
+		"id":       "persisted-job",
+		"schedule": "每小时",
+		"mode":     "shell",
+		"command":  "echo persisted-agent-job",
+	}); err != nil {
+		t.Fatalf("cron_add error = %v", err)
+	}
+	if err := a1.Close(); err != nil {
+		t.Fatalf("first Close() error = %v", err)
+	}
+
+	a2, err := New(cfg)
+	if err != nil {
+		t.Fatalf("second New() error = %v", err)
+	}
+	defer a2.Close()
+
+	job, ok := a2.CronEngine().GetJob("persisted-job")
+	if !ok {
+		t.Fatal("expected persisted-job to be restored")
+	}
+	if got := job.Metadata["command"]; got != "echo persisted-agent-job" {
+		t.Fatalf("unexpected restored command %q", got)
+	}
+	if !a2.CronEngine().IsRunning() {
+		t.Fatal("expected restored cron engine to be running")
 	}
 }
 

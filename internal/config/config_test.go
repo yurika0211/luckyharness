@@ -87,6 +87,40 @@ func TestManagerSetTelegramShowToolChainAlias(t *testing.T) {
 	}
 }
 
+func TestManagerSetEmbeddingConfig(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("embedding.model", "jina-embeddings-v4"); err != nil {
+		t.Fatalf("Set embedding.model: %v", err)
+	}
+	if err := mgr.Set("embedding.api_key", "emb-key"); err != nil {
+		t.Fatalf("Set embedding.api_key: %v", err)
+	}
+	if err := mgr.Set("embedding.api_base", "https://proxy.example/v1"); err != nil {
+		t.Fatalf("Set embedding.api_base: %v", err)
+	}
+	if err := mgr.Set("embedding.dimension", "2048"); err != nil {
+		t.Fatalf("Set embedding.dimension: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if cfg.Embedding.Model != "jina-embeddings-v4" {
+		t.Fatalf("expected embedding model to be set, got %q", cfg.Embedding.Model)
+	}
+	if cfg.Embedding.APIKey != "emb-key" {
+		t.Fatalf("expected embedding api_key to be set, got %q", cfg.Embedding.APIKey)
+	}
+	if cfg.Embedding.APIBase != "https://proxy.example/v1" {
+		t.Fatalf("expected embedding api_base to be set, got %q", cfg.Embedding.APIBase)
+	}
+	if cfg.Embedding.Dimension != 2048 {
+		t.Fatalf("expected embedding dimension 2048, got %d", cfg.Embedding.Dimension)
+	}
+}
+
 func TestManagerSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	homeDir := filepath.Join(tmpDir, ".luckyharness")
