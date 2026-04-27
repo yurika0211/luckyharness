@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,9 +31,10 @@ import (
 )
 
 type embedderRuntimeConfig struct {
-	APIKey  string
-	Model   string
-	BaseURL string
+	APIKey    string
+	Model     string
+	BaseURL   string
+	Dimension int
 }
 
 // Agent 是 LuckyHarness 的核心 Agent
@@ -76,6 +78,9 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 		Model:   strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")),
 		BaseURL: strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")),
 	}
+	if dim, ok := parseEmbedderDimensionEnv(os.Getenv("EMBEDDING_MODEL_DIMENSION")); ok {
+		cfg.Dimension = dim
+	}
 
 	if c != nil {
 		if cfg.APIKey == "" {
@@ -86,7 +91,19 @@ func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool
 		}
 	}
 
-	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != ""
+	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != "" || cfg.Dimension > 0
+}
+
+func parseEmbedderDimensionEnv(raw string) (int, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	dim, err := strconv.Atoi(raw)
+	if err != nil || dim <= 0 {
+		return 0, false
+	}
+	return dim, true
 }
 
 // New 创建 Agent
@@ -275,9 +292,10 @@ func New(cfg *config.Manager) (*Agent, error) {
 
 	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok {
 		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
-			APIKey:  embCfg.APIKey,
-			Model:   embCfg.Model,
-			BaseURL: embCfg.BaseURL,
+			APIKey:    embCfg.APIKey,
+			Model:     embCfg.Model,
+			BaseURL:   embCfg.BaseURL,
+			Dimension: embCfg.Dimension,
 		})
 		if embedderReg.Register("openai-default", openaiEmb) {
 			embedderReg.Switch("openai-default")

@@ -86,6 +86,7 @@ func TestNewPrefersConfiguredEmbedderForRAG(t *testing.T) {
 	t.Setenv("EMBEDDING_MODEL_NAME", "jina-embeddings-v4")
 	t.Setenv("EMBEDDING_MODEL_KEY", "test-embedding-key")
 	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+	t.Setenv("EMBEDDING_MODEL_DIMENSION", "2048")
 
 	tmpDir := t.TempDir()
 	cfg, err := config.NewManagerWithDir(tmpDir)
@@ -105,6 +106,30 @@ func TestNewPrefersConfiguredEmbedderForRAG(t *testing.T) {
 	}
 	if got := reg.ActiveID(); got != "openai-default" {
 		t.Fatalf("expected active embedder openai-default, got %q", got)
+	}
+	if emb := reg.Active(); emb == nil || emb.Dimension() != 2048 {
+		t.Fatalf("expected active embedder dimension 2048, got %+v", emb)
+	}
+}
+
+func TestParseEmbedderDimensionEnv(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+		ok    bool
+	}{
+		{input: "", want: 0, ok: false},
+		{input: "2048", want: 2048, ok: true},
+		{input: " 1024 ", want: 1024, ok: true},
+		{input: "abc", want: 0, ok: false},
+		{input: "-1", want: 0, ok: false},
+	}
+
+	for _, tt := range tests {
+		got, ok := parseEmbedderDimensionEnv(tt.input)
+		if got != tt.want || ok != tt.ok {
+			t.Fatalf("parseEmbedderDimensionEnv(%q) = (%d, %v), want (%d, %v)", tt.input, got, ok, tt.want, tt.ok)
+		}
 	}
 }
 
