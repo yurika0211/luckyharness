@@ -1343,10 +1343,34 @@ func TestAgentStartAutonomy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	defer a.Close()
 
-	// StartAutonomy should not panic
-	// Note: This will fail without proper setup, but we test it doesn't crash
-	a.StartAutonomy(context.Background())
+	original := a.Autonomy()
+	if original == nil {
+		t.Fatal("Autonomy() should not be nil")
+	}
+
+	if err := a.StartAutonomy(context.Background()); err != nil {
+		t.Fatalf("StartAutonomy() error = %v", err)
+	}
+	if err := a.StartAutonomy(context.Background()); err != nil {
+		t.Fatalf("second StartAutonomy() error = %v", err)
+	}
+
+	if a.Autonomy() != original {
+		t.Fatal("StartAutonomy() should reuse the existing autonomy kit")
+	}
+
+	status := a.Autonomy().Status()
+	if !status.Started {
+		t.Fatal("autonomy should be started")
+	}
+	if status.PoolStats.WorkerCount < 1 {
+		t.Fatalf("expected at least one worker, got %d", status.PoolStats.WorkerCount)
+	}
+	if status.LastHeartbeat.IsZero() {
+		t.Fatal("expected initial heartbeat to be recorded on startup")
+	}
 }
 
 func TestAgentLoadSkills(t *testing.T) {
@@ -1616,6 +1640,37 @@ func TestAgent_StartAutonomy_Nil(t *testing.T) {
 	err := a.StartAutonomy(context.Background())
 	if err == nil {
 		t.Error("expected error for nil autonomy kit")
+	}
+}
+
+func TestRunLoopWithSessionLazyStartsAutonomy(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg, _ := config.NewManagerWithDir(tmpDir)
+	cfg.Set("provider", "openai")
+	cfg.Set("api_key", "sk-test")
+	cfg.Set("model", "gpt-3.5-turbo")
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	a.provider = &mockProvider{name: "test-mock"}
+
+	if a.Autonomy().Status().Started {
+		t.Fatal("autonomy should be stopped before the first loop")
+	}
+
+	result, err := a.RunLoop(context.Background(), "say hi", DefaultLoopConfig())
+	if err != nil {
+		t.Fatalf("RunLoop() error = %v", err)
+	}
+	if result == nil || result.Response == "" {
+		t.Fatal("expected non-empty run loop response")
+	}
+	if !a.Autonomy().Status().Started {
+		t.Fatal("RunLoop() should lazy-start autonomy")
 	}
 }
 

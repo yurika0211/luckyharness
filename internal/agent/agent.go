@@ -1878,8 +1878,8 @@ func (a *Agent) Autonomy() *autonomy.AutonomyKit {
 	return a.autonomy
 }
 
-// StartAutonomy 启动自主工作套件（WorkerPool + HeartbeatEngine）
-// 必须在 Agent 创建完成后调用，因为 Worker 需要引用 Agent 本身
+// StartAutonomy 启动自主工作套件（WorkerPool + HeartbeatEngine）。
+// Autonomy 是进程级后台组件，不应绑定到单次请求的取消信号。
 func (a *Agent) StartAutonomy(ctx context.Context) error {
 	if a.autonomy == nil {
 		return fmt.Errorf("autonomy kit not initialized")
@@ -1893,7 +1893,7 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 		return nil
 	}
 
-	if err := a.autonomy.Start(ctx); err != nil {
+	if err := a.autonomy.Start(context.Background()); err != nil {
 		if strings.Contains(err.Error(), "already started") {
 			return nil
 		}

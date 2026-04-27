@@ -183,6 +183,10 @@ func (a *Agent) RunLoopWithSession(ctx context.Context, sess *session.Session, u
 	// 安全边界校验
 	sanitizeLoopConfig(&loopCfg)
 
+	if startErr := a.StartAutonomy(ctx); startErr != nil && a.autonomy != nil {
+		return nil, fmt.Errorf("start autonomy: %w", startErr)
+	}
+
 	sessionID := ""
 	if sess != nil {
 		sessionID = sess.ID

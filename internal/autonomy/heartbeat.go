@@ -24,21 +24,21 @@ const (
 
 // HeartbeatConfig configures the heartbeat engine.
 type HeartbeatConfig struct {
-	Mode         HeartbeatMode   // proactive or passive
-	Interval     time.Duration   // how often heartbeat fires
-	ActiveStart  int             // active hours start (hour, 0-23), e.g. 6
-	ActiveEnd    int             // active hours end (hour, 0-23), e.g. 23
-	MaxTasksPerBeat int          // max tasks to process per heartbeat
-	OnUrgent     func(msg string) // callback for urgent items
+	Mode            HeartbeatMode    // proactive or passive
+	Interval        time.Duration    // how often heartbeat fires
+	ActiveStart     int              // active hours start (hour, 0-23), e.g. 6
+	ActiveEnd       int              // active hours end (hour, 0-23), e.g. 23
+	MaxTasksPerBeat int              // max tasks to process per heartbeat
+	OnUrgent        func(msg string) // callback for urgent items
 }
 
 // DefaultHeartbeatConfig returns sensible defaults.
 func DefaultHeartbeatConfig() HeartbeatConfig {
 	return HeartbeatConfig{
-		Mode:           HeartbeatProactive,
-		Interval:       15 * time.Minute,
-		ActiveStart:    6,
-		ActiveEnd:      23,
+		Mode:            HeartbeatProactive,
+		Interval:        15 * time.Minute,
+		ActiveStart:     6,
+		ActiveEnd:       23,
 		MaxTasksPerBeat: 3,
 	}
 }
@@ -57,14 +57,14 @@ type HeartbeatEvent struct {
 // Instead of the traditional "HEARTBEAT_OK" pattern, this engine
 // actively pulls tasks from the queue and executes them.
 type HeartbeatEngine struct {
-	config  HeartbeatConfig
-	pool    *WorkerPool
-	queue   *TaskQueue
+	config HeartbeatConfig
+	pool   *WorkerPool
+	queue  *TaskQueue
 
-	mu      sync.RWMutex
-	running bool
-	stopCh  chan struct{}
-	events  []HeartbeatEvent
+	mu       sync.RWMutex
+	running  bool
+	stopCh   chan struct{}
+	events   []HeartbeatEvent
 	lastBeat time.Time
 }
 
@@ -89,6 +89,7 @@ func (h *HeartbeatEngine) Start(ctx context.Context) error {
 	h.running = true
 	h.mu.Unlock()
 
+	h.beat(ctx)
 	go h.loop(ctx)
 	return nil
 }
@@ -242,9 +243,9 @@ func min(vals ...int) int {
 
 // AutonomyConfig configures the autonomy kit.
 type AutonomyConfig struct {
-	Pool       PoolConfig
-	Heartbeat  HeartbeatConfig
-	QueueBuf   int
+	Pool      PoolConfig
+	Heartbeat HeartbeatConfig
+	QueueBuf  int
 }
 
 // DefaultAutonomyConfig returns sensible defaults.
@@ -289,8 +290,8 @@ type AutonomyKit struct {
 	heartbeat *HeartbeatEngine
 	executor  AgentExecutor
 
-	mu        sync.RWMutex
-	started   bool
+	mu      sync.RWMutex
+	started bool
 }
 
 // NewAutonomyKit creates a new autonomy kit.
@@ -364,6 +365,15 @@ func (ak *AutonomyKit) Pool() *WorkerPool {
 	return ak.pool
 }
 
+// SetExecutor updates the executor used by the worker pool.
+func (ak *AutonomyKit) SetExecutor(executor AgentExecutor) {
+	ak.mu.Lock()
+	defer ak.mu.Unlock()
+
+	ak.executor = executor
+	ak.pool.SetExecutor(executor)
+}
+
 // Heartbeat returns the heartbeat engine.
 func (ak *AutonomyKit) Heartbeat() *HeartbeatEngine {
 	return ak.heartbeat
@@ -384,23 +394,23 @@ func (ak *AutonomyKit) Status() AutonomyStatus {
 	poolStats := ak.pool.Stats()
 
 	return AutonomyStatus{
-		Started:    started,
-		QueueReady: ready,
+		Started:         started,
+		QueueReady:      ready,
 		QueueInProgress: inProgress,
-		QueueBlocked: blocked,
-		QueueDone:  done,
-		PoolStats:  poolStats,
-		LastHeartbeat: ak.heartbeat.LastBeat(),
+		QueueBlocked:    blocked,
+		QueueDone:       done,
+		PoolStats:       poolStats,
+		LastHeartbeat:   ak.heartbeat.LastBeat(),
 	}
 }
 
 // AutonomyStatus is a snapshot of the autonomy kit state.
 type AutonomyStatus struct {
-	Started        bool        `json:"started"`
-	QueueReady     int         `json:"queue_ready"`
-	QueueInProgress int        `json:"queue_in_progress"`
-	QueueBlocked   int         `json:"queue_blocked"`
-	QueueDone      int         `json:"queue_done"`
-	PoolStats      PoolStats   `json:"pool_stats"`
-	LastHeartbeat  time.Time   `json:"last_heartbeat"`
+	Started         bool      `json:"started"`
+	QueueReady      int       `json:"queue_ready"`
+	QueueInProgress int       `json:"queue_in_progress"`
+	QueueBlocked    int       `json:"queue_blocked"`
+	QueueDone       int       `json:"queue_done"`
+	PoolStats       PoolStats `json:"pool_stats"`
+	LastHeartbeat   time.Time `json:"last_heartbeat"`
 }

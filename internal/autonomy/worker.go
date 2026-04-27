@@ -187,11 +187,11 @@ type WorkerInfo struct {
 
 // PoolConfig configures the worker pool.
 type PoolConfig struct {
-	MaxWorkers    int           // maximum concurrent workers (default: 8)
-	TaskTimeout   time.Duration // per-task timeout (default: 120s)
-	QueueBuffer   int           // task queue buffer size (default: 64)
-	AutoScale     bool          // auto-scale workers based on queue depth
-	MinWorkers    int           // minimum workers when auto-scaling (default: 1)
+	MaxWorkers  int           // maximum concurrent workers (default: 8)
+	TaskTimeout time.Duration // per-task timeout (default: 120s)
+	QueueBuffer int           // task queue buffer size (default: 64)
+	AutoScale   bool          // auto-scale workers based on queue depth
+	MinWorkers  int           // minimum workers when auto-scaling (default: 1)
 }
 
 // DefaultPoolConfig returns sensible defaults.
@@ -212,18 +212,18 @@ func DefaultPoolConfig() PoolConfig {
 //   - Backpressure via buffered task channel
 //   - Graceful shutdown with context cancellation
 type WorkerPool struct {
-	config    PoolConfig
-	executor  AgentExecutor
-	queue     *TaskQueue
+	config   PoolConfig
+	executor AgentExecutor
+	queue    *TaskQueue
 
-	mu        sync.RWMutex
-	workers   map[string]*Worker
-	nextID    atomic.Int64
-	running   atomic.Bool
-	stopCh    chan struct{}
+	mu      sync.RWMutex
+	workers map[string]*Worker
+	nextID  atomic.Int64
+	running atomic.Bool
+	stopCh  chan struct{}
 
 	// Results channel — non-blocking, consumers drain at their pace
-	results   chan *WorkerResult
+	results chan *WorkerResult
 
 	// Metrics
 	totalTasks    atomic.Int64
@@ -311,6 +311,15 @@ func (p *WorkerPool) SetExecutor(executor AgentExecutor) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.executor = executor
+
+	for _, worker := range p.workers {
+		worker.mu.Lock()
+		worker.Executor = executor
+		if executor != nil && worker.SessionID == "" {
+			worker.SessionID = executor.NewSession(fmt.Sprintf("worker-%s", worker.ID))
+		}
+		worker.mu.Unlock()
+	}
 }
 
 // dispatch is the main loop that assigns tasks to idle workers.
