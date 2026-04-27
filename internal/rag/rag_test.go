@@ -2,12 +2,39 @@ package rag
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/yurika0211/luckyharness/internal/embedder"
 )
+
+type contextCheckingEmbedder struct {
+	dim int
+}
+
+func (e *contextCheckingEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+	return make([]float64, e.dim), nil
+}
+
+func (e *contextCheckingEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("nil context")
+	}
+	out := make([][]float64, len(texts))
+	for i := range texts {
+		out[i] = make([]float64, e.dim)
+	}
+	return out, nil
+}
+
+func (e *contextCheckingEmbedder) Dimension() int { return e.dim }
+func (e *contextCheckingEmbedder) Name() string   { return "context-check" }
+func (e *contextCheckingEmbedder) Model() string  { return "context-check" }
 
 func TestMockEmbedder(t *testing.T) {
 	e := NewMockEmbedder(128)
@@ -338,6 +365,16 @@ func TestIndexerIndexText(t *testing.T) {
 	}
 	if stats.ChunkCount == 0 {
 		t.Error("expected at least 1 chunk in stats")
+	}
+}
+
+func TestIndexerIndexTextPassesNonNilContextToEmbedder(t *testing.T) {
+	e := &contextCheckingEmbedder{dim: 64}
+	store := NewVectorStore(64)
+	idx := NewIndexer(store, e)
+
+	if _, err := idx.IndexText("ctx-test.md", "Context Test", "Hello world."); err != nil {
+		t.Fatalf("IndexText() error = %v", err)
 	}
 }
 

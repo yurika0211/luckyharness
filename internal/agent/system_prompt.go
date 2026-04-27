@@ -82,6 +82,9 @@ func (a *Agent) buildSystemPrompt(sess *session.Session) string {
 	if skillsBlock := a.buildSkillsPromptBlock(); skillsBlock != "" {
 		parts = append(parts, skillsBlock)
 	}
+	if manualBlock := a.buildLuckyHarnessManualPrompt(sess); manualBlock != "" {
+		parts = append(parts, manualBlock)
+	}
 	if contextBlock := a.buildContextFilesPrompt(sess); contextBlock != "" {
 		parts = append(parts, contextBlock)
 	}
@@ -151,6 +154,35 @@ func (a *Agent) buildSkillsPromptBlock() string {
 	return strings.Join(lines, "\n")
 }
 
+func (a *Agent) buildLuckyHarnessManualPrompt(sess *session.Session) string {
+	manualPath := a.findLuckyHarnessManualPath(sess)
+	if manualPath == "" {
+		return ""
+	}
+
+	data, err := os.ReadFile(manualPath)
+	if err != nil {
+		return ""
+	}
+
+	content := sanitizeContextContent(string(data), filepath.Base(manualPath))
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+	if len(content) > 12000 {
+		head := int(float64(len(content)) * 0.7)
+		tail := int(float64(len(content)) * 0.2)
+		if head+tail > len(content) {
+			head = len(content)
+			tail = 0
+		}
+		content = strings.TrimSpace(content[:head] + "\n\n[... omitted ...]\n\n" + content[len(content)-tail:])
+	}
+
+	return fmt.Sprintf("LuckyHarness manual (%s):\n%s", filepath.Base(manualPath), content)
+}
+
 func (a *Agent) buildContextFilesPrompt(sess *session.Session) string {
 	cwd := ""
 	if sess != nil {
@@ -191,6 +223,53 @@ func (a *Agent) buildContextFilesPrompt(sess *session.Session) string {
 	}
 
 	return fmt.Sprintf("Context file (%s):\n%s", filepath.Base(contextPath), content)
+}
+
+func (a *Agent) findLuckyHarnessManualPath(sess *session.Session) string {
+	candidates := make([]string, 0, 6)
+
+	if raw := strings.TrimSpace(os.Getenv("LUCKYHARNESS_MANUAL_FILE")); raw != "" {
+		candidates = append(candidates, raw)
+	}
+
+	cwd := ""
+	if sess != nil {
+		cwd = strings.TrimSpace(sess.GetCwd())
+	}
+	if cwd == "" {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		}
+	}
+	if cwd != "" {
+		if abs, err := filepath.Abs(cwd); err == nil {
+			cwd = abs
+			candidates = append(candidates, filepath.Join(cwd, "LUCKYHARNESS_AGENT_MANUAL.md"))
+			candidates = append(candidates, filepath.Join(cwd, ".luckyharness-manual.md"))
+			if root := findGitRoot(cwd); root != "" && root != cwd {
+				candidates = append(candidates, filepath.Join(root, "LUCKYHARNESS_AGENT_MANUAL.md"))
+				candidates = append(candidates, filepath.Join(root, ".luckyharness-manual.md"))
+			}
+		}
+	}
+
+	if a != nil && a.cfg != nil {
+		if homeDir := strings.TrimSpace(a.cfg.HomeDir()); homeDir != "" {
+			candidates = append(candidates, filepath.Join(homeDir, "LUCKYHARNESS_AGENT_MANUAL.md"))
+			candidates = append(candidates, filepath.Join(homeDir, ".luckyharness-manual.md"))
+		}
+	}
+
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return candidate
+		}
+	}
+
+	return ""
 }
 
 func findNearestContextFile(cwd string) string {

@@ -1,9 +1,15 @@
 package embedder
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
+	"os"
+	"strings"
+	"time"
 )
 
 // MockEmbedder is a deterministic hash-based embedder for testing.
@@ -28,9 +34,9 @@ func NewMockEmbedderWithModel(dim int, model string) *MockEmbedder {
 	return &MockEmbedder{dim: dim, model: model}
 }
 
-func (m *MockEmbedder) Name() string      { return "mock" }
-func (m *MockEmbedder) Model() string     { return m.model }
-func (m *MockEmbedder) Dimension() int    { return m.dim }
+func (m *MockEmbedder) Name() string   { return "mock" }
+func (m *MockEmbedder) Model() string  { return m.model }
+func (m *MockEmbedder) Dimension() int { return m.dim }
 
 func (m *MockEmbedder) Embed(_ context.Context, text string) ([]float64, error) {
 	return mockVector(text, m.dim), nil
@@ -75,6 +81,7 @@ type OpenAIEmbedder struct {
 	model     string
 	baseURL   string
 	dimension int
+	client    *http.Client
 }
 
 // OpenAIEmbedderConfig configures an OpenAI embedder.
@@ -83,6 +90,29 @@ type OpenAIEmbedderConfig struct {
 	Model     string // defaults to "text-embedding-3-small"
 	BaseURL   string // defaults to "https://api.openai.com/v1"
 	Dimension int    // defaults to model's native dimension
+}
+
+type embeddingRequest struct {
+	Model string   `json:"model"`
+	Input []string `json:"input"`
+}
+
+type embeddingData struct {
+	Embedding []float64 `json:"embedding"`
+	Index     int       `json:"index"`
+	Object    string    `json:"object"`
+}
+
+type embeddingUsage struct {
+	PromptTokens int `json:"prompt_tokens"`
+	TotalTokens  int `json:"total_tokens"`
+}
+
+type embeddingResponse struct {
+	Data   []embeddingData `json:"data"`
+	Model  string          `json:"model"`
+	Object string          `json:"object"`
+	Usage  embeddingUsage  `json:"usage"`
 }
 
 // NewOpenAIEmbedder creates an OpenAI embedder.
@@ -120,9 +150,9 @@ func openAIDefaultDim(model string) int {
 	}
 }
 
-func (o *OpenAIEmbedder) Name() string      { return "openai" }
-func (o *OpenAIEmbedder) Model() string     { return o.model }
-func (o *OpenAIEmbedder) Dimension() int    { return o.dimension }
+func (o *OpenAIEmbedder) Name() string   { return "openai" }
+func (o *OpenAIEmbedder) Model() string  { return o.model }
+func (o *OpenAIEmbedder) Dimension() int { return o.dimension }
 
 func (o *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
 	vecs, err := o.EmbedBatch(ctx, []string{text})
@@ -135,12 +165,101 @@ func (o *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float64, err
 	return vecs[0], nil
 }
 
+// EmbedBatch embeds a batch of texts using the OpenAI API.
 func (o *OpenAIEmbedder) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
-	// TODO: implement real HTTP call to OpenAI embeddings API
-	// POST {baseURL}/embeddings with model + input array
-	// For now, fall back to mock vectors so the pipeline works without API keys.
-	mock := NewMockEmbedder(o.dimension)
-	return mock.EmbedBatch(ctx, texts)
+	if len(texts) == 0 {
+		return nil, nil
+	}
+
+	modelName := strings.TrimSpace(o.model)
+	envModelName := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME"))
+	if envModelName != "" && (modelName == "" || modelName == "text-embedding-3-small") {
+		modelName = envModelName
+	} else if modelName == "" {
+		modelName = envModelName
+	}
+	if modelName == "" {
+		modelName = "text-embedding-3-small"
+	}
+
+	apiKey := strings.TrimSpace(o.apiKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY"))
+	}
+
+	baseURL := strings.TrimSpace(o.baseURL)
+	if baseURL == "" || baseURL == "https://api.openai.com/v1" {
+		if envURL := strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")); envURL != "" {
+			baseURL = envURL
+		}
+	}
+
+	if o.dimension <= 0 {
+		o.dimension = openAIDefaultDim(modelName)
+	}
+	if o.dimension <= 0 {
+		return nil, fmt.Errorf("unsupported model: %s", modelName)
+	}
+
+	o.model = modelName
+	o.apiKey = apiKey
+	o.baseURL = baseURL
+
+	if apiKey == "" || baseURL == "" {
+		mock := NewMockEmbedder(o.dimension)
+		return mock.EmbedBatch(ctx, texts)
+	}
+
+	reqBody := embeddingRequest{
+		Model: modelName,
+		Input: texts,
+	}
+
+	data, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	url := strings.TrimRight(baseURL, "/") + "/embeddings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := o.client
+	if client == nil {
+		client = &http.Client{
+			Timeout: 15 * time.Second,
+		}
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var respBody embeddingResponse
+	if err := json.NewDecoder(resp.Body).Decode(&respBody); err != nil {
+		return nil, fmt.Errorf("failed to decode response body: %w", err)
+	}
+
+	result := make([][]float64, len(respBody.Data))
+	for _, item := range respBody.Data {
+		if item.Index < 0 || item.Index >= len(result) {
+			return nil, fmt.Errorf("embedding index out of range: %d", item.Index)
+		}
+		result[item.Index] = item.Embedding
+	}
+
+	return result, nil
 }
 
 // OllamaEmbedder calls Ollama's embedding API.
@@ -192,9 +311,9 @@ func ollamaDefaultDim(model string) int {
 	}
 }
 
-func (o *OllamaEmbedder) Name() string      { return "ollama" }
-func (o *OllamaEmbedder) Model() string     { return o.model }
-func (o *OllamaEmbedder) Dimension() int    { return o.dimension }
+func (o *OllamaEmbedder) Name() string   { return "ollama" }
+func (o *OllamaEmbedder) Model() string  { return o.model }
+func (o *OllamaEmbedder) Dimension() int { return o.dimension }
 
 func (o *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
 	vecs, err := o.EmbedBatch(ctx, []string{text})

@@ -29,6 +29,12 @@ import (
 	"github.com/yurika0211/luckyharness/internal/utils"
 )
 
+type embedderRuntimeConfig struct {
+	APIKey  string
+	Model   string
+	BaseURL string
+}
+
 // Agent 是 LuckyHarness 的核心 Agent
 type Agent struct {
 	cfg            *config.Manager
@@ -62,6 +68,25 @@ type Agent struct {
 	contextCache   *contextMessageCache
 	mediaProcessor *multimodal.Processor
 	chatCount      int // 对话计数，用于触发自动摘要
+}
+
+func resolveEmbedderRuntimeConfig(c *config.Config) (embedderRuntimeConfig, bool) {
+	cfg := embedderRuntimeConfig{
+		APIKey:  strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_KEY")),
+		Model:   strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_NAME")),
+		BaseURL: strings.TrimSpace(os.Getenv("EMBEDDING_MODEL_URL")),
+	}
+
+	if c != nil {
+		if cfg.APIKey == "" {
+			cfg.APIKey = strings.TrimSpace(c.APIKey)
+		}
+		if cfg.BaseURL == "" {
+			cfg.BaseURL = strings.TrimSpace(c.APIBase)
+		}
+	}
+
+	return cfg, cfg.APIKey != "" || cfg.BaseURL != "" || cfg.Model != ""
 }
 
 // New 创建 Agent
@@ -248,13 +273,15 @@ func New(cfg *config.Manager) (*Agent, error) {
 	mockEmb := embedder.NewMockEmbedder(128)
 	embedderReg.Register("mock-128", mockEmb)
 
-	// 注册 OpenAI embedder (如果配置了 API key)
-	if c.APIKey != "" {
+	if embCfg, ok := resolveEmbedderRuntimeConfig(c); ok {
 		openaiEmb := embedder.NewOpenAIEmbedder(embedder.OpenAIEmbedderConfig{
-			APIKey:  c.APIKey,
-			BaseURL: c.APIBase,
+			APIKey:  embCfg.APIKey,
+			Model:   embCfg.Model,
+			BaseURL: embCfg.BaseURL,
 		})
-		embedderReg.Register("openai-default", openaiEmb)
+		if embedderReg.Register("openai-default", openaiEmb) {
+			embedderReg.Switch("openai-default")
+		}
 	}
 
 	// 使用 active embedder (带缓存)

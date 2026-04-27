@@ -1,6 +1,7 @@
 package rag
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -32,7 +33,7 @@ type IndexStats struct {
 	DocumentCount int
 	ChunkCount    int
 	TotalTokens   int // estimated
-	LastIndexed    time.Time
+	LastIndexed   time.Time
 	Sources       map[string]int // source -> count
 }
 
@@ -116,7 +117,7 @@ func (idx *Indexer) IndexText(source, title, content string) (*Document, error) 
 	for i, chunkText := range rawChunks {
 		chunkID := fmt.Sprintf("%s#%d", docID, i)
 
-		vec, err := idx.embedder.Embed(nil, chunkText)
+		vec, err := idx.embedder.Embed(context.Background(), chunkText)
 		if err != nil {
 			return nil, fmt.Errorf("embed chunk %s: %w", chunkID, err)
 		}

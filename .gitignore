@@ -13,3 +13,5 @@ tmp
 docs
 GA
 bin
+
+*.txt

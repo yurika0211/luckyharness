@@ -82,6 +82,32 @@ func TestSplitIntoChunks_ChineseSentence(t *testing.T) {
 	}
 }
 
+func TestNewPrefersConfiguredEmbedderForRAG(t *testing.T) {
+	t.Setenv("EMBEDDING_MODEL_NAME", "jina-embeddings-v4")
+	t.Setenv("EMBEDDING_MODEL_KEY", "test-embedding-key")
+	t.Setenv("EMBEDDING_MODEL_URL", "https://example.test/v1")
+
+	tmpDir := t.TempDir()
+	cfg, err := config.NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir() error = %v", err)
+	}
+
+	a, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer a.Close()
+
+	reg := a.EmbedderRegistry()
+	if reg == nil {
+		t.Fatal("expected embedder registry to be initialized")
+	}
+	if got := reg.ActiveID(); got != "openai-default" {
+		t.Fatalf("expected active embedder openai-default, got %q", got)
+	}
+}
+
 func TestSplitIntoChunks_EmptyString(t *testing.T) {
 	chunks := splitIntoChunks("", 10)
 	if len(chunks) != 1 || chunks[0] != "" {
@@ -572,10 +598,10 @@ func TestExpireMidTermMemory_Nil(t *testing.T) {
 
 func TestBuildMessages_Basic(t *testing.T) {
 	a := &Agent{
-		soul:    soul.Default(),
-		memory:  &memory.Store{},
-		tools:   tool.NewRegistry(),
-		skills:  nil,
+		soul:   soul.Default(),
+		memory: &memory.Store{},
+		tools:  tool.NewRegistry(),
+		skills: nil,
 	}
 
 	msgs := a.buildMessages("hello")
@@ -691,7 +717,7 @@ func TestAgent_GettersNil(t *testing.T) {
 
 func TestAgent_SessionsWithConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	// Sessions 需要 sessions 字段初始化，而不是 cfg
 	sessMgr, err := session.NewManager(tmpDir + "/sessions")
 	if err != nil {
@@ -755,7 +781,7 @@ type mockProvider struct {
 	name string
 }
 
-func (m *mockProvider) Name() string                                    { return m.name }
+func (m *mockProvider) Name() string { return m.name }
 func (m *mockProvider) Chat(ctx context.Context, messages []provider.Message) (*provider.Response, error) {
 	return &provider.Response{Content: "mock"}, nil
 }
@@ -1008,26 +1034,26 @@ func TestAgent_Soul(t *testing.T) {
 
 func TestAgent_getStreamMode(t *testing.T) {
 	tmpDir := t.TempDir()
-	
+
 	tests := []struct {
 		streamMode string
 		expected   StreamMode
 	}{
 		{"native", StreamModeNative},
 		{"simulated", StreamModeSimulated},
-		{"", StreamModeNative}, // default
+		{"", StreamModeNative},        // default
 		{"invalid", StreamModeNative}, // invalid defaults to native
 	}
-	
+
 	for _, tt := range tests {
 		cfg, _ := config.NewManagerWithDir(tmpDir)
 		cfg.Set("stream_mode", tt.streamMode)
-		
+
 		a, err := New(cfg)
 		if err != nil {
 			t.Fatalf("New() error = %v", err)
 		}
-		
+
 		got := a.getStreamMode()
 		if got != tt.expected {
 			t.Errorf("getStreamMode(%q) = %q, want %q", tt.streamMode, got, tt.expected)
@@ -1084,12 +1110,12 @@ func TestAgentNewWithMinimalConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManagerWithDir: %v", err)
 	}
-	
+
 	// Minimal config
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1102,18 +1128,18 @@ func TestAgentNewWithMinimalConfig(t *testing.T) {
 func TestAgentNewWithSoulPath(t *testing.T) {
 	tmpDir := t.TempDir()
 	soulPath := filepath.Join(tmpDir, "SOUL.md")
-	
+
 	// Write minimal soul
 	if err := os.WriteFile(soulPath, []byte("# Test Soul\n"), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	
+
 	cfg, _ := config.NewManagerWithDir(tmpDir)
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
 	cfg.Set("soul_path", soulPath)
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1129,12 +1155,12 @@ func TestAgentGetters(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// Test all getters
 	if a.Config() == nil {
 		t.Error("Config() returned nil")
@@ -1174,12 +1200,12 @@ func TestAgentSessions(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	sessions := a.Sessions()
 	if sessions == nil {
 		t.Error("Sessions() returned nil")
@@ -1192,12 +1218,12 @@ func TestAgentTemplateManager(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	tm := a.TemplateManager()
 	if tm == nil {
 		t.Error("TemplateManager() returned nil")
@@ -1210,18 +1236,18 @@ func TestAgentSwitchModel(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// Switch to a different model
 	err = a.SwitchModel("gpt-4o")
 	if err != nil {
 		t.Errorf("SwitchModel() error = %v", err)
 	}
-	
+
 	// SwitchModel updates the provider, verification is complex
 	// Just ensure the call doesn't crash
 	t.Logf("SwitchModel() completed")
@@ -1233,12 +1259,12 @@ func TestAgentMemoryStats(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	stats := a.MemoryStats()
 	if stats == nil {
 		t.Error("MemoryStats() returned nil")
@@ -1251,12 +1277,12 @@ func TestAgentBuildMemoryContext(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// Build memory context with empty messages
 	messages := []provider.Message{}
 	result := a.buildMemoryContext(messages)
@@ -1271,12 +1297,12 @@ func TestAgentAutoSummarize(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// AutoSummarize should not panic
 	a.autoSummarize()
 }
@@ -1287,12 +1313,12 @@ func TestAgentStartAutonomy(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// StartAutonomy should not panic
 	// Note: This will fail without proper setup, but we test it doesn't crash
 	a.StartAutonomy(context.Background())
@@ -1304,12 +1330,12 @@ func TestAgentLoadSkills(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// LoadSkills with empty directory should not panic
 	a.LoadSkills(filepath.Join(tmpDir, "skills"))
 }
@@ -1320,18 +1346,18 @@ func TestAgentHandleSkillRead(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// Get the handler function
 	handler := a.handleSkillRead()
 	if handler == nil {
 		t.Fatal("handleSkillRead() returned nil")
 	}
-	
+
 	// Call handler with empty args should return skill list (no error)
 	result, err := handler(map[string]any{})
 	if err != nil {
@@ -1340,7 +1366,7 @@ func TestAgentHandleSkillRead(t *testing.T) {
 	if result == "" {
 		t.Error("handleSkillRead handler should return skill list")
 	}
-	
+
 	// Call handler with non-existent skill name
 	result2, err := handler(map[string]any{"name": "nonexistent"})
 	if err != nil {
@@ -1383,12 +1409,12 @@ func TestAgentConnectMCPServer(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// ConnectMCPServer should not panic
 	a.ConnectMCPServer("test", "http://localhost:8080", "test-key")
 }
@@ -1417,21 +1443,21 @@ func TestAgentChatMethodsExist(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	// Test that Chat methods exist and handle errors gracefully
 	ctx := context.Background()
-	
+
 	// Chat should return error without proper provider setup
 	_, err = a.Chat(ctx, "test")
 	if err == nil {
 		t.Log("Chat() should return error without proper setup")
 	}
-	
+
 	// ChatWithSession should return error
 	_, err = a.ChatWithSession(ctx, "session1", "test")
 	if err == nil {
@@ -1445,20 +1471,20 @@ func TestAgentStreamMethodsExist(t *testing.T) {
 	cfg.Set("provider", "openai")
 	cfg.Set("api_key", "sk-test")
 	cfg.Set("model", "gpt-3.5-turbo")
-	
+
 	a, err := New(cfg)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	
+
 	ctx := context.Background()
-	
+
 	// ChatStream should return error without proper provider setup
 	_, err = a.ChatStream(ctx, "test")
 	if err == nil {
 		t.Log("ChatStream() should return error without proper setup")
 	}
-	
+
 	// ChatWithSessionStream should return error
 	_, err = a.ChatWithSessionStream(ctx, "session1", "test")
 	if err == nil {
