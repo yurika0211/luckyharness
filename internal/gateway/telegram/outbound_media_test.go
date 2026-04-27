@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -292,5 +294,79 @@ func TestSendAssistantResponseImplicitDocument(t *testing.T) {
 	methods := recorder.snapshot()
 	if len(methods) != 1 || methods[0] != "sendDocument" {
 		t.Fatalf("unexpected methods: %#v", methods)
+	}
+}
+
+func TestSendAssistantResponseRandomMeme(t *testing.T) {
+	adapter, cleanup, recorder := newCaptureBotAdapter(t)
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	memePath := filepath.Join(tmpDir, "meme.png")
+	if err := os.WriteFile(memePath, []byte("fake image data"), 0600); err != nil {
+		t.Fatalf("write meme file: %v", err)
+	}
+
+	handler := NewHandler(adapter, nil)
+	handler.memeDir = tmpDir
+	handler.memeProbability = 1
+	handler.memeCooldown = 0
+	handler.memeRand = rand.New(rand.NewSource(1))
+	handler.memeNow = func() time.Time { return time.Unix(1000, 0) }
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+	}
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, "搞定了，已经处理完成"); err != nil {
+		t.Fatalf("sendAssistantResponse: %v", err)
+	}
+
+	methods := strings.Join(recorder.snapshot(), ",")
+	if methods != "sendMessage,sendPhoto" {
+		t.Fatalf("unexpected send sequence: %s", methods)
+	}
+}
+
+func TestSendAssistantResponseRandomMemeRespectsCooldown(t *testing.T) {
+	adapter, cleanup, recorder := newCaptureBotAdapter(t)
+	defer cleanup()
+
+	tmpDir := t.TempDir()
+	memePath := filepath.Join(tmpDir, "meme.png")
+	if err := os.WriteFile(memePath, []byte("fake image data"), 0600); err != nil {
+		t.Fatalf("write meme file: %v", err)
+	}
+
+	currentTime := time.Unix(1000, 0)
+	handler := NewHandler(adapter, nil)
+	handler.memeDir = tmpDir
+	handler.memeProbability = 1
+	handler.memeCooldown = 10 * time.Minute
+	handler.memeRand = rand.New(rand.NewSource(1))
+	handler.memeNow = func() time.Time { return currentTime }
+
+	msg := &gateway.Message{
+		ID: "1",
+		Chat: gateway.Chat{
+			ID:   "12345",
+			Type: gateway.ChatPrivate,
+		},
+	}
+
+	if err := handler.sendAssistantResponse(context.Background(), msg, "搞定了，已经处理完成"); err != nil {
+		t.Fatalf("first sendAssistantResponse: %v", err)
+	}
+	if err := handler.sendAssistantResponse(context.Background(), msg, "搞定了，再次完成"); err != nil {
+		t.Fatalf("second sendAssistantResponse: %v", err)
+	}
+
+	methods := strings.Join(recorder.snapshot(), ",")
+	if methods != "sendMessage,sendPhoto,sendMessage" {
+		t.Fatalf("unexpected send sequence with cooldown: %s", methods)
 	}
 }

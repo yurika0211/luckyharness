@@ -811,6 +811,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ProgressAsNaturalLanguage = parseBool(value)
 	case "msg_gateway.telegram.show_tool_details_in_result":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
+	case "msg_gateway.telegram.show_tool_chain":
+		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.onebot.api_base":
 		m.config.MsgGateway.OneBot.APIBase = value
 	case "msg_gateway.onebot.ws_url":

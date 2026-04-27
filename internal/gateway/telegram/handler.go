@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -152,6 +155,13 @@ type Handler struct {
 	progressAsNaturalLanguage bool
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
+
+	memeDir         string
+	memeProbability float64
+	memeCooldown    time.Duration
+	memeRand        *rand.Rand
+	memeNow         func() time.Time
+	memeLastSent    map[string]time.Time
 }
 
 type chatTask struct {
@@ -182,6 +192,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 	if a != nil {
 		ap = agentProviderAdapter{a}
 	}
+	memeDir, memeProbability, memeCooldown := resolveRandomMemeConfig()
 	return &Handler{
 		adapter:                   adapter,
 		agent:                     ap,
@@ -193,7 +204,46 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		progressAsMessages:        resolveProgressAsMessages(ap),
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(ap),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(ap),
+		memeDir:                   memeDir,
+		memeProbability:           memeProbability,
+		memeCooldown:              memeCooldown,
+		memeRand:                  rand.New(rand.NewSource(time.Now().UnixNano())),
+		memeNow:                   time.Now,
+		memeLastSent:              make(map[string]time.Time),
 	}
+}
+
+func resolveRandomMemeConfig() (string, float64, time.Duration) {
+	dir := strings.TrimSpace(os.Getenv("LH_TG_MEME_DIR"))
+	if dir == "" {
+		if wd, err := os.Getwd(); err == nil {
+			for _, candidate := range []string{
+				filepath.Join(wd, "assets", "memes"),
+				filepath.Join(wd, "memes"),
+			} {
+				if st, err := os.Stat(candidate); err == nil && st.IsDir() {
+					dir = candidate
+					break
+				}
+			}
+		}
+	}
+
+	probability := 0.12
+	if raw := strings.TrimSpace(os.Getenv("LH_TG_MEME_PROBABILITY")); raw != "" {
+		if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 0 && v <= 1 {
+			probability = v
+		}
+	}
+
+	cooldown := 10 * time.Minute
+	if raw := strings.TrimSpace(os.Getenv("LH_TG_MEME_COOLDOWN_SECONDS")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
+			cooldown = time.Duration(v) * time.Second
+		}
+	}
+
+	return dir, probability, cooldown
 }
 
 func resolveChatStreamTimeout(ap agentProvider) time.Duration {
@@ -769,9 +819,13 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 	}
 	if len(media) == 0 {
 		if msg.Chat.Type != gateway.ChatPrivate && strings.TrimSpace(msg.ID) != "" {
-			return h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response)
+			if err := h.adapter.SendWithReply(ctx, msg.Chat.ID, msg.ID, response); err != nil {
+				return err
+			}
+		} else if err := h.adapter.Send(ctx, msg.Chat.ID, response); err != nil {
+			return err
 		}
-		return h.adapter.Send(ctx, msg.Chat.ID, response)
+		return h.sendRandomMemeIfNeeded(ctx, msg, response)
 	}
 
 	replyToMsgID := ""
@@ -789,7 +843,10 @@ func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Messag
 		}
 	}
 
-	return h.sendAssistantMedia(ctx, msg, media)
+	if err := h.sendAssistantMedia(ctx, msg, media); err != nil {
+		return err
+	}
+	return h.sendRandomMemeIfNeeded(ctx, msg, text)
 }
 
 func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, media []outboundMedia) error {
@@ -816,6 +873,92 @@ func (h *Handler) sendAssistantMedia(ctx context.Context, msg *gateway.Message, 
 	}
 
 	return nil
+}
+
+func (h *Handler) sendRandomMemeIfNeeded(ctx context.Context, msg *gateway.Message, text string) error {
+	if !h.shouldSendRandomMeme(msg, text) {
+		return nil
+	}
+	memePath, ok := h.pickRandomMemePath()
+	if !ok {
+		return nil
+	}
+	if err := h.adapter.SendPhoto(ctx, msg.Chat.ID, "", memePath, ""); err != nil {
+		return err
+	}
+	h.recordMemeSent(msg.Chat.ID)
+	return nil
+}
+
+func (h *Handler) shouldSendRandomMeme(msg *gateway.Message, text string) bool {
+	if h == nil || h.adapter == nil || msg == nil {
+		return false
+	}
+	if strings.TrimSpace(h.memeDir) == "" || h.memeProbability <= 0 || h.memeRand == nil || h.memeNow == nil {
+		return false
+	}
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) > 240 || strings.Contains(text, "```") {
+		return false
+	}
+
+	lower := strings.ToLower(text)
+	for _, blocked := range []string{"❌", "error:", "请求超时", "failed", "traceback", "panic:"} {
+		if strings.Contains(lower, strings.ToLower(blocked)) {
+			return false
+		}
+	}
+
+	matchedSignal := false
+	for _, signal := range []string{"搞定", "完成", "哈哈", "好耶", "ok", "nice", "done", "已处理", "已完成", "可以"} {
+		if strings.Contains(lower, strings.ToLower(signal)) {
+			matchedSignal = true
+			break
+		}
+	}
+	if !matchedSignal {
+		return false
+	}
+
+	now := h.memeNow()
+	h.mu.RLock()
+	lastSent := h.memeLastSent[msg.Chat.ID]
+	h.mu.RUnlock()
+	if !lastSent.IsZero() && now.Sub(lastSent) < h.memeCooldown {
+		return false
+	}
+	return h.memeRand.Float64() < h.memeProbability
+}
+
+func (h *Handler) pickRandomMemePath() (string, bool) {
+	entries, err := os.ReadDir(h.memeDir)
+	if err != nil {
+		return "", false
+	}
+	candidates := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(entry.Name()))
+		if !slices.Contains([]string{".png", ".jpg", ".jpeg", ".webp", ".gif"}, ext) {
+			continue
+		}
+		candidates = append(candidates, filepath.Join(h.memeDir, entry.Name()))
+	}
+	if len(candidates) == 0 {
+		return "", false
+	}
+	return candidates[h.memeRand.Intn(len(candidates))], true
+}
+
+func (h *Handler) recordMemeSent(chatID string) {
+	if h == nil || h.memeNow == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.memeLastSent[chatID] = h.memeNow()
 }
 
 func (h *Handler) sendFinalAssistantResponse(msg *gateway.Message, response string) {

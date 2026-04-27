@@ -71,6 +71,22 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	}
 }
 
+func TestManagerSetTelegramShowToolChainAlias(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("msg_gateway.telegram.show_tool_chain", "true"); err != nil {
+		t.Fatalf("Set telegram show_tool_chain: %v", err)
+	}
+
+	cfg := mgr.Get()
+	if !cfg.MsgGateway.Telegram.ShowToolDetailsInResult {
+		t.Fatalf("expected telegram tool chain alias to enable ShowToolDetailsInResult")
+	}
+}
+
 func TestManagerSaveAndLoad(t *testing.T) {
 	tmpDir := t.TempDir()
 	homeDir := filepath.Join(tmpDir, ".luckyharness")
