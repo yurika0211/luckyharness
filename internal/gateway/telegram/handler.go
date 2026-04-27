@@ -39,6 +39,7 @@ type agentProvider interface {
 	Chat(ctx context.Context, userInput string) (string, error)
 	ChatWithSession(ctx context.Context, sessionID, userInput string) (string, error)
 	ChatWithSessionStream(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	Metrics() *metrics.Metrics
 	Memory() *memory.Store
@@ -56,6 +57,7 @@ type agentConfigSnapshot struct {
 	ChatTimeoutSeconds        int
 	ProgressAsMessages        bool
 	ProgressAsNaturalLanguage bool
+	ProgressSummaryWithLLM    bool
 	ShowToolDetailsInResult   bool
 }
 
@@ -104,6 +106,10 @@ func (a agentProviderAdapter) ChatWithSessionStream(ctx context.Context, session
 	return a.inner.ChatWithSessionStream(ctx, sessionID, userInput)
 }
 
+func (a agentProviderAdapter) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+	return a.inner.ProgressFeedback(ctx, userInput, round, observations)
+}
+
 func (a agentProviderAdapter) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
 	return a.inner.AnalyzeAttachments(ctx, attachments)
 }
@@ -129,6 +135,7 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		ChatTimeoutSeconds:        cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
 		ProgressAsMessages:        cfg.MsgGateway.Telegram.ProgressAsMessages,
 		ProgressAsNaturalLanguage: cfg.MsgGateway.Telegram.ProgressAsNaturalLanguage,
+		ProgressSummaryWithLLM:    cfg.MsgGateway.Telegram.ProgressSummaryWithLLM,
 		ShowToolDetailsInResult:   cfg.MsgGateway.Telegram.ShowToolDetailsInResult,
 	}
 }
@@ -153,6 +160,8 @@ type Handler struct {
 	progressAsMessages bool
 	// 中间步骤是否转成自然语言进度播报，并在最后统一输出结论
 	progressAsNaturalLanguage bool
+	// 每轮未完成时是否发送一条由 LLM 生成的总结性反馈
+	progressSummaryWithLLM bool
 	// 最终回答前是否附上自然语言工具摘要
 	showToolDetailsInResult bool
 
@@ -203,6 +212,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		chatStreamTimeout:         resolveChatStreamTimeout(ap),
 		progressAsMessages:        resolveProgressAsMessages(ap),
 		progressAsNaturalLanguage: resolveProgressAsNaturalLanguage(ap),
+		progressSummaryWithLLM:    resolveProgressSummaryWithLLM(ap),
 		showToolDetailsInResult:   resolveShowToolDetailsInResult(ap),
 		memeDir:                   memeDir,
 		memeProbability:           memeProbability,
@@ -229,14 +239,14 @@ func resolveRandomMemeConfig() (string, float64, time.Duration) {
 		}
 	}
 
-	probability := 0.12
+	probability := 0.30
 	if raw := strings.TrimSpace(os.Getenv("LH_TG_MEME_PROBABILITY")); raw != "" {
 		if v, err := strconv.ParseFloat(raw, 64); err == nil && v >= 0 && v <= 1 {
 			probability = v
 		}
 	}
 
-	cooldown := 10 * time.Minute
+	cooldown := 5 * time.Minute
 	if raw := strings.TrimSpace(os.Getenv("LH_TG_MEME_COOLDOWN_SECONDS")); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v >= 0 {
 			cooldown = time.Duration(v) * time.Second
@@ -278,6 +288,14 @@ func resolveProgressAsNaturalLanguage(ap agentProvider) bool {
 	return cfg.ProgressAsNaturalLanguage
 }
 
+func resolveProgressSummaryWithLLM(ap agentProvider) bool {
+	if ap == nil {
+		return false
+	}
+	cfg := ap.Config().Get()
+	return cfg.ProgressSummaryWithLLM
+}
+
 func resolveShowToolDetailsInResult(ap agentProvider) bool {
 	if ap == nil {
 		return false
@@ -299,6 +317,10 @@ func (h *Handler) effectiveProgressAsMessages() bool {
 
 func (h *Handler) effectiveProgressAsNaturalLanguage() bool {
 	return h.progressAsNaturalLanguage
+}
+
+func (h *Handler) effectiveProgressSummaryWithLLM() bool {
+	return h.progressSummaryWithLLM
 }
 
 func (h *Handler) effectiveShowToolDetailsInResult() bool {
@@ -808,6 +830,32 @@ func (h *Handler) sendProgressMessage(msg *gateway.Message, text string) {
 	_ = h.adapter.Send(sendCtx, msg.Chat.ID, text)
 }
 
+func extractRoundNumber(thinking string) int {
+	var round int
+	if _, err := fmt.Sscanf(strings.TrimSpace(thinking), "Thinking... (round %d)", &round); err == nil && round > 0 {
+		return round
+	}
+	return 0
+}
+
+func (h *Handler) generateRoundProgressFeedback(ctx context.Context, msg *gateway.Message, userInput string, round int, observations []string, lastProgress string) string {
+	if len(observations) == 0 || h.agent == nil {
+		return ""
+	}
+	summaryCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	summary, err := h.agent.ProgressFeedback(summaryCtx, userInput, round, observations)
+	if err != nil {
+		return ""
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" || summary == lastProgress {
+		return ""
+	}
+	return summary
+}
+
 func (h *Handler) sendAssistantResponse(ctx context.Context, msg *gateway.Message, response string) error {
 	if h.adapter == nil || msg == nil {
 		return fmt.Errorf("telegram: adapter or message is nil")
@@ -898,7 +946,7 @@ func (h *Handler) shouldSendRandomMeme(msg *gateway.Message, text string) bool {
 		return false
 	}
 	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 240 || strings.Contains(text, "```") {
+	if text == "" || len(text) > 400 || strings.Contains(text, "```") {
 		return false
 	}
 
@@ -909,14 +957,14 @@ func (h *Handler) shouldSendRandomMeme(msg *gateway.Message, text string) bool {
 		}
 	}
 
-	matchedSignal := false
-	for _, signal := range []string{"搞定", "完成", "哈哈", "好耶", "ok", "nice", "done", "已处理", "已完成", "可以"} {
-		if strings.Contains(lower, strings.ToLower(signal)) {
-			matchedSignal = true
-			break
+	for _, blocked := range []string{"```", "panic:", "traceback", "stack trace", "unexpected status code"} {
+		if strings.Contains(lower, blocked) {
+			return false
 		}
 	}
-	if !matchedSignal {
+
+	// Long, dense technical replies are usually a bad place to inject a meme.
+	if strings.Count(text, "\n") > 12 {
 		return false
 	}
 
@@ -927,7 +975,18 @@ func (h *Handler) shouldSendRandomMeme(msg *gateway.Message, text string) bool {
 	if !lastSent.IsZero() && now.Sub(lastSent) < h.memeCooldown {
 		return false
 	}
-	return h.memeRand.Float64() < h.memeProbability
+
+	probability := h.memeProbability
+	for _, signal := range []string{"搞定", "完成", "哈哈", "好耶", "ok", "nice", "done", "已处理", "已完成", "可以", "当然", "没问题", "行", "收到"} {
+		if strings.Contains(lower, strings.ToLower(signal)) {
+			probability += 0.20
+			break
+		}
+	}
+	if probability > 0.90 {
+		probability = 0.90
+	}
+	return h.memeRand.Float64() < probability
 }
 
 func (h *Handler) pickRandomMemePath() (string, bool) {
@@ -1017,6 +1076,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	ended := false
 	sentResult := false
 	var toolNarratives []string
+	currentRound := 1
+	var roundObservations []string
+	summaryMode := h.effectiveProgressSummaryWithLLM()
 
 	for !ended {
 		select {
@@ -1037,18 +1099,35 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 
 			switch evt.Type {
 			case agent.ChatEventThinking:
-				progress := humanizeThinkingProgress(evt.Content)
-				if strings.TrimSpace(progress) != "" && progress != lastProgress {
-					h.sendProgressMessage(msg, progress)
-					lastProgress = progress
+				if summaryMode {
+					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, text, currentRound, roundObservations, lastProgress); progress != "" {
+							h.sendProgressMessage(msg, progress)
+							lastProgress = progress
+						}
+						roundObservations = nil
+						currentRound = nextRound
+					}
+				} else {
+					progress := humanizeThinkingProgress(evt.Content)
+					if strings.TrimSpace(progress) != "" && progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
 				}
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
-				progress := humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
-				if strings.TrimSpace(progress) != "" && progress != lastProgress {
-					h.sendProgressMessage(msg, progress)
-					lastProgress = progress
+				if summaryMode {
+					if line := humanizeToolCall(evt.Name, evt.Args); line != "" {
+						roundObservations = append(roundObservations, "Tool call: "+line)
+					}
+				} else {
+					progress := humanizeToolCallProgress(toolCallCount, evt.Name, evt.Args)
+					if strings.TrimSpace(progress) != "" && progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
 				}
 
 			case agent.ChatEventToolResult:
@@ -1057,10 +1136,16 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						toolNarratives = append(toolNarratives, line)
 					}
 				}
-				progress := humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
-				if strings.TrimSpace(progress) != "" && progress != lastProgress {
-					h.sendProgressMessage(msg, progress)
-					lastProgress = progress
+				if summaryMode {
+					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
+						roundObservations = append(roundObservations, "Tool result: "+line)
+					}
+				} else {
+					progress := humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)
+					if strings.TrimSpace(progress) != "" && progress != lastProgress {
+						h.sendProgressMessage(msg, progress)
+						lastProgress = progress
+					}
 				}
 
 			case agent.ChatEventContent:
@@ -1159,6 +1244,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	sentResult := false
 	var toolNarratives []string
 	narrativeMode := h.effectiveProgressAsMessages() && h.effectiveProgressAsNaturalLanguage()
+	summaryMode := narrativeMode && h.effectiveProgressSummaryWithLLM()
+	currentRound := 1
+	var roundObservations []string
 
 	for !ended {
 		select {
@@ -1178,7 +1266,16 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			}
 			switch evt.Type {
 			case agent.ChatEventThinking:
-				if h.effectiveProgressAsMessages() {
+				if summaryMode {
+					if nextRound := extractRoundNumber(evt.Content); nextRound > currentRound {
+						if progress := h.generateRoundProgressFeedback(chatCtx, msg, text, currentRound, roundObservations, lastProgress); progress != "" {
+							h.sendProgressMessage(msg, progress)
+							lastProgress = progress
+						}
+						roundObservations = nil
+						currentRound = nextRound
+					}
+				} else if h.effectiveProgressAsMessages() {
 					progress := "🧠 " + clipOneLine(evt.Content, 180)
 					if narrativeMode {
 						progress = humanizeThinkingProgress(evt.Content)
@@ -1194,7 +1291,11 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 
 			case agent.ChatEventToolCall:
 				toolCallCount++
-				if h.effectiveProgressAsMessages() {
+				if summaryMode {
+					if line := humanizeToolCall(evt.Name, evt.Args); line != "" {
+						roundObservations = append(roundObservations, "Tool call: "+line)
+					}
+				} else if h.effectiveProgressAsMessages() {
 					// 工具调用作为独立自然语言消息发送（Nanobot 风格）。
 					progress := "🔧 " + humanizeToolCall(evt.Name, evt.Args)
 					if narrativeMode {
@@ -1213,7 +1314,11 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						toolNarratives = append(toolNarratives, line)
 					}
 				}
-				if h.effectiveProgressAsMessages() {
+				if summaryMode {
+					if line := humanizeToolResult(evt.Name, evt.Result); line != "" {
+						roundObservations = append(roundObservations, "Tool result: "+line)
+					}
+				} else if h.effectiveProgressAsMessages() {
 					progress := fmt.Sprintf("✅ 已完成第 %d 个步骤", toolCallCount)
 					if narrativeMode {
 						progress = humanizeToolResultProgress(toolCallCount, evt.Name, evt.Result)

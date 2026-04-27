@@ -37,6 +37,7 @@
 - 消息网关：`msg_gateway.platform`, `msg_gateway.telegram.token`, `msg_gateway.onebot.*`
 - Telegram 中间步骤展示：`msg_gateway.telegram.progress_as_messages`
 - Telegram 中间步骤自然语言播报（结论最后输出）：`msg_gateway.telegram.progress_as_natural_language`
+- Telegram 每轮未完成时由 LLM 生成一条总结性进度反馈：`msg_gateway.telegram.progress_summary_with_llm`
 - Telegram 最终回答前附加工具摘要：`msg_gateway.telegram.show_tool_details_in_result`
   - CLI 兼容别名：`msg_gateway.telegram.show_tool_chain`
   - 说明：`config.json` / `config.example.json` 中的持久化字段仍然是 `show_tool_details_in_result`

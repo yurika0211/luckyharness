@@ -2583,6 +2583,7 @@ type mockAgentProvider struct {
 	chatFunc      func(ctx context.Context, userInput string) (string, error)
 	chatSessFn    func(ctx context.Context, sessionID, userInput string) (string, error)
 	chatStreamFn  func(ctx context.Context, sessionID, userInput string) (<-chan agent.ChatEvent, error)
+	progressFn    func(ctx context.Context, userInput string, round int, observations []string) (string, error)
 	analyzeFn     func(ctx context.Context, attachments []gateway.Attachment) (string, error)
 	switchModelFn func(modelID string) error
 }
@@ -2640,6 +2641,13 @@ func (m *mockAgentProvider) ChatWithSessionStream(ctx context.Context, sessionID
 	ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "mock response"}
 	close(ch)
 	return ch, nil
+}
+
+func (m *mockAgentProvider) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+	if m.progressFn != nil {
+		return m.progressFn(ctx, userInput, round, observations)
+	}
+	return "mock progress summary", nil
 }
 
 func (m *mockAgentProvider) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {

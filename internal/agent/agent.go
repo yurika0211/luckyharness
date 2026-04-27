@@ -536,6 +536,9 @@ func New(cfg *config.Manager) (*Agent, error) {
 		return result.Response, nil
 	})
 
+	// v0.38.0: 将 executor 注入到已注册工具所绑定的 autonomy 实例，避免启动时替换实例。
+	a.autonomy.SetExecutor(&agentExecutorAdapter{agent: a})
+
 	return a, nil
 }
 
@@ -552,6 +555,44 @@ func (a *Agent) ChatWithSession(ctx context.Context, sessionID string, userInput
 		return "", fmt.Errorf("session not found: %s", sessionID)
 	}
 	return a.chatWithSession(ctx, sess, userInput)
+}
+
+// ProgressFeedback generates a concise model-authored progress update for an unfinished round.
+func (a *Agent) ProgressFeedback(ctx context.Context, userInput string, round int, observations []string) (string, error) {
+	if a == nil || a.provider == nil {
+		return "", fmt.Errorf("provider not initialized")
+	}
+	if len(observations) == 0 {
+		return "", nil
+	}
+
+	systemPrompt := "You are generating one concise in-progress update for the user while the main task is still underway. Summarize what has been checked and what remains. Use the user's language. Do not expose hidden chain-of-thought. Do not mention internal event types or implementation details. Limit the update to at most 3 short sentences."
+
+	var userPrompt strings.Builder
+	userPrompt.WriteString("Original user request:\n")
+	userPrompt.WriteString(strings.TrimSpace(userInput))
+	userPrompt.WriteString("\n\nCurrent round:\n")
+	userPrompt.WriteString(fmt.Sprintf("%d", round))
+	userPrompt.WriteString("\n\nObserved progress so far:\n")
+	for _, line := range observations {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		userPrompt.WriteString("- ")
+		userPrompt.WriteString(line)
+		userPrompt.WriteString("\n")
+	}
+	userPrompt.WriteString("\nWrite a single progress update for the user.")
+
+	resp, err := a.provider.Chat(ctx, []provider.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt.String()},
+	})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(resp.Content), nil
 }
 
 // chatWithSession 是 Chat/ChatWithSession 的共享实现。
@@ -1846,10 +1887,20 @@ func (a *Agent) StartAutonomy(ctx context.Context) error {
 
 	// Create executor adapter that bridges Agent to AgentExecutor interface
 	executor := &agentExecutorAdapter{agent: a}
+	a.autonomy.SetExecutor(executor)
 
-	// Re-create with executor reference
-	a.autonomy = autonomy.NewAutonomyKit(autonomy.DefaultAutonomyConfig(), executor)
-	return a.autonomy.Start(ctx)
+	if a.autonomy.Status().Started {
+		return nil
+	}
+
+	if err := a.autonomy.Start(ctx); err != nil {
+		if strings.Contains(err.Error(), "already started") {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 // agentExecutorAdapter bridges Agent to autonomy.AgentExecutor interface
@@ -2094,6 +2145,15 @@ func (a *Agent) CollabManager() *collab.DelegateManager {
 // Close 释放资源，保存持久化数据
 func (a *Agent) Close() error {
 	var firstErr error
+
+	if a.autonomy != nil && a.autonomy.Status().Started {
+		if err := a.autonomy.Stop(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("stop autonomy: %w", err)
+		}
+	}
+	if a.cronEngine != nil {
+		a.cronEngine.Stop()
+	}
 
 	// SQLite 后端自动持久化，只需关闭连接
 	if s := a.ragManager.SQLiteStore(); s != nil {

@@ -99,6 +99,7 @@
       "chat_timeout_seconds": 600,
       "progress_as_messages": true,
       "progress_as_natural_language": false,
+      "progress_summary_with_llm": false,
       "show_tool_details_in_result": false
     },
     "onebot": {

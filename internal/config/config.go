@@ -155,6 +155,7 @@ type MsgGatewayTelegram struct {
 	ChatTimeoutSeconds        int    `json:"chat_timeout_seconds,omitempty"`         // Telegram 对话总超时（秒）
 	ProgressAsMessages        bool   `json:"progress_as_messages,omitempty"`         // 中间思考/工具步骤是否单独发消息
 	ProgressAsNaturalLanguage bool   `json:"progress_as_natural_language,omitempty"` // 中间步骤是否转成自然语言进度播报（结论最后输出）
+	ProgressSummaryWithLLM    bool   `json:"progress_summary_with_llm,omitempty"`    // 每轮未完成时是否由 LLM 生成一条总结性进度反馈
 	ShowToolDetailsInResult   bool   `json:"show_tool_details_in_result,omitempty"`  // 最终回答前是否附上自然语言工具步骤摘要
 }
 
@@ -809,6 +810,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.Telegram.ProgressAsMessages = parseBool(value)
 	case "msg_gateway.telegram.progress_as_natural_language":
 		m.config.MsgGateway.Telegram.ProgressAsNaturalLanguage = parseBool(value)
+	case "msg_gateway.telegram.progress_summary_with_llm":
+		m.config.MsgGateway.Telegram.ProgressSummaryWithLLM = parseBool(value)
 	case "msg_gateway.telegram.show_tool_details_in_result":
 		m.config.MsgGateway.Telegram.ShowToolDetailsInResult = parseBool(value)
 	case "msg_gateway.telegram.show_tool_chain":

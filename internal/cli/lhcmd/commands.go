@@ -173,6 +173,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.APIAddr)
 	case "msg_gateway.telegram.proxy":
 		fmt.Println(cfg.MsgGateway.Telegram.Proxy)
+	case "msg_gateway.telegram.progress_summary_with_llm":
+		fmt.Println(cfg.MsgGateway.Telegram.ProgressSummaryWithLLM)
 	case "msg_gateway.telegram.show_tool_details_in_result", "msg_gateway.telegram.show_tool_chain":
 		fmt.Println(cfg.MsgGateway.Telegram.ShowToolDetailsInResult)
 	default:
