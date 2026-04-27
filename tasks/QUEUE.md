@@ -11,6 +11,42 @@
 
 ## 任务队列
 
+### v0.91.0: eval 包覆盖率冲刺 90% (67.2%→94.9%) ✅
+**状态**: Done
+**完成时间**: 2026-04-27 10:15
+**eval 包覆盖率**: 67.2% → **94.9%** (+27.7pp) 🎉
+**总体覆盖率**: 71.3% → 71.4% (+0.1pp)
+
+新增 11 个测试用例:
+- ✅ TestEvaluatorNames: 覆盖所有 5 个 Name() 方法 (0%→100%)
+- ✅ TestBenchmarkRunner_AddEvaluator: AddEvaluator (0%→100%)
+- ✅ TestSaveReport: SaveReport 3 种格式 (0%→100%)
+- ✅ TestSaveReport_Error: GenerateReport 无效格式
+- ✅ TestLoadTestCasesFromFile_SingleCase/AutoID/InvalidYAML
+- ✅ TestLoadTestCasesFromDir_Empty/ReadError
+- ✅ TestNewBenchmarkRunner_Defaults
+- ✅ TestBenchmarkRunner_Run_EvaluatorError
+
+**提交记录**: 28beb7a
+
+---
+
+### v0.92.0: agent 包 getter/memory 方法测试 ✅
+**状态**: Done
+**完成时间**: 2026-04-27 10:25
+**agent 包覆盖率**: 63.9% → **64.0%** (+0.1pp)
+
+新增 8 个测试用例:
+- ✅ TestAgent_GetterMethods: 8 个 getter 方法
+- ✅ TestAgent_MemoryMethods: 8 个 memory 方法
+- ✅ TestAgent_StartAutonomy_Nil
+- ✅ TestAgent_SwitchModel_NoProvider
+- ✅ TestAgent_Config/Sessions/Gateway/MsgGateway
+
+**提交记录**: dc80a63
+
+---
+
 ### v0.85.0: websocket 包补测到 80% (79.5% → 79.5%) ✅
 
 **状态**: Done (接受 79.5% 接近 80%)

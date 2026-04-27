@@ -701,3 +701,19 @@
 **Cron 建议**: `fc4e0f89` LeetCode 刷题任务已完成，建议暂停或切换题单
 
 ---
+
+## [2026-04-27 10:25 UTC] v0.91.0 + v0.92.0 心跳
+
+**总体覆盖率**: 70.3% (statements)
+**本次完成**:
+- v0.91.0: eval 包 67.2%→94.9% (+27.7pp) 🎉
+- v0.92.0: agent 包 getter/memory 方法测试 (+0.1pp)
+
+**最低覆盖率包**:
+- eval: 94.9% ✅ (已修复)
+- telegram: 68.9% (handler.go 大量 0% 函数)
+- agent: 64.0% (loop.go 大量 0% 函数)
+- config: 88.0% (Set 函数 202 行 63 case)
+- server: 74.6%
+
+**下一步**: telegram handler 0% 函数测试 或 agent loop.go 测试
