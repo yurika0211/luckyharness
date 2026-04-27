@@ -837,14 +837,14 @@ func TestToolWorkerSpawn(t *testing.T) {
 	// Add a task first
 	task := q.Add("Test task", "Do something", PriorityNormal, nil)
 
-	// Just verify the task can be found and is ready
-	// Don't actually execute it to avoid context issues in tests
-	_, ok := q.Get(task.ID)
+	// Use Get() to retrieve a safe copy instead of reading the pointer directly
+	// to avoid data race with pool goroutines that may modify task state
+	taskCopy, ok := q.Get(task.ID)
 	if !ok {
 		t.Fatal("task not found")
 	}
-	if task.State != TaskReady {
-		t.Fatalf("expected task to be ready, got %s", task.State)
+	if taskCopy.State != TaskReady {
+		t.Fatalf("expected task to be ready, got %s", taskCopy.State)
 	}
 
 	workers := pool.ListWorkers()
