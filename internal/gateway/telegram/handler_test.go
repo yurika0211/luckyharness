@@ -1,15 +1,20 @@
 package telegram
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
+	"github.com/yurika0211/luckyharness/internal/cron"
 	"github.com/yurika0211/luckyharness/internal/gateway"
+	"github.com/yurika0211/luckyharness/internal/metrics"
+	"github.com/yurika0211/luckyharness/internal/session"
+	"github.com/yurika0211/luckyharness/internal/tool"
 )
 
 // TestNewHandler verifies handler creation.
@@ -285,3 +290,214 @@ func TestGatewayMessageTypes(t *testing.T) {
 	u4 := gateway.User{ID: "4"}
 	assert.Equal(t, "4", u4.DisplayName())
 }
+
+// ---------------------------------------------------------------------------
+// v0.93.0: Coverage boost — pure functions, adapter methods, task management
+// ---------------------------------------------------------------------------
+
+func TestAgentProviderAdapter(t *testing.T) {
+	// Create a minimal agent to test the adapter methods
+	mockAgent := &mockAgentProvider{
+		configSnap: agentConfigSnapshot{
+			Model:                  "test-model",
+			Provider:               "test-provider",
+			ChatTimeoutSeconds:     30,
+			ProgressAsMessages:     true,
+			ProgressAsNaturalLanguage: true,
+			ShowToolDetailsInResult: true,
+		},
+		toolsVal:   tool.NewRegistry(),
+		skillsVal:  []*tool.SkillInfo{},
+		cronEngine: cron.NewEngine(),
+		metricsVal: metrics.NewMetrics(),
+	}
+
+	// Test resolve* functions
+	t.Run("resolveChatStreamTimeout_NilProvider", func(t *testing.T) {
+		got := resolveChatStreamTimeout(nil)
+		assert.Equal(t, defaultChatStreamTimeout, got)
+	})
+
+	t.Run("resolveProgressAsMessages_NilProvider", func(t *testing.T) {
+		got := resolveProgressAsMessages(nil)
+		assert.True(t, got) // default is true
+	})
+
+	t.Run("resolveProgressAsNaturalLanguage_NilProvider", func(t *testing.T) {
+		got := resolveProgressAsNaturalLanguage(nil)
+		assert.False(t, got) // default is false
+	})
+
+	t.Run("resolveShowToolDetailsInResult_NilProvider", func(t *testing.T) {
+		got := resolveShowToolDetailsInResult(nil)
+		assert.False(t, got) // default is false
+	})
+
+	t.Run("resolveChatStreamTimeout_WithConfig", func(t *testing.T) {
+		got := resolveChatStreamTimeout(mockAgent)
+		assert.Equal(t, 30*time.Second, got)
+	})
+
+	t.Run("resolveProgressAsMessages_WithConfig", func(t *testing.T) {
+		got := resolveProgressAsMessages(mockAgent)
+		assert.True(t, got)
+	})
+
+	t.Run("resolveProgressAsNaturalLanguage_WithConfig", func(t *testing.T) {
+		got := resolveProgressAsNaturalLanguage(mockAgent)
+		assert.True(t, got)
+	})
+
+	t.Run("resolveShowToolDetailsInResult_WithConfig", func(t *testing.T) {
+		got := resolveShowToolDetailsInResult(mockAgent)
+		assert.True(t, got)
+	})
+}
+
+func TestHandlerEffectiveMethods(t *testing.T) {
+	h := &Handler{
+		chatStreamTimeout:         5 * time.Second,
+		progressAsMessages:        true,
+		progressAsNaturalLanguage: false,
+		showToolDetailsInResult:   true,
+	}
+
+	assert.Equal(t, 5*time.Second, h.effectiveChatStreamTimeout())
+	assert.True(t, h.effectiveProgressAsMessages())
+	assert.False(t, h.effectiveProgressAsNaturalLanguage())
+	assert.True(t, h.effectiveShowToolDetailsInResult())
+
+	// Zero timeout falls back to default
+	h2 := &Handler{chatStreamTimeout: 0}
+	assert.Equal(t, defaultChatStreamTimeout, h2.effectiveChatStreamTimeout())
+}
+
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{25 * time.Hour, "1d 1h 0m"},
+		{48*time.Hour + 30*time.Minute, "2d 0h 30m"},
+		{2 * time.Hour, "2h 0m"},
+		{90 * time.Minute, "1h 30m"},
+		{45 * time.Minute, "45m 0s"},
+		{0, "0m 0s"},
+	}
+	for _, tt := range tests {
+		got := formatDuration(tt.d)
+		assert.Equal(t, tt.want, got)
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	assert.Equal(t, "hello", truncateString("hello", 10))
+	assert.Equal(t, "hel...", truncateString("hello world", 6))
+	assert.Equal(t, "", truncateString("", 5))
+}
+
+func TestPrependToolNarratives(t *testing.T) {
+	// Empty lines → just return finalOutput
+	assert.Equal(t, "result", prependToolNarratives(nil, "result"))
+	assert.Equal(t, "result", prependToolNarratives([]string{}, "result"))
+
+	// With lines
+	got := prependToolNarratives([]string{"step 1", "step 2"}, "final answer")
+	assert.Contains(t, got, "我刚刚先做了这些事")
+	assert.Contains(t, got, "step 1")
+	assert.Contains(t, got, "step 2")
+	assert.Contains(t, got, "final answer")
+
+	// Dedup
+	got2 := prependToolNarratives([]string{"dup", "dup"}, "out")
+	assert.Contains(t, got2, "dup")
+	// Should only appear once
+	assert.Equal(t, strings.Count(got2, "1. dup"), 1)
+}
+
+func TestIsTaskCanceledError(t *testing.T) {
+	assert.True(t, isTaskCanceledError(context.Canceled))
+	assert.True(t, isTaskCanceledError(fmt.Errorf("wrapped: %w", context.Canceled)))
+	assert.True(t, isTaskCanceledError(fmt.Errorf("context canceled by user")))
+	assert.False(t, isTaskCanceledError(fmt.Errorf("some other error")))
+	assert.False(t, isTaskCanceledError(nil))
+}
+
+func TestIsTaskTimeoutError(t *testing.T) {
+	assert.True(t, isTaskTimeoutError(context.DeadlineExceeded))
+	assert.True(t, isTaskTimeoutError(fmt.Errorf("wrapped: %w", context.DeadlineExceeded)))
+	assert.True(t, isTaskTimeoutError(fmt.Errorf("context deadline exceeded")))
+	assert.False(t, isTaskTimeoutError(fmt.Errorf("some other error")))
+	assert.False(t, isTaskTimeoutError(nil))
+}
+
+
+
+func TestHandlerTaskManagement(t *testing.T) {
+	h := &Handler{
+		sessions: make(map[string]string),
+		tasks:    make(map[string]*chatTask),
+	}
+
+	// beginChatTask
+	ctx, task := h.beginChatTask("chat1", context.Background())
+	assert.NotNil(t, task)
+	assert.NotNil(t, ctx)
+
+	// Task should be registered
+	h.mu.RLock()
+	_, ok := h.tasks["chat1"]
+	h.mu.RUnlock()
+	assert.True(t, ok)
+
+	// cancelChatTask
+	cancelled := h.cancelChatTask("chat1")
+	assert.True(t, cancelled)
+
+	// Cancel non-existent task
+	cancelled2 := h.cancelChatTask("nonexistent")
+	assert.False(t, cancelled2)
+
+	// finishChatTask with nil
+	h.finishChatTask("chat1", nil) // should not panic
+
+	// finishChatTask with real task
+	ctx2, task2 := h.beginChatTask("chat2", context.Background())
+	h.finishChatTask("chat2", task2)
+	_ = ctx2
+
+	h.mu.RLock()
+	_, ok2 := h.tasks["chat2"]
+	h.mu.RUnlock()
+	assert.False(t, ok2)
+}
+
+
+
+func TestHandlerGetResetSession(t *testing.T) {
+	sessMgr, err := session.NewManager(t.TempDir())
+	require.NoError(t, err)
+
+	h := &Handler{
+		sessions: make(map[string]string),
+		tasks:    make(map[string]*chatTask),
+		agent: &mockAgentProvider{
+			sessions: sessMgr,
+		},
+	}
+
+	// getSessionID creates new session if not exists
+	sid := h.getSessionID("chat1")
+	assert.NotEmpty(t, sid)
+
+	// Same chat returns same session
+	sid2 := h.getSessionID("chat1")
+	assert.Equal(t, sid, sid2)
+
+	// resetSession creates new session
+	newSid := h.resetSession("chat1")
+	assert.NotEmpty(t, newSid)
+	assert.NotEqual(t, sid, newSid)
+}
+
+
