@@ -11,6 +11,28 @@
 
 ## 任务队列
 
+### v0.94.0: middleware 包覆盖率冲刺 80% (69.4%→94.4%) ✅
+**状态**: Done
+**完成时间**: 2026-04-28 07:55
+**middleware 包覆盖率**: 69.4% → **94.4%** (+25pp)
+**总体覆盖率**: 70.6% → 70.7% (+0.1pp)
+
+新增 9 个测试函数:
+- ✅ TestLoggingMiddlewareStream: 流式日志记录
+- ✅ TestLoggingMiddlewareStreamError: 流式错误日志
+- ✅ TestCostTrackingMiddlewareStream: 流式 token 计数 + 成本记录
+- ✅ TestCostTrackingMiddlewareStreamError: 流式初始化错误
+- ✅ TestRetryMiddlewareStream: 流式重试恢复 (3 次重试)
+- ✅ TestCircuitBreakerMiddlewareGetter: CircuitBreaker() getter + State()
+- ✅ TestCircuitBreakerMiddlewareStream: 流式熔断触发
+- ✅ TestCircuitBreakerMiddlewareStreamSuccess: 流式正常通过
+- ✅ TestRateLimitMiddlewareStream: 流式限流 (2/s)
+
+**提交记录**:
+- 98a1650: test(middleware): v0.94.0 middleware 包覆盖率达 94.4% (+25pp)
+
+---
+
 ### v0.93.0: telegram handler 包覆盖率冲刺 65% (60.6%→65.0%) ✅
 **状态**: Done
 **完成时间**: 2026-04-27 12:00
@@ -182,29 +204,11 @@
 
 ---
 
-### v0.90.0: LeetCode 面试 150 自动刷题系统 🆕
+### v0.90.0: LeetCode 面试 150 自动刷题系统 ✅
 
-**状态**: Ready
-**优先级**: High
-**创建时间**: 2026-04-25 04:30
-**触发条件**: 每 2 小时自动执行
-
-**目标**:
-- 从 LeetCode 面试 150 题中选取未做题目
-- 使用 deepseek-v3.2 生成 C++ 题解
-- 自动 commit & push 到仓库
-
-**实现步骤**:
-- [ ] 创建 `scripts/leetcode-auto-solve.py` 脚本
-- [ ] 配置定时任务（每 2 小时）
-- [ ] 实现题目选择逻辑（从未做题库中随机选取 2 道）
-- [ ] 调用 deepseek-v3.2 API 生成题解
-- [ ] 自动提交并推送到 GitHub
-
-**备注**:
-- 需要 LeetCode Cookie 或 API token
-- 需要 deepseek-v3.2 API 访问权限
-- 题解格式需符合仓库规范
+**状态**: Done
+**完成时间**: 2026-04-27 08:00
+**备注**: 150 题全部完成，154 个 .cpp 文件，91 次提交。cron 任务保留但无新题可做。
 
 ---
 
