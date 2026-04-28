@@ -249,6 +249,215 @@ func TestRateLimitMiddleware(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// MW-2.1: InterceptChatStream Tests (previously 0% coverage)
+// ---------------------------------------------------------------------------
+
+func TestLoggingMiddlewareStream(t *testing.T) {
+	logger := log.New(os.Stderr, "[test-stream] ", 0)
+	mw := NewLoggingMiddleware(logger)
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	ch, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "hi", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	chunk := <-ch
+	if chunk.Content != "hi" {
+		t.Errorf("expected 'hi', got '%s'", chunk.Content)
+	}
+}
+
+func TestLoggingMiddlewareStreamError(t *testing.T) {
+	logger := log.New(os.Stderr, "[test-stream-err] ", 0)
+	mw := NewLoggingMiddleware(logger)
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	_, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		return nil, fmt.Errorf("stream error")
+	})
+	if err == nil {
+		t.Error("expected stream error")
+	}
+}
+
+func TestCostTrackingMiddlewareStream(t *testing.T) {
+	pt := cost.NewPriceTable()
+	store := cost.NewCostStore(pt)
+	mw := NewCostTrackingMiddleware(store, "sess-stream")
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	ch, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 2)
+		c <- provider.StreamChunk{Content: "hello world data", Done: false}
+		c <- provider.StreamChunk{Content: "", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	// Drain the stream
+	for range ch {
+	}
+	// Give goroutine time to record
+	time.Sleep(50 * time.Millisecond)
+
+	summary := store.Summary(cost.SummaryOptions{Period: "all"})
+	if summary.TotalCalls != 1 {
+		t.Errorf("expected 1 stream call recorded, got %d", summary.TotalCalls)
+	}
+}
+
+func TestCostTrackingMiddlewareStreamError(t *testing.T) {
+	pt := cost.NewPriceTable()
+	store := cost.NewCostStore(pt)
+	mw := NewCostTrackingMiddleware(store, "sess-stream-err")
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	_, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		return nil, fmt.Errorf("stream init error")
+	})
+	if err == nil {
+		t.Error("expected stream init error")
+	}
+}
+
+func TestRetryMiddlewareStream(t *testing.T) {
+	mw := NewRetryMiddleware(resilience.RetryConfig{
+		MaxAttempts:   3,
+		InitialDelay:  10 * time.Millisecond,
+		BackoffFactor: 2,
+		Jitter:        false,
+	})
+
+	callCount := int32(0)
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	ch, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		count := atomic.AddInt32(&callCount, 1)
+		if count < 3 {
+			return nil, fmt.Errorf("502 bad gateway")
+		}
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "recovered-stream", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	chunk := <-ch
+	if chunk.Content != "recovered-stream" {
+		t.Errorf("expected 'recovered-stream', got '%s'", chunk.Content)
+	}
+}
+
+func TestCircuitBreakerMiddlewareGetter(t *testing.T) {
+	cfg := resilience.CircuitBreakerConfig{
+		FailureThreshold: 3,
+		SuccessThreshold: 2,
+		Timeout:          10 * time.Second,
+	}
+	mw := NewCircuitBreakerMiddleware(cfg)
+	cb := mw.CircuitBreaker()
+	if cb == nil {
+		t.Fatal("expected non-nil circuit breaker")
+	}
+	if cb.State() != resilience.StateClosed {
+		t.Errorf("expected StateClosed, got %v", cb.State())
+	}
+}
+
+func TestCircuitBreakerMiddlewareStream(t *testing.T) {
+	mw := NewCircuitBreakerMiddleware(resilience.CircuitBreakerConfig{
+		FailureThreshold: 2,
+		SuccessThreshold: 1,
+		Timeout:          50 * time.Millisecond,
+	})
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+
+	// Trip the breaker via stream
+	for i := 0; i < 2; i++ {
+		_, _ = mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+			return nil, fmt.Errorf("500")
+		})
+	}
+
+	// Should be rejected
+	_, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "ok", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err == nil {
+		t.Error("expected circuit breaker rejection on stream")
+	}
+}
+
+func TestCircuitBreakerMiddlewareStreamSuccess(t *testing.T) {
+	mw := NewCircuitBreakerMiddleware(resilience.CircuitBreakerConfig{
+		FailureThreshold: 5,
+		SuccessThreshold: 1,
+		Timeout:          50 * time.Millisecond,
+	})
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+	ch, err := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "stream-ok", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	chunk := <-ch
+	if chunk.Content != "stream-ok" {
+		t.Errorf("expected 'stream-ok', got '%s'", chunk.Content)
+	}
+}
+
+func TestRateLimitMiddlewareStream(t *testing.T) {
+	mw := NewRateLimitMiddleware(2, 1*time.Second)
+
+	info := CallInfo{Provider: "openai", Model: "gpt-4o", StartTime: time.Now()}
+
+	// First 2 stream calls should succeed
+	_, err1 := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "ok", Done: true}
+		close(c)
+		return c, nil
+	})
+	_, err2 := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "ok", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err1 != nil || err2 != nil {
+		t.Errorf("expected first 2 stream calls to succeed, got %v, %v", err1, err2)
+	}
+
+	// Third should be rate limited
+	_, err3 := mw.InterceptChatStream(context.Background(), info, func(ctx context.Context, info CallInfo) (<-chan provider.StreamChunk, error) {
+		c := make(chan provider.StreamChunk, 1)
+		c <- provider.StreamChunk{Content: "ok", Done: true}
+		close(c)
+		return c, nil
+	})
+	if err3 == nil {
+		t.Error("expected rate limit error on stream")
+	}
+}
+
+// ---------------------------------------------------------------------------
 // MW-3: MiddlewareProvider Tests
 // ---------------------------------------------------------------------------
 
