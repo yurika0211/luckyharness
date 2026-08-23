@@ -67,6 +67,20 @@ func TestParseOneBotCQMessage(t *testing.T) {
 	}
 }
 
+func TestNapCatDisconnectReason(t *testing.T) {
+	stopping, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := napcatDisconnectReason(stopping, context.Canceled); got != "gateway stopping" {
+		t.Fatalf("stopping reason = %q", got)
+	}
+	if got := napcatDisconnectReason(context.Background(), &websocket.CloseError{Code: websocket.CloseNormalClosure}); got != "peer closed connection" {
+		t.Fatalf("normal close reason = %q", got)
+	}
+	if got := napcatDisconnectReason(context.Background(), context.DeadlineExceeded); !strings.Contains(got, "read failed") {
+		t.Fatalf("unexpected read failure reason = %q", got)
+	}
+}
+
 func TestAdapterReceivesGroupMention(t *testing.T) {
 	adapter := NewAdapter(Config{ListenAddr: "127.0.0.1:0", Path: "/ws"})
 	got := make(chan *gateway.Message, 1)

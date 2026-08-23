@@ -530,6 +530,7 @@ func (a *Adapter) handleWebSocket(ctx context.Context, w http.ResponseWriter, r 
 	a.mu.Unlock()
 
 	fmt.Printf("[napcat] reverse websocket connected from %s\n", r.RemoteAddr)
+	disconnectReason := "connection closed"
 	defer func() {
 		_ = conn.Close()
 		a.mu.Lock()
@@ -538,7 +539,7 @@ func (a *Adapter) handleWebSocket(ctx context.Context, w http.ResponseWriter, r 
 			a.connected = false
 		}
 		a.mu.Unlock()
-		fmt.Printf("[napcat] reverse websocket disconnected from %s\n", r.RemoteAddr)
+		fmt.Printf("[napcat] reverse websocket disconnected from %s: %s\n", r.RemoteAddr, disconnectReason)
 	}()
 
 	for {
@@ -550,6 +551,7 @@ func (a *Adapter) handleWebSocket(ctx context.Context, w http.ResponseWriter, r 
 
 		_, data, err := conn.ReadMessage()
 		if err != nil {
+			disconnectReason = napcatDisconnectReason(ctx, err)
 			return
 		}
 		if a.handleActionResponse(data) {
@@ -572,6 +574,19 @@ func (a *Adapter) handleWebSocket(ctx context.Context, w http.ResponseWriter, r 
 			}
 		}()
 	}
+}
+
+func napcatDisconnectReason(ctx context.Context, err error) string {
+	if ctx != nil && ctx.Err() != nil {
+		return "gateway stopping"
+	}
+	if err == nil {
+		return "connection closed"
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+		return "peer closed connection"
+	}
+	return "read failed: " + strings.TrimSpace(err.Error())
 }
 
 func (a *Adapter) handleActionResponse(data []byte) bool {

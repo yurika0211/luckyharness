@@ -1,5 +1,7 @@
 package collab
 
+import "strings"
+
 // CollabMode 协作模式
 type CollabMode string
 
@@ -84,21 +86,27 @@ func ModeDescription(mode CollabMode) string {
 	}
 }
 
-// AllModes 返回所有可用模式
+// AllModes returns the executable modes that the auto planner may select.
+// ModeAuto is a planning request, not an executable orchestration mode.
 func AllModes() []CollabMode {
 	return []CollabMode{ModePipeline, ModeParallel, ModeDebate}
 }
 
+// SupportedModes returns every accepted request mode, including auto.
+func SupportedModes() []CollabMode {
+	return []CollabMode{ModeAuto, ModePipeline, ModeParallel, ModeDebate}
+}
+
 // ParseMode 解析模式字符串
 func ParseMode(s string) (CollabMode, error) {
-	switch s {
-	case "", "auto", "Auto", "AUTO":
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "auto":
 		return ModeAuto, nil
-	case "pipeline", "Pipeline", "PIPELINE":
+	case "pipeline":
 		return ModePipeline, nil
-	case "parallel", "Parallel", "PARALLEL":
+	case "parallel":
 		return ModeParallel, nil
-	case "debate", "Debate", "DEBATE":
+	case "debate":
 		return ModeDebate, nil
 	default:
 		return "", ErrInvalidMode

@@ -2,6 +2,7 @@ package collab
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,37 @@ func TestPlannerIncludesMDPTrace(t *testing.T) {
 	}
 	if _, ok := plan.MDP.QValues[ModeParallel]; !ok {
 		t.Fatalf("expected q value for parallel, got %+v", plan.MDP.QValues)
+	}
+}
+
+func TestPlannerMDPStateCapturesInputLoadAndBudget(t *testing.T) {
+	req := PlanRequest{
+		Description: "Inspect structured input",
+		InputTokens: 6000,
+		AgentIDs:    []string{"a", "b", "c"},
+		Agents: []*AgentProfile{
+			{ID: "a", Status: StatusBusy},
+			{ID: "b", Status: StatusBusy},
+			{ID: "c", Status: StatusOnline},
+		},
+		Timeout:    20 * time.Second,
+		CostBudget: 0.2,
+	}
+	state := PlanStateFromRequest(req)
+	if state.InputComplexity != "high" {
+		t.Fatalf("input complexity = %q, want high", state.InputComplexity)
+	}
+	if state.AgentLoad != "high" {
+		t.Fatalf("agent load = %q, want high", state.AgentLoad)
+	}
+	if state.CostBudget != "tight" {
+		t.Fatalf("cost budget = %q, want tight", state.CostBudget)
+	}
+	if !strings.Contains(state.Key(), "input=high") || !strings.Contains(state.Key(), "load=high") || !strings.Contains(state.Key(), "budget=tight") {
+		t.Fatalf("state key omits new observations: %q", state.Key())
+	}
+	if plannerBudgetPenalty(0.7, req.CostBudget) <= 0 {
+		t.Fatal("expected an over-budget planner penalty")
 	}
 }
 
@@ -225,6 +257,19 @@ func TestDelegateManagerAutoModeUsesPlanner(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(store.Root(), task.ID, "result.md")); err != nil {
 		t.Fatalf("missing result artifact: %v", err)
+	}
+}
+
+func TestDelegateManagerRejectsUnsupportedMode(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(&AgentProfile{ID: "agent-1", Name: "Agent 1"}); err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
+	dm := NewDelegateManager(registry, TaskHandlerFunc(func(context.Context, *SubTask) (string, error) {
+		return "unused", nil
+	}))
+	if _, err := dm.Delegate(context.Background(), CollabMode("mdp"), "invalid mode", "", []string{"agent-1"}, time.Second); !errors.Is(err, ErrInvalidMode) {
+		t.Fatalf("delegate error = %v, want ErrInvalidMode", err)
 	}
 }
 

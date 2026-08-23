@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"time"
 
@@ -143,6 +144,7 @@ func (s *Server) handleAgentsDelegate(w http.ResponseWriter, r *http.Request) {
 		Input       string            `json:"input"`
 		AgentIDs    []string          `json:"agent_ids"`
 		Timeout     time.Duration     `json:"timeout"`
+		CostBudget  float64           `json:"cost_budget"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -158,9 +160,17 @@ func (s *Server) handleAgentsDelegate(w http.ResponseWriter, r *http.Request) {
 	if req.Timeout == 0 {
 		req.Timeout = 60 * time.Second
 	}
+	if req.CostBudget < 0 || req.CostBudget > 1 {
+		http.Error(w, "cost_budget must be between 0 and 1", http.StatusBadRequest)
+		return
+	}
 
-	task, err := s.delegateManager.Delegate(r.Context(), req.Mode, req.Description, req.Input, req.AgentIDs, req.Timeout)
+	task, err := s.delegateManager.DelegateWithCostBudget(r.Context(), req.Mode, req.Description, req.Input, req.AgentIDs, req.Timeout, req.CostBudget)
 	if err != nil {
+		if errors.Is(err, collab.ErrInvalidMode) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

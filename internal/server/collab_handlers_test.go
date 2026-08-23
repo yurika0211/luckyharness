@@ -343,4 +343,22 @@ func TestHandleAgentsDelegate_Errors(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("missing agent_ids: got %d, want %d", w.Code, http.StatusBadRequest)
 	}
+
+	// 测试 4: MDP is an internal auto planner, not an execution mode.
+	body = []byte(`{"mode":"mdp","description":"test","input":"hello","agent_ids":["agent-1"]}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/delegate", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsDelegate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("mdp mode: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
+
+	// 测试 5: normalized cost budgets must remain in the documented range.
+	body = []byte(`{"mode":"auto","description":"test","input":"hello","agent_ids":["agent-1"],"cost_budget":1.1}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/agents/delegate", bytes.NewReader(body))
+	w = httptest.NewRecorder()
+	s.handleAgentsDelegate(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("invalid cost budget: got %d, want %d", w.Code, http.StatusBadRequest)
+	}
 }

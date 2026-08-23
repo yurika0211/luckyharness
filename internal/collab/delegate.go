@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -145,11 +146,30 @@ func (dm *DelegateManager) SetMDPSnapshotPath(path string) error {
 	return nil
 }
 
-// Delegate 创建并执行协作任务
+// Delegate creates and runs a collaboration task without a cost constraint.
 func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, description, input string, agentIDs []string, timeout time.Duration) (*CollabTask, error) {
+	return dm.delegate(ctx, mode, description, input, agentIDs, timeout, 0)
+}
+
+// DelegateWithCostBudget creates and runs a collaboration task with a
+// normalized planning budget. A zero budget leaves cost unconstrained; a
+// positive value guides auto mode toward lower-cost orchestration choices.
+func (dm *DelegateManager) DelegateWithCostBudget(ctx context.Context, mode CollabMode, description, input string, agentIDs []string, timeout time.Duration, costBudget float64) (*CollabTask, error) {
+	return dm.delegate(ctx, mode, description, input, agentIDs, timeout, costBudget)
+}
+
+func (dm *DelegateManager) delegate(ctx context.Context, mode CollabMode, description, input string, agentIDs []string, timeout time.Duration, costBudget float64) (*CollabTask, error) {
 	if len(agentIDs) == 0 {
 		return nil, fmt.Errorf("at least one agent ID is required")
 	}
+	if costBudget < 0 || costBudget > 1 {
+		return nil, fmt.Errorf("cost budget must be between 0 and 1")
+	}
+	parsedMode, err := ParseMode(string(mode))
+	if err != nil {
+		return nil, err
+	}
+	mode = parsedMode
 
 	dm.mu.RLock()
 	policy := dm.policy
@@ -209,6 +229,7 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 			AgentIDs:    append([]string(nil), agentIDs...),
 			Agents:      agents,
 			Timeout:     timeout,
+			CostBudget:  costBudget,
 		})
 		plan = &result
 		mode = result.Mode
@@ -225,6 +246,7 @@ func (dm *DelegateManager) Delegate(ctx context.Context, mode CollabMode, descri
 		Timeout:     timeout,
 		Metadata:    make(map[string]string),
 	}
+	task.Metadata["cost_budget"] = fmt.Sprintf("%.4f", costBudget)
 	if plan != nil {
 		task.Metadata["planner"] = plan.Version
 		task.Metadata["planned_mode"] = string(plan.Mode)
@@ -805,11 +827,24 @@ func (dm *DelegateManager) observePlannedOutcome(task *CollabTask) {
 	}
 	planner := dm.planner
 	mdpPath := dm.mdpPath
+	costBudget, _ := strconv.ParseFloat(task.Metadata["cost_budget"], 64)
+	agentIDs := agentIDsFromSubTasks(task.SubTasks)
+	agents := make([]*AgentProfile, 0, len(agentIDs))
+	for _, agentID := range agentIDs {
+		if dm.registry == nil {
+			break
+		}
+		if profile, ok := dm.registry.Get(agentID); ok {
+			agents = append(agents, profile)
+		}
+	}
 	req := PlanRequest{
 		Description: task.Description,
 		Input:       task.Input,
-		AgentIDs:    agentIDsFromSubTasks(task.SubTasks),
+		AgentIDs:    agentIDs,
+		Agents:      agents,
 		Timeout:     task.Timeout,
+		CostBudget:  costBudget,
 	}
 	duration := time.Duration(0)
 	if !task.CreatedAt.IsZero() && !task.CompletedAt.IsZero() {

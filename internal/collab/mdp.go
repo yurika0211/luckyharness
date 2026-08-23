@@ -17,13 +17,16 @@ const mdpPlannerVersion = "mdp-q-v1"
 // It deliberately keeps only stable task features so the online table can
 // learn from repeated task shapes instead of memorizing prompt text.
 type MDPState struct {
-	TaskShape     string `json:"task_shape"`
-	Ambiguity     string `json:"ambiguity"`
-	Risk          string `json:"risk"`
-	AgentBucket   string `json:"agent_bucket"`
-	HasCritic     bool   `json:"has_critic"`
-	HasVerifier   bool   `json:"has_verifier"`
-	TimeoutBucket string `json:"timeout_bucket"`
+	TaskShape       string `json:"task_shape"`
+	Ambiguity       string `json:"ambiguity"`
+	Risk            string `json:"risk"`
+	AgentBucket     string `json:"agent_bucket"`
+	HasCritic       bool   `json:"has_critic"`
+	HasVerifier     bool   `json:"has_verifier"`
+	TimeoutBucket   string `json:"timeout_bucket"`
+	InputComplexity string `json:"input_complexity"`
+	AgentLoad       string `json:"agent_load"`
+	CostBudget      string `json:"cost_budget"`
 }
 
 // Key returns a stable table key for Q(S,A).
@@ -36,6 +39,9 @@ func (s MDPState) Key() string {
 		fmt.Sprintf("critic=%t", s.HasCritic),
 		fmt.Sprintf("verifier=%t", s.HasVerifier),
 		"timeout=" + s.TimeoutBucket,
+		"input=" + s.InputComplexity,
+		"load=" + s.AgentLoad,
+		"budget=" + s.CostBudget,
 	}, "|")
 }
 
@@ -130,13 +136,16 @@ func PlanStateFromRequest(req PlanRequest) MDPState {
 	f := plannerFeatures(req)
 	text := strings.ToLower(req.Description + "\n" + req.Input)
 	return MDPState{
-		TaskShape:     taskShapeBucket(f),
-		Ambiguity:     ternaryBucket(f.ambiguous, 0.70, 0.25),
-		Risk:          ternaryBucket(f.risk, 0.60, 0.32),
-		AgentBucket:   agentCountBucket(len(req.AgentIDs)),
-		HasCritic:     hasCapability(req.Agents, "critic", "review", "verifier") || containsAnyText(text, "critic", "评审", "裁决"),
-		HasVerifier:   hasCapability(req.Agents, "verifier", "test", "testing", "qa") || containsAnyText(text, "验证", "测试", "verifier", "test"),
-		TimeoutBucket: timeoutBucket(req.Timeout),
+		TaskShape:       taskShapeBucket(f),
+		Ambiguity:       ternaryBucket(f.ambiguous, 0.70, 0.25),
+		Risk:            ternaryBucket(f.risk, 0.60, 0.32),
+		AgentBucket:     agentCountBucket(len(req.AgentIDs)),
+		HasCritic:       hasCapability(req.Agents, "critic", "review", "verifier") || containsAnyText(text, "critic", "评审", "裁决"),
+		HasVerifier:     hasCapability(req.Agents, "verifier", "test", "testing", "qa") || containsAnyText(text, "验证", "测试", "verifier", "test"),
+		TimeoutBucket:   timeoutBucket(req.Timeout),
+		InputComplexity: inputComplexityBucket(req),
+		AgentLoad:       agentLoadBucket(req),
+		CostBudget:      costBudgetBucket(req.CostBudget),
 	}
 }
 
@@ -534,6 +543,95 @@ func timeoutBucket(timeout time.Duration) string {
 		return "normal"
 	default:
 		return "long"
+	}
+}
+
+func inputComplexityBucket(req PlanRequest) string {
+	score := inputComplexityScore(req)
+	switch {
+	case score >= 0.75:
+		return "high"
+	case score >= 0.35:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+func inputComplexityScore(req PlanRequest) float64 {
+	tokens := req.InputTokens
+	if tokens <= 0 {
+		tokens = estimateInputTokens(req.Description + "\n" + req.Input)
+	}
+	depth := structuredInputDepth(req.Description + "\n" + req.Input)
+	return clampFloat(0.72*float64(tokens)/4096.0+0.28*float64(depth)/12.0, 0, 1)
+}
+
+func estimateInputTokens(text string) int {
+	characters := len([]rune(strings.TrimSpace(text)))
+	if characters == 0 {
+		return 0
+	}
+	return (characters + 3) / 4
+}
+
+func structuredInputDepth(text string) int {
+	depth, maximum := 0, 0
+	for _, r := range text {
+		switch r {
+		case '{', '[', '(':
+			depth++
+			if depth > maximum {
+				maximum = depth
+			}
+		case '}', ']', ')':
+			if depth > 0 {
+				depth--
+			}
+		}
+	}
+	return maximum
+}
+
+func agentLoadBucket(req PlanRequest) string {
+	if len(req.Agents) == 0 {
+		return "unknown"
+	}
+	busy, offline := 0, 0
+	for _, agent := range req.Agents {
+		if agent == nil {
+			offline++
+			continue
+		}
+		switch agent.Status {
+		case StatusBusy:
+			busy++
+		case StatusOffline:
+			offline++
+		}
+	}
+	if offline == len(req.Agents) {
+		return "unavailable"
+	}
+	if busy+offline >= (len(req.Agents)+1)/2 {
+		return "high"
+	}
+	if busy+offline > 0 {
+		return "medium"
+	}
+	return "low"
+}
+
+func costBudgetBucket(budget float64) string {
+	switch {
+	case budget <= 0:
+		return "unspecified"
+	case budget <= 0.30:
+		return "tight"
+	case budget <= 0.70:
+		return "normal"
+	default:
+		return "generous"
 	}
 }
 

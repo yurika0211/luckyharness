@@ -676,6 +676,8 @@ func TestParseMode(t *testing.T) {
 		{"PIPELINE", ModePipeline, false},
 		{"parallel", ModeParallel, false},
 		{"debate", ModeDebate, false},
+		{"  AuTo  ", ModeAuto, false},
+		{"mdp", "", true},
 		{"invalid", "", true},
 	}
 

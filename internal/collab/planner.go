@@ -16,9 +16,11 @@ const plannerVersion = "dijkstra-markov-mdp-v1"
 type PlanRequest struct {
 	Description  string
 	Input        string
+	InputTokens  int
 	AgentIDs     []string
 	Agents       []*AgentProfile
 	Timeout      time.Duration
+	CostBudget   float64
 	AllowedModes []CollabMode
 }
 
@@ -141,7 +143,7 @@ func (p *Planner) Plan(req PlanRequest) PlanResult {
 		cost := estimatePlannerCost(mode, req)
 		risk := estimatePlannerRisk(mode, req)
 		adjustment := mdpWeightAdjustment(mdpDecision, mode)
-		weight := decisionWeight(prob, cost, risk) + adjustment
+		weight := decisionWeight(prob, cost, risk) + adjustment + plannerLoadPenalty(mode, req) + plannerBudgetPenalty(cost, req.CostBudget)
 		candidates = append(candidates, CandidateScore{
 			Mode:            mode,
 			SuccessProb:     prob.Success,
@@ -324,13 +326,14 @@ func estimatePlannerCost(mode CollabMode, req PlanRequest) float64 {
 
 func estimatePlannerRisk(mode CollabMode, req PlanRequest) float64 {
 	features := plannerFeatures(req)
+	complexity := inputComplexityScore(req)
 	switch mode {
 	case ModeParallel:
-		return clampFloat(0.18+0.34*features.sequential+0.12*features.debate, 0, 1)
+		return clampFloat(0.18+0.34*features.sequential+0.12*features.debate+0.08*complexity, 0, 1)
 	case ModePipeline:
-		return clampFloat(0.16+0.10*features.independent+0.08*features.debate, 0, 1)
+		return clampFloat(0.16+0.10*features.independent+0.08*features.debate+0.03*complexity, 0, 1)
 	case ModeDebate:
-		return clampFloat(0.24+0.24*(1-features.debate)+0.10*features.risk, 0, 1)
+		return clampFloat(0.24+0.24*(1-features.debate)+0.10*features.risk+0.04*complexity, 0, 1)
 	default:
 		return 0.5
 	}
@@ -504,12 +507,39 @@ func decisionBasis(req PlanRequest) string {
 	f := plannerFeatures(req)
 	parts := []string{
 		fmt.Sprintf("agents=%d", len(req.AgentIDs)),
+		"input=" + inputComplexityBucket(req),
+		"agent_load=" + agentLoadBucket(req),
+		"budget=" + costBudgetBucket(req.CostBudget),
 		fmt.Sprintf("sequential=%.0f", f.sequential),
 		fmt.Sprintf("independent=%.0f", f.independent),
 		fmt.Sprintf("debate=%.0f", f.debate),
 		fmt.Sprintf("risk=%.2f", f.risk),
 	}
 	return strings.Join(parts, " ")
+}
+
+func plannerLoadPenalty(mode CollabMode, req PlanRequest) float64 {
+	switch agentLoadBucket(req) {
+	case "high":
+		if mode == ModeParallel {
+			return 0.18
+		}
+		return 0.05
+	case "unavailable":
+		if mode == ModeParallel {
+			return 0.45
+		}
+		return 0.20
+	default:
+		return 0
+	}
+}
+
+func plannerBudgetPenalty(cost, budget float64) float64 {
+	if budget <= 0 || cost <= budget {
+		return 0
+	}
+	return 0.75 * (cost - budget)
 }
 
 func reverseStrings(values []string) {

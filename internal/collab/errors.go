@@ -4,7 +4,7 @@ import "errors"
 
 var (
 	// ErrInvalidMode 无效协作模式
-	ErrInvalidMode = errors.New("invalid collaboration mode: must be pipeline, parallel, or debate")
+	ErrInvalidMode = errors.New("invalid collaboration mode: must be auto, pipeline, parallel, or debate")
 	// ErrInvalidDebateRounds 无效辩论轮数
 	ErrInvalidDebateRounds = errors.New("debate rounds must be at least 1")
 	// ErrInvalidMaxConcurrent 无效最大并发数

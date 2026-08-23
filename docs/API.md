@@ -490,9 +490,27 @@ Test request body:
 | `GET` | `/api/v1/agents/tasks` | List delegated tasks |
 | `POST` | `/api/v1/agents/cancel?id=...` | Cancel delegated task |
 
-Register and delegate bodies use the collab package models. Verify
-`internal/server/collab_handlers.go` and `internal/collab` before treating
-those JSON shapes as stable external contracts.
+Delegate request example:
+
+```json
+{
+  "mode": "auto",
+  "description": "Inspect three independent components and summarize risks.",
+  "input": "Focus on this week's changes.",
+  "agent_ids": ["api", "gateway", "ui"],
+  "timeout": 60000000000,
+  "cost_budget": 0.45
+}
+```
+
+`mode` accepts `auto`, `parallel`, `pipeline`, or `debate`. `mdp` is not an
+execution mode: it is the internal decision mechanism used by `auto` and is
+rejected with `400 Bad Request`. `cost_budget` is optional and normalized to
+the `0..1` range; `0` leaves planning cost unconstrained. `timeout` follows
+the Go JSON duration representation used by this handler (nanoseconds).
+
+See [the collaboration guide](multi-agent/collaboration.md) for selection
+criteria and MDP learning behavior.
 
 ## Workflows
 

@@ -30,6 +30,9 @@ LuckyAgent 的设计顺序很直接：先让 Bot 能稳定运行，再把同一�
 
 从部署角度看，源码运行、开发环境 Docker 和生产环境 Docker 都是一等路径。SOUL、工具、记忆、RAG、模型路由和消息网关被放在统一运行时下管理，因此你可以先在本机验证一条链路，再把它迁移到容器和线上节点。
 
+多 Agent 协作的模式选择、`auto` 内部的 MDP 决策和 HTTP 示例见
+[Multi-Agent Collaboration Guide](docs/multi-agent/collaboration.md)。
+
 
 ## 配置约定
 
@@ -836,6 +839,7 @@ sudo journalctl -u luckyagent-napcat -f
 - 私聊能用、群聊没反应：默认只响应 @bot 或回复 bot；要全量响应请设置 `group_trigger_mode=all`
 - 群里 @ 了仍没反应：确认 NapCat 上报的 `self_id` 是当前 bot QQ，且消息里确实包含对 bot 的 at
 - 能收到消息但发不出回复：确认 NapCat 反向 WebSocket 仍保持连接，LuckyAgent 日志里没有 `reverse websocket is not connected`
+- `reverse websocket disconnected ...: gateway stopping` 表示 LuckyAgent 正在按流程退出或重启，属于预期断连；其他原因会在同一条日志中显示为 peer close 或 read failure，便于区分 NapCat/网络问题
 - 只想让指定群可用：设置 `allowed_chats`，例如 `group:123456789` 或直接 `123456789`
 - 只想让指定用户触发：设置 `allowed_users` 为 QQ 用户 ID 列表
 
