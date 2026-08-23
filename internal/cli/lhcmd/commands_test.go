@@ -433,6 +433,37 @@ func TestPollWeixinLoginFailureStatus(t *testing.T) {
 	}
 }
 
+func TestPollWeixinLoginRetriesTransientErrors(t *testing.T) {
+	attempts := 0
+	result, err := pollWeixinLoginWithFetcher(context.Background(), func(context.Context, string) (*weixin.QRCodeLogin, error) {
+		attempts++
+		if attempts < 3 {
+			return nil, fmt.Errorf("temporary network failure")
+		}
+		return &weixin.QRCodeLogin{Status: "success", Token: "token", AccountID: "account"}, nil
+	}, "qr-code", time.Millisecond, false)
+	if err != nil {
+		t.Fatalf("expected transient errors to be retried, got %v", err)
+	}
+	if result.AccountID != "account" || attempts != 3 {
+		t.Fatalf("unexpected retry result: result=%+v attempts=%d", result, attempts)
+	}
+}
+
+func TestPollWeixinLoginDoesNotRetryTerminalError(t *testing.T) {
+	attempts := 0
+	_, err := pollWeixinLoginWithFetcher(context.Background(), func(context.Context, string) (*weixin.QRCodeLogin, error) {
+		attempts++
+		return nil, fmt.Errorf("qrcode expired")
+	}, "qr-code", time.Millisecond, false)
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected terminal qrcode error, got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("expected terminal error not to retry, attempts=%d", attempts)
+	}
+}
+
 func TestWeixinLoginDriverFlag(t *testing.T) {
 	cmd := &cobra.Command{}
 	cmd.Flags().String("driver", "ilink", "")

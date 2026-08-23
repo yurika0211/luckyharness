@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -245,6 +246,33 @@ type DelegateTask struct {
 	CompletedAt    time.Time
 	ToolCalls      int
 	LastTool       string
+	OwnerSessionID string
+	OwnerSource    string
+	RequestKey     string
+}
+
+type delegateTaskOwner struct {
+	SessionID  string
+	Source     string
+	RequestKey string
+}
+
+func delegateOwnerFromExecution(exec ExecutionContext, description, contextStr string) delegateTaskOwner {
+	sessionID := strings.TrimSpace(exec.SessionID)
+	if sessionID == "" {
+		return delegateTaskOwner{}
+	}
+	source := strings.TrimSpace(exec.Source)
+	if source == "" {
+		source = "unknown"
+	}
+	payload := strings.Join([]string{sessionID, source, strings.TrimSpace(exec.UserRequest), strings.TrimSpace(description), strings.TrimSpace(contextStr)}, "\x00")
+	digest := sha256.Sum256([]byte(payload))
+	return delegateTaskOwner{SessionID: sessionID, Source: source, RequestKey: fmt.Sprintf("%x", digest[:])}
+}
+
+func (owner delegateTaskOwner) scoped() bool {
+	return strings.TrimSpace(owner.SessionID) != ""
 }
 
 type delegateStartResponse struct {
@@ -786,6 +814,10 @@ func DelegateTaskTool(dm *DelegateManager) *Tool {
 			},
 		},
 		Handler: dm.handleDelegate,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := dm.handleDelegateWithOwner(args, delegateOwnerFromExecution(exec, delegateStringArg(args, "description"), delegateStringArg(args, "context")))
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
@@ -823,6 +855,10 @@ func TaskStatusTool(dm *DelegateManager) *Tool {
 			},
 		},
 		Handler: dm.handleStatus,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := dm.handleStatusForSession(args, strings.TrimSpace(exec.SessionID))
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
@@ -864,7 +900,7 @@ func WaitForTasksTool(dm *DelegateManager) *Tool {
 			return dm.handleWaitForTasks(context.Background(), args)
 		},
 		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
-			out, err := dm.handleWaitForTasks(exec.Context, args)
+			out, err := dm.handleWaitForTasksForSession(exec.Context, args, strings.TrimSpace(exec.SessionID))
 			return ToolCallResult{Output: out}, err
 		},
 	}
@@ -909,6 +945,10 @@ func ListTasksTool(dm *DelegateManager) *Tool {
 			},
 		},
 		Handler: dm.handleList,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := dm.handleListForSession(args, strings.TrimSpace(exec.SessionID))
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
@@ -933,11 +973,19 @@ func DelegateCancelTool(dm *DelegateManager) *Tool {
 			},
 		},
 		Handler: dm.handleCancel,
+		ContextDetailedHandler: func(exec ExecutionContext, args map[string]any) (ToolCallResult, error) {
+			out, err := dm.handleCancelForSession(args, strings.TrimSpace(exec.SessionID))
+			return ToolCallResult{Output: out}, err
+		},
 	}
 }
 
 // handleDelegate 处理委派请求
 func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
+	return dm.handleDelegateWithOwner(args, delegateTaskOwner{})
+}
+
+func (dm *DelegateManager) handleDelegateWithOwner(args map[string]any, owner delegateTaskOwner) (string, error) {
 	description, ok := args["description"].(string)
 	description = strings.TrimSpace(description)
 	if !ok || description == "" {
@@ -964,10 +1012,25 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 	mode, plannedMode, plannerSummary, plannerTrace := planDelegateTaskMode(description, contextStr, requestedMode, timeout, maxChildren)
 	allowRecursive := delegateBoolArg(args, "allow_recursive_delegate", false)
 
-	// 检查并发限制
+	// Reuse an existing task when the same request is dispatched more than
+	// once. This makes retries from a streaming provider idempotent.
 	dm.mu.RLock()
 	running := 0
 	for _, t := range dm.tasks {
+		if owner.scoped() && owner.RequestKey != "" && t.OwnerSessionID == owner.SessionID && t.RequestKey == owner.RequestKey {
+			response, _ := json.Marshal(delegateStartResponse{
+				TaskID:         t.ID,
+				Status:         t.Status.String(),
+				Mode:           string(t.Mode),
+				PlannedMode:    string(t.PlannedMode),
+				PlannerSummary: t.PlannerSummary,
+				Workspace:      t.Workspace,
+				TimeoutSeconds: int(timeout.Seconds()),
+				Message:        fmt.Sprintf("Task '%s' already exists for this request.", t.ID),
+			})
+			dm.mu.RUnlock()
+			return string(response), nil
+		}
 		if t.Status == StatusRunning {
 			running++
 		}
@@ -997,6 +1060,9 @@ func (dm *DelegateManager) handleDelegate(args map[string]any) (string, error) {
 		PlannerSummary: plannerSummary,
 		Status:         StatusPending,
 		StartedAt:      time.Now(),
+		OwnerSessionID: owner.SessionID,
+		OwnerSource:    owner.Source,
+		RequestKey:     owner.RequestKey,
 	}
 	dm.tasks[taskID] = task
 	store := dm.taskStore
@@ -1094,10 +1160,17 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 
 // handleStatus 处理状态查询
 func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
+	return dm.handleStatusForSession(args, "")
+}
+
+func (dm *DelegateManager) handleStatusForSession(args map[string]any, sessionID string) (string, error) {
 	taskID, ok := args["task_id"].(string)
 	taskID = strings.TrimSpace(taskID)
 	if !ok || taskID == "" {
 		return "", fmt.Errorf("task_id is required")
+	}
+	if err := dm.authorizeTaskSession(taskID, sessionID); err != nil {
+		return "", err
 	}
 	includeResult := delegateBoolArg(args, "include_result", true)
 	includeEvents := delegateBoolArg(args, "include_events", false)
@@ -1235,13 +1308,17 @@ func waitPollIntervalFromArgs(args map[string]any) time.Duration {
 }
 
 func (dm *DelegateManager) waitTaskStatuses(taskIDs []string, includeResult bool) ([]delegateStatusResponse, []string, error) {
+	return dm.waitTaskStatusesForSession(taskIDs, includeResult, "")
+}
+
+func (dm *DelegateManager) waitTaskStatusesForSession(taskIDs []string, includeResult bool, sessionID string) ([]delegateStatusResponse, []string, error) {
 	statuses := make([]delegateStatusResponse, 0, len(taskIDs))
 	pending := make([]string, 0, len(taskIDs))
 	for _, taskID := range taskIDs {
-		statusJSON, err := dm.handleStatus(map[string]any{
+		statusJSON, err := dm.handleStatusForSession(map[string]any{
 			"task_id":        taskID,
 			"include_result": includeResult,
-		})
+		}, sessionID)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1272,9 +1349,18 @@ func marshalWaitResponse(tasks []delegateStatusResponse, pending []string, timed
 }
 
 func (dm *DelegateManager) handleWaitForTasks(ctx context.Context, args map[string]any) (string, error) {
+	return dm.handleWaitForTasksForSession(ctx, args, "")
+}
+
+func (dm *DelegateManager) handleWaitForTasksForSession(ctx context.Context, args map[string]any, sessionID string) (string, error) {
 	taskIDs, err := delegateTaskIDsArg(args)
 	if err != nil {
 		return "", err
+	}
+	for _, taskID := range taskIDs {
+		if err := dm.authorizeTaskSession(taskID, sessionID); err != nil {
+			return "", err
+		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -1289,7 +1375,7 @@ func (dm *DelegateManager) handleWaitForTasks(ctx context.Context, args map[stri
 	defer ticker.Stop()
 
 	for {
-		statuses, pending, err := dm.waitTaskStatuses(taskIDs, includeResult)
+		statuses, pending, err := dm.waitTaskStatusesForSession(taskIDs, includeResult, sessionID)
 		if err != nil {
 			return "", err
 		}
@@ -1300,7 +1386,7 @@ func (dm *DelegateManager) handleWaitForTasks(ctx context.Context, args map[stri
 		select {
 		case <-waitCtx.Done():
 			if time.Since(started) >= timeout {
-				statuses, pending, err = dm.waitTaskStatuses(taskIDs, includeResult)
+				statuses, pending, err = dm.waitTaskStatusesForSession(taskIDs, includeResult, sessionID)
 				if err != nil {
 					return "", err
 				}
@@ -1310,6 +1396,36 @@ func (dm *DelegateManager) handleWaitForTasks(ctx context.Context, args map[stri
 		case <-ticker.C:
 		}
 	}
+}
+
+func (dm *DelegateManager) authorizeTaskSession(taskID string, sessionID string) error {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return nil
+	}
+	dm.mu.RLock()
+	task, found := dm.tasks[taskID]
+	store := dm.taskStore
+	if found && task != nil {
+		owner := strings.TrimSpace(task.OwnerSessionID)
+		dm.mu.RUnlock()
+		if owner == sessionID {
+			return nil
+		}
+		return fmt.Errorf("task is not available in the current session")
+	}
+	dm.mu.RUnlock()
+	if store == nil {
+		return fmt.Errorf("task is not available in the current session")
+	}
+	record, ok, err := store.Get(taskID)
+	if err != nil {
+		return err
+	}
+	if !ok || strings.TrimSpace(record.Metadata["owner_session_id"]) != sessionID {
+		return fmt.Errorf("task is not available in the current session")
+	}
+	return nil
 }
 
 func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID string, includeResult bool, includeEvents bool, includeTrace bool) (string, error) {
@@ -1359,6 +1475,11 @@ func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID str
 
 // handleList 处理任务列表
 func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
+	return dm.handleListForSession(args, "")
+}
+
+func (dm *DelegateManager) handleListForSession(args map[string]any, sessionID string) (string, error) {
+	sessionID = strings.TrimSpace(sessionID)
 	statusFilter := strings.ToLower(strings.TrimSpace(delegateStringArg(args, "status")))
 	if statusFilter != "" && !isValidDelegateStatus(statusFilter) {
 		return "", fmt.Errorf("unsupported status filter %q", statusFilter)
@@ -1402,6 +1523,9 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 	}
 	filtered := make([]DelegateTask, 0, len(snapshots))
 	for _, t := range snapshots {
+		if sessionID != "" && strings.TrimSpace(t.OwnerSessionID) != sessionID {
+			continue
+		}
 		status := t.Status.String()
 		byStatus[status]++
 		if sourceFilter != "" && sourceFilter != string(taskstore.SourceTool) {
@@ -1470,6 +1594,9 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 				if _, seen := seenIDs[record.ID]; seen {
 					continue
 				}
+				if sessionID != "" && strings.TrimSpace(record.Metadata["owner_session_id"]) != sessionID {
+					continue
+				}
 				resultText, _, _ := store.Result(record.ID)
 				summary, _, resultBytes, truncated := summarizeDelegateResult(resultText, dm.config.MaxResultBytesInline)
 				item := delegateListItem{
@@ -1525,10 +1652,17 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 }
 
 func (dm *DelegateManager) handleCancel(args map[string]any) (string, error) {
+	return dm.handleCancelForSession(args, "")
+}
+
+func (dm *DelegateManager) handleCancelForSession(args map[string]any, sessionID string) (string, error) {
 	taskID, ok := args["task_id"].(string)
 	taskID = strings.TrimSpace(taskID)
 	if !ok || taskID == "" {
 		return "", fmt.Errorf("task_id is required")
+	}
+	if err := dm.authorizeTaskSession(taskID, sessionID); err != nil {
+		return "", err
 	}
 	reason := strings.TrimSpace(delegateStringArg(args, "reason"))
 	if reason == "" {
@@ -1596,8 +1730,11 @@ func (dm *DelegateManager) recordDelegateTaskCreated(store taskstore.Store, even
 			AllowRecursive: allowRecursive,
 		},
 		Metadata: map[string]string{
-			"planned_mode":    string(task.PlannedMode),
-			"planner_summary": task.PlannerSummary,
+			"planned_mode":     string(task.PlannedMode),
+			"planner_summary":  task.PlannerSummary,
+			"owner_session_id": task.OwnerSessionID,
+			"owner_source":     task.OwnerSource,
+			"request_key":      task.RequestKey,
 		},
 	}
 	if _, err := store.Create(record); err != nil {

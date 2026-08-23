@@ -132,6 +132,71 @@ func TestWaitForTasksReturnsTerminalFailuresWithoutBlocking(t *testing.T) {
 	}
 }
 
+func TestDelegatedTasksAreIsolatedBySessionAndIdempotent(t *testing.T) {
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetAgentExecutor(func(context.Context, string, string) (string, error) {
+		return "completed", nil
+	})
+	registry := NewRegistry()
+	registry.Register(DelegateTaskTool(dm))
+	registry.Register(TaskStatusTool(dm))
+	registry.Register(WaitForTasksTool(dm))
+	registry.Register(ListTasksTool(dm))
+	registry.Register(DelegateCancelTool(dm))
+
+	ownerA := ExecutionContext{Context: context.Background(), SessionID: "session-a", Source: "telegram", UserRequest: "Please inspect the release."}
+	delegated, err := registry.CallDetailedWithContext("delegate_task", map[string]any{"description": "inspect the release"}, ownerA)
+	if err != nil {
+		t.Fatalf("delegate task: %v", err)
+	}
+	var first delegateStartResponse
+	if err := json.Unmarshal([]byte(delegated.Output), &first); err != nil {
+		t.Fatalf("decode delegated task: %v", err)
+	}
+
+	again, err := registry.CallDetailedWithContext("delegate_task", map[string]any{"description": "inspect the release"}, ownerA)
+	if err != nil {
+		t.Fatalf("duplicate delegate task: %v", err)
+	}
+	var duplicate delegateStartResponse
+	if err := json.Unmarshal([]byte(again.Output), &duplicate); err != nil {
+		t.Fatalf("decode duplicate delegated task: %v", err)
+	}
+	if duplicate.TaskID != first.TaskID {
+		t.Fatalf("expected duplicate request to reuse %q, got %q", first.TaskID, duplicate.TaskID)
+	}
+
+	ownerB := ExecutionContext{Context: context.Background(), SessionID: "session-b", Source: "telegram", UserRequest: "Unrelated request"}
+	for _, call := range []struct {
+		name string
+		args map[string]any
+	}{
+		{name: "task_status", args: map[string]any{"task_id": first.TaskID}},
+		{name: "wait_for_tasks", args: map[string]any{"task_ids": []any{first.TaskID}, "timeout": 0.1}},
+		{name: "delegate_cancel", args: map[string]any{"task_id": first.TaskID}},
+	} {
+		if _, err := registry.CallDetailedWithContext(call.name, call.args, ownerB); err == nil || !strings.Contains(err.Error(), "current session") {
+			t.Fatalf("%s should reject another session, got %v", call.name, err)
+		}
+	}
+
+	listed, err := registry.CallDetailedWithContext("list_tasks", nil, ownerB)
+	if err != nil {
+		t.Fatalf("list tasks from another session: %v", err)
+	}
+	var list delegateListResponse
+	if err := json.Unmarshal([]byte(listed.Output), &list); err != nil {
+		t.Fatalf("decode task list: %v", err)
+	}
+	if list.Count != 0 || len(list.Tasks) != 0 {
+		t.Fatalf("expected no cross-session tasks, got %+v", list)
+	}
+
+	if _, err := registry.CallDetailedWithContext("task_status", map[string]any{"task_id": first.TaskID}, ownerA); err != nil {
+		t.Fatalf("owner should retain access: %v", err)
+	}
+}
+
 func TestWaitForTasksReturnsTimeoutAndPendingIDs(t *testing.T) {
 	dm := NewDelegateManager(DefaultDelegateConfig())
 	dm.tasks["task-running"] = &DelegateTask{ID: "task-running", Description: "running", Status: StatusRunning, StartedAt: time.Now()}

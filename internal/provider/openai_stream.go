@@ -467,7 +467,7 @@ func doOpenAIRequest(ctx context.Context, cfg Config, body []byte) (*http.Respon
 func doOpenAIRequestTo(ctx context.Context, cfg Config, body []byte, endpoint string) (*http.Response, error) {
 	settings := resolveOpenAIRetrySettings(cfg)
 	url := strings.TrimRight(cfg.LlmProvider.BaseURL, "/") + endpoint
-	log.Printf("[provider] openai request: model=%s url=%s stream_retry_attempts=%d api_key=%s", cfg.LlmProvider.Model, url, settings.MaxAttempts, maskedKeySuffix(cfg.LlmProvider.APIKey))
+	log.Printf("[provider] openai request: model=%s url=%s stream_retry_attempts=%d", cfg.LlmProvider.Model, url, settings.MaxAttempts)
 
 	var lastErr error
 	for attempt := 1; attempt <= settings.MaxAttempts; attempt++ {

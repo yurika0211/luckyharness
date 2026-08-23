@@ -284,17 +284,6 @@ $LUCKYAGENT_HOME/data/telegram/chat_sessions.json
 | `/metrics` | 查看指标。 |
 | `/health` | 健康检查。 |
 
-学习命令：
-
-| 命令 | 说明 |
-| --- | --- |
-| `/learn` | 学习模式命令入口。 |
-| `/learn_start <course>` | 开始或恢复课程。 |
-| `/learn_current` | 查看当前学习模块。 |
-| `/learn_lab` | 查看当前实验。 |
-| `/learn_submit <evidence>` | 提交实验凭证。 |
-| `/learn_progress` | 查看学习进度。 |
-
 记忆和会话命令：
 
 | 命令 | 说明 |
@@ -323,11 +312,6 @@ $LUCKYAGENT_HOME/data/telegram/chat_sessions.json
 | --- | --- |
 | `msg-gateway` | `msg_gateway` |
 | `remember-long` | `remember_long` |
-| `learn-start` | `learn_start` |
-| `learn-current` | `learn_current` |
-| `learn-lab` | `learn_lab` |
-| `learn-submit` | `learn_submit` |
-| `learn-progress` | `learn_progress` |
 
 ## Lucky 多段消息收集
 

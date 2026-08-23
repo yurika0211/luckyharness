@@ -861,11 +861,39 @@ func pollWeixinLoginWithFetcher(ctx context.Context, fetch func(context.Context,
 	if fetch == nil {
 		return nil, fmt.Errorf("weixin login: fetcher is nil")
 	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	const maxTransientFailures = 5
 	seen := ""
+	transientFailures := 0
 	for {
 		login, err := fetch(ctx, qrCode)
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if isTerminalWeixinLoginError(err) {
+				return nil, err
+			}
+			transientFailures++
+			if transientFailures >= maxTransientFailures {
+				return nil, fmt.Errorf("weixin login: qrcode status request failed %d times: %w", transientFailures, err)
+			}
+			delay := weixinLoginRetryDelay(interval, transientFailures)
+			if printStatus {
+				fmt.Printf("二维码状态请求失败，将在 %s 后重试（%d/%d）：%v\n", delay, transientFailures, maxTransientFailures, err)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+			continue
+		}
+		transientFailures = 0
+		if login == nil {
+			return nil, fmt.Errorf("weixin login: empty qrcode status response")
 		}
 
 		status := strings.TrimSpace(login.Status)
@@ -898,6 +926,27 @@ func pollWeixinLoginWithFetcher(ctx context.Context, fetch func(context.Context,
 		case <-time.After(interval):
 		}
 	}
+}
+
+func weixinLoginRetryDelay(interval time.Duration, failures int) time.Duration {
+	delay := interval
+	for attempt := 1; attempt < failures && delay < 15*time.Second; attempt++ {
+		delay *= 2
+	}
+	if delay > 15*time.Second {
+		return 15 * time.Second
+	}
+	return delay
+}
+
+func isTerminalWeixinLoginError(err error) bool {
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"expired", "cancelled", "canceled", "denied", "rejected", "invalid qrcode", "invalid qr code"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func isWeixinLoginSuccessStatus(status string) bool {

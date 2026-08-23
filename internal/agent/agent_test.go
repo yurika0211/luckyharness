@@ -1221,6 +1221,17 @@ func (e *errorProvider) ChatStream(ctx context.Context, messages []provider.Mess
 }
 func (e *errorProvider) Validate() error { return nil }
 
+type timeoutProvider struct{}
+
+func (p *timeoutProvider) Name() string { return "timeout-mock" }
+func (p *timeoutProvider) Chat(context.Context, []provider.Message) (*provider.Response, error) {
+	return nil, context.DeadlineExceeded
+}
+func (p *timeoutProvider) ChatStream(context.Context, []provider.Message) (<-chan provider.StreamChunk, error) {
+	return nil, context.DeadlineExceeded
+}
+func (p *timeoutProvider) Validate() error { return nil }
+
 type loopingFunctionProvider struct {
 	callCount int
 	toolName  string
@@ -1416,6 +1427,82 @@ func TestChatWithSessionStreamPersistsToolContext(t *testing.T) {
 				t.Fatalf("expected persisted final assistant answer to include citations, got %#v", messages[3])
 			}
 		})
+	}
+}
+
+func TestChatWithSessionStreamTimeoutProducesFinalAnswer(t *testing.T) {
+	for _, mode := range []string{"native", "simulated"} {
+		t.Run(mode, func(t *testing.T) {
+			sessMgr, err := session.NewManager(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManager() error = %v", err)
+			}
+			sess := sessMgr.New()
+			cfg, err := config.NewManagerWithDir(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewManagerWithDir() error = %v", err)
+			}
+			if err := cfg.Set("stream_mode", mode); err != nil {
+				t.Fatalf("Set(stream_mode) error = %v", err)
+			}
+			memStore, err := memory.NewStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewStore() error = %v", err)
+			}
+			a := &Agent{
+				provider:   &timeoutProvider{},
+				sessions:   sessMgr,
+				memory:     memStore,
+				shortTerm:  memory.NewShortTermBuffer(8),
+				tools:      tool.NewRegistry(),
+				gateway:    tool.NewGateway(tool.NewRegistry()),
+				cfg:        cfg,
+				metrics:    metrics.NewMetrics(),
+				contextEst: contextx.NewTokenEstimator(4096),
+				contextWin: contextx.NewContextWindow(contextx.DefaultWindowConfig()),
+			}
+
+			events, err := a.ChatWithSessionStreamInputWithLoopConfig(context.Background(), sess.ID, TextUserTurnInput("check the task status"), LoopConfig{
+				MaxIterations:          2,
+				Timeout:                20 * time.Millisecond,
+				AutoApprove:            true,
+				RepeatToolCallLimit:    3,
+				ToolOnlyIterationLimit: 3,
+				DuplicateFetchLimit:    1,
+			})
+			if err != nil {
+				t.Fatalf("ChatWithSessionStreamInputWithLoopConfig() error = %v", err)
+			}
+
+			var done string
+			for event := range events {
+				if event.Type == ChatEventError {
+					t.Fatalf("timeout must finalize instead of emitting an error: %v", event.Err)
+				}
+				if event.Type == ChatEventDone {
+					done = event.Content
+				}
+			}
+			if !strings.Contains(strings.ToLower(done), "timed out") {
+				t.Fatalf("expected timeout final answer, got %q", done)
+			}
+			if messages := sess.GetMessages(); len(messages) < 2 || messages[len(messages)-1].Role != "assistant" || !strings.Contains(messages[len(messages)-1].Content, "timed out") {
+				t.Fatalf("expected timeout final answer saved to session, got %#v", messages)
+			}
+		})
+	}
+}
+
+func TestStreamInterruptionMessageIncludesRecordedToolResults(t *testing.T) {
+	message := streamInterruptionMessage(context.DeadlineExceeded, &streamConvergenceState{
+		toolCallLastResult: map[string]string{
+			"download|{}": "saved /tmp/archive.zip",
+		},
+	}, "partial response")
+	for _, expected := range []string{"Partial model output", "download: saved /tmp/archive.zip", "retry or ask me to continue"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("expected %q in interruption message: %q", expected, message)
+		}
 	}
 }
 

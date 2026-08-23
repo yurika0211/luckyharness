@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2484,6 +2485,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 			"round", round,
 			"error", err,
 		)
+		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+			return
+		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
@@ -2542,6 +2546,9 @@ func (a *Agent) streamNative(ctx context.Context, events chan<- ChatEvent, messa
 		if chunk.Done {
 			break
 		}
+	}
+	if err := iterCtx.Err(); err != nil && a.finalizeStreamInterruption(events, sess, turnInput, state, err, content.String()) {
+		return
 	}
 
 	response := content.String()
@@ -2814,6 +2821,9 @@ func (a *Agent) streamSimulated(ctx context.Context, events chan<- ChatEvent, me
 			"round", round,
 			"error", err,
 		)
+		if a.finalizeStreamInterruption(events, sess, turnInput, state, err, "") {
+			return
+		}
 		events <- ChatEvent{Type: ChatEventError, Err: err}
 		return
 	}
@@ -3057,6 +3067,89 @@ func (a *Agent) finalizeStreamWithState(events chan<- ChatEvent, sess *session.S
 		reasoningContent = strings.TrimSpace(state.continuedReasoning.String())
 	}
 	a.finalizeStreamWithReasoning(events, sess, turnInput, response, reasoningContent, state.citationToolCalls)
+}
+
+// finalizeStreamInterruption turns expected cancellation and timeout failures
+// into a terminal user-facing response without starting another model request.
+func (a *Agent) finalizeStreamInterruption(events chan<- ChatEvent, sess *session.Session, turnInput UserTurnInput, state *streamConvergenceState, err error, partial string) bool {
+	if !isStreamInterruption(err) {
+		return false
+	}
+	a.finalizeStreamWithState(events, sess, turnInput, streamInterruptionMessage(err, state, partial), state)
+	return true
+}
+
+func isStreamInterruption(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "deadline exceeded") || strings.Contains(message, "timed out") || strings.Contains(message, "timeout")
+}
+
+func streamInterruptionMessage(err error, state *streamConvergenceState, partial string) string {
+	var message strings.Builder
+	if errors.Is(err, context.Canceled) {
+		message.WriteString("This request was canceled before a complete final answer was generated.")
+	} else {
+		message.WriteString("This request timed out before a complete final answer was generated.")
+	}
+
+	partial = strings.TrimSpace(partial)
+	if state != nil {
+		continuation := strings.TrimSpace(state.continuedResponse.String())
+		if continuation != "" && !strings.Contains(partial, continuation) {
+			if partial != "" {
+				partial += "\n"
+			}
+			partial += continuation
+		}
+	}
+	if partial != "" {
+		message.WriteString("\n\nPartial model output (may be incomplete):\n")
+		message.WriteString(utils.TrimToRunes(partial, 1200))
+	}
+
+	if observations := interruptionToolObservations(state); len(observations) > 0 {
+		message.WriteString("\n\nRecorded tool observations:\n")
+		for _, observation := range observations {
+			message.WriteString("- ")
+			message.WriteString(observation)
+			message.WriteByte('\n')
+		}
+	}
+	if state != nil && state.hasPendingDelegateTasks() {
+		message.WriteString("\nDelegated work may still be running; its completion was not confirmed before the interruption.")
+	}
+	message.WriteString("\n\nNext: retry or ask me to continue from these recorded results.")
+	return strings.TrimSpace(message.String())
+}
+
+func interruptionToolObservations(state *streamConvergenceState) []string {
+	if state == nil || len(state.toolCallLastResult) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(state.toolCallLastResult))
+	for key := range state.toolCallLastResult {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	observations := make([]string, 0, len(keys))
+	for _, key := range keys {
+		result := strings.TrimSpace(state.toolCallLastResult[key])
+		if result == "" {
+			continue
+		}
+		name := strings.TrimSpace(strings.SplitN(key, "|", 2)[0])
+		if name == "" {
+			name = "tool"
+		}
+		observations = append(observations, name+": "+utils.TrimToRunes(utils.SanitizeToolProtocolOutput(result), 500))
+	}
+	return observations
 }
 
 // streamToolCallAcc 流式 tool_calls 增量累积器

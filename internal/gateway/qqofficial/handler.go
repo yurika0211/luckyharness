@@ -20,7 +20,6 @@ import (
 	"github.com/yurika0211/luckyagent/internal/cron"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	luckycollector "github.com/yurika0211/luckyagent/internal/gateway/collector"
-	"github.com/yurika0211/luckyagent/internal/learning"
 	"github.com/yurika0211/luckyagent/internal/memory"
 	"github.com/yurika0211/luckyagent/internal/metrics"
 	"github.com/yurika0211/luckyagent/internal/rag"
@@ -160,55 +159,49 @@ func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error
 
 func (h *Handler) buildCommandRegistry() map[string]commandHandler {
 	handlers := map[string]commandHandler{
-		"start":          h.handleStart,
-		"help":           h.handleHelp,
-		"chat":           h.handleChatCommand,
-		"lucky":          h.handleLucky,
-		"review":         h.handleReview,
-		"init":           h.handleInit,
-		"config":         h.handleConfig,
-		"version":        h.handleVersion,
-		"model":          h.handleModel,
-		"models":         h.handleModels,
-		"soul":           h.handleSoul,
-		"tools":          h.handleTools,
-		"skills":         h.handleSkills,
-		"mcp":            h.handleMCP,
-		"approve":        h.handleApprove,
-		"deny":           h.handleDeny,
-		"cron":           h.handleCron,
-		"watch":          h.handleWatch,
-		"dashboard":      h.handleDashboard,
-		"msg_gateway":    h.handleMsgGateway,
-		"rag":            h.handleRAG,
-		"context":        h.handleContext,
-		"fc":             h.handleFC,
-		"embedder":       h.handleEmbedder,
-		"metrics":        h.handleMetrics,
-		"health":         h.handleHealth,
-		"learn":          h.handleLearn,
-		"learn_start":    h.handleLearnStart,
-		"learn_current":  h.handleLearnCurrent,
-		"learn_lab":      h.handleLearnLab,
-		"learn_submit":   h.handleLearnSubmit,
-		"learn_progress": h.handleLearnProgress,
-		"remember":       h.handleRemember,
-		"remember_long":  h.handleRememberLong,
-		"recall":         h.handleRecall,
-		"memstats":       h.handleMemStats,
-		"memdecay":       h.handleMemDecay,
-		"promote":        h.handlePromote,
-		"profile":        h.handleProfile,
-		"reset":          h.handleReset,
-		"history":        h.handleHistory,
-		"session":        h.handleSession,
-		"sessions":       h.handleSessions,
-		"resume":         h.handleResume,
-		"rename":         h.handleRename,
-		"new":            h.handleNew,
-		"stop":           h.handleStop,
-		"status":         h.handleStatus,
-		"restart":        h.handleRestart,
+		"start":         h.handleStart,
+		"help":          h.handleHelp,
+		"chat":          h.handleChatCommand,
+		"lucky":         h.handleLucky,
+		"review":        h.handleReview,
+		"init":          h.handleInit,
+		"config":        h.handleConfig,
+		"version":       h.handleVersion,
+		"model":         h.handleModel,
+		"models":        h.handleModels,
+		"soul":          h.handleSoul,
+		"tools":         h.handleTools,
+		"skills":        h.handleSkills,
+		"mcp":           h.handleMCP,
+		"approve":       h.handleApprove,
+		"deny":          h.handleDeny,
+		"cron":          h.handleCron,
+		"watch":         h.handleWatch,
+		"dashboard":     h.handleDashboard,
+		"msg_gateway":   h.handleMsgGateway,
+		"rag":           h.handleRAG,
+		"context":       h.handleContext,
+		"fc":            h.handleFC,
+		"embedder":      h.handleEmbedder,
+		"metrics":       h.handleMetrics,
+		"health":        h.handleHealth,
+		"remember":      h.handleRemember,
+		"remember_long": h.handleRememberLong,
+		"recall":        h.handleRecall,
+		"memstats":      h.handleMemStats,
+		"memdecay":      h.handleMemDecay,
+		"promote":       h.handlePromote,
+		"profile":       h.handleProfile,
+		"reset":         h.handleReset,
+		"history":       h.handleHistory,
+		"session":       h.handleSession,
+		"sessions":      h.handleSessions,
+		"resume":        h.handleResume,
+		"rename":        h.handleRename,
+		"new":           h.handleNew,
+		"stop":          h.handleStop,
+		"status":        h.handleStatus,
+		"restart":       h.handleRestart,
 	}
 	registry := make(map[string]commandHandler, len(handlers))
 	for _, name := range qqCommandNames() {
@@ -1307,193 +1300,6 @@ func (h *Handler) sendRAGStore(ctx context.Context, msg *gateway.Message, ragMgr
 		return h.reply(ctx, msg, "RAG store 当前不可用。")
 	}
 	return h.reply(ctx, msg, fmt.Sprintf("Memory RAG store：\nvectors: %d\ndimension: %d", store.Len(), store.Dimension()))
-}
-
-func (h *Handler) handleLearn(ctx context.Context, msg *gateway.Message) error {
-	var sb strings.Builder
-	sb.WriteString("LuckyAgent Learning Mode\n\n")
-	sb.WriteString("命令：\n")
-	sb.WriteString("/learn_start lh-agent-systems : start or resume the built-in project course\n")
-	sb.WriteString("/learn_current : show the current module\n")
-	sb.WriteString("/learn_lab : show the current lab\n")
-	sb.WriteString("/learn_submit <evidence> : submit lab evidence and advance\n")
-	sb.WriteString("/learn_progress : show course progress\n\n")
-	sb.WriteString("Courses:\n")
-	for _, course := range learning.BuiltinCourses() {
-		sb.WriteString(fmt.Sprintf("%s : %s (%d modules)\n", course.ID, course.Title, len(course.Modules)))
-	}
-	return h.reply(ctx, msg, strings.TrimSpace(sb.String()))
-}
-
-func (h *Handler) handleLearnStart(ctx context.Context, msg *gateway.Message) error {
-	courseID := strings.TrimSpace(msg.Args)
-	if courseID == "" {
-		return h.reply(ctx, msg, "用法：/learn_start <course>\n示例：/learn_start lh-agent-systems")
-	}
-	course, ok := learning.FindCourse(courseID)
-	if !ok {
-		return h.reply(ctx, msg, fmt.Sprintf("未知课程：%s\n发送 /learn 查看课程列表。", courseID))
-	}
-	store, err := h.learningStore()
-	if err != nil {
-		return h.reply(ctx, msg, fmt.Sprintf("Learning store 不可用：%s", err.Error()))
-	}
-	cp, err := store.StartCourse(course)
-	if err != nil {
-		return h.reply(ctx, msg, fmt.Sprintf("课程启动失败：%s", err.Error()))
-	}
-	module, _ := course.ModuleByID(cp.CurrentModule)
-	return h.reply(ctx, msg, fmt.Sprintf("Learning started：\ncourse: %s\ncurrent: %s : %s\nprogress: %s\n\n发送 /learn_lab 打开第一个 lab。",
-		course.Title, module.ID, module.Title, store.Path()))
-}
-
-func (h *Handler) handleLearnCurrent(ctx context.Context, msg *gateway.Message) error {
-	course, cp, store, err := h.activeLearningState()
-	if err != nil {
-		return h.reply(ctx, msg, err.Error())
-	}
-	module, ok := course.ModuleByID(cp.CurrentModule)
-	if !ok {
-		return h.reply(ctx, msg, fmt.Sprintf("当前 module 未找到：%s", cp.CurrentModule))
-	}
-	done, total := learning.CourseCompletion(course, cp)
-	return h.reply(ctx, msg, fmt.Sprintf("当前学习模块：\ncourse: %s\nmodule: %s : %s\nobjective: %s\ncompletion: %d/%d\nprogress: %s",
-		course.Title, module.ID, module.Title, module.Objective, done, total, store.Path()))
-}
-
-func (h *Handler) handleLearnLab(ctx context.Context, msg *gateway.Message) error {
-	course, cp, _, err := h.activeLearningState()
-	if err != nil {
-		return h.reply(ctx, msg, err.Error())
-	}
-	module, ok := course.ModuleByID(cp.CurrentModule)
-	if !ok {
-		return h.reply(ctx, msg, fmt.Sprintf("当前 module 未找到：%s", cp.CurrentModule))
-	}
-	return h.reply(ctx, msg, formatQQLearningLab(module))
-}
-
-func (h *Handler) handleLearnSubmit(ctx context.Context, msg *gateway.Message) error {
-	evidence := strings.TrimSpace(msg.Args)
-	if evidence == "" {
-		return h.reply(ctx, msg, "用法：/learn_submit <evidence>")
-	}
-	course, _, store, err := h.activeLearningState()
-	if err != nil {
-		return h.reply(ctx, msg, err.Error())
-	}
-	cp, mp, err := store.SubmitEvidence(course, evidence, true)
-	if err != nil {
-		return h.reply(ctx, msg, fmt.Sprintf("提交 evidence 失败：%s", err.Error()))
-	}
-	var sb strings.Builder
-	sb.WriteString("Learning evidence accepted\n")
-	sb.WriteString(fmt.Sprintf("module: %s\n", mp.ModuleID))
-	sb.WriteString(fmt.Sprintf("attempts: %d\n", mp.Attempts))
-	if cp.CompletedAt != nil {
-		sb.WriteString(fmt.Sprintf("\n课程已完成：%s", course.Title))
-		return h.reply(ctx, msg, sb.String())
-	}
-	next, _ := course.ModuleByID(cp.CurrentModule)
-	sb.WriteString(fmt.Sprintf("\nNext: %s : %s\n发送 /learn_lab 继续。", next.ID, next.Title))
-	return h.reply(ctx, msg, sb.String())
-}
-
-func (h *Handler) handleLearnProgress(ctx context.Context, msg *gateway.Message) error {
-	course, cp, store, err := h.activeLearningState()
-	if err != nil {
-		return h.reply(ctx, msg, err.Error())
-	}
-	done, total := learning.CourseCompletion(course, cp)
-	var sb strings.Builder
-	sb.WriteString("Learning progress\n")
-	sb.WriteString(fmt.Sprintf("course: %s\n", course.Title))
-	sb.WriteString(fmt.Sprintf("completion: %d/%d\n\n", done, total))
-	for _, module := range course.Modules {
-		mp := cp.Modules[module.ID]
-		status := mp.Status
-		if status == "" {
-			status = "pending"
-		}
-		sb.WriteString(fmt.Sprintf("%s : %s (attempts=%d)\n", module.ID, status, mp.Attempts))
-	}
-	sb.WriteString(fmt.Sprintf("\nprogress: %s", store.Path()))
-	return h.reply(ctx, msg, strings.TrimSpace(sb.String()))
-}
-
-func (h *Handler) learningStore() (*learning.ProgressStore, error) {
-	home := ""
-	if h.agent != nil && h.agent.Config() != nil {
-		home = strings.TrimSpace(h.agent.Config().HomeDir())
-	}
-	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("locate home dir: %w", err)
-		}
-		home = filepath.Join(userHome, ".luckyagent")
-	}
-	return learning.NewProgressStore(home), nil
-}
-
-func (h *Handler) activeLearningState() (learning.Course, learning.CourseProgress, *learning.ProgressStore, error) {
-	store, err := h.learningStore()
-	if err != nil {
-		return learning.Course{}, learning.CourseProgress{}, nil, err
-	}
-	progress, err := store.Load()
-	if err != nil {
-		return learning.Course{}, learning.CourseProgress{}, nil, err
-	}
-	if progress.ActiveCourseID == "" {
-		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("没有 active course，请先发送 /learn_start lh-agent-systems")
-	}
-	course, ok := learning.FindCourse(progress.ActiveCourseID)
-	if !ok {
-		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("active course %s 未安装", progress.ActiveCourseID)
-	}
-	cp, ok := progress.Courses[progress.ActiveCourseID]
-	if !ok {
-		return learning.Course{}, learning.CourseProgress{}, nil, fmt.Errorf("active course %s 没有 progress", progress.ActiveCourseID)
-	}
-	return course, cp, store, nil
-}
-
-func formatQQLearningLab(module learning.Module) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Lab: %s\n\n", module.Lab.ID))
-	sb.WriteString(fmt.Sprintf("module: %s : %s\n", module.ID, module.Title))
-	sb.WriteString(fmt.Sprintf("prompt: %s\n", module.Lab.Prompt))
-	if len(module.Concepts) > 0 {
-		sb.WriteString(fmt.Sprintf("concepts: %s\n", strings.Join(module.Concepts, ", ")))
-	}
-	if len(module.Lab.AgentRoles) > 0 {
-		sb.WriteString(fmt.Sprintf("agent roles: %s\n", strings.Join(module.Lab.AgentRoles, ", ")))
-	}
-	if len(module.Lab.Commands) > 0 {
-		sb.WriteString("\ncommands:\n")
-		for _, c := range module.Lab.Commands {
-			sb.WriteString(c)
-			sb.WriteByte('\n')
-		}
-	}
-	if len(module.Lab.Evidence) > 0 {
-		sb.WriteString("\nevidence:\n")
-		for _, e := range module.Lab.Evidence {
-			sb.WriteString(e)
-			sb.WriteByte('\n')
-		}
-	}
-	if len(module.Rubric) > 0 {
-		sb.WriteString("\nrubric:\n")
-		for _, r := range module.Rubric {
-			sb.WriteString(r)
-			sb.WriteByte('\n')
-		}
-	}
-	sb.WriteString(fmt.Sprintf("\ndeliverable: %s\n", module.Lab.Deliverable))
-	sb.WriteString("\nSubmit with /learn_submit <evidence>.")
-	return strings.TrimSpace(sb.String())
 }
 
 func (h *Handler) handleRemember(ctx context.Context, msg *gateway.Message) error {

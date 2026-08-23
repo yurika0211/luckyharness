@@ -800,7 +800,6 @@ func TestQQCommandNamesMatchTelegramCommandSet(t *testing.T) {
 	expected := []string{
 		"start", "help", "chat", "lucky",
 		"review", "init", "config", "version", "model", "models", "soul", "tools", "skills", "mcp", "approve", "deny", "cron", "watch", "dashboard", "msg_gateway", "rag", "context", "fc", "embedder", "metrics", "health",
-		"learn", "learn_start", "learn_current", "learn_lab", "learn_submit", "learn_progress",
 		"remember", "remember_long", "recall", "memstats", "memdecay", "promote", "profile", "reset", "history", "session", "sessions", "resume", "rename", "new", "stop", "status", "restart",
 	}
 	got := qqCommandNames()
@@ -825,7 +824,7 @@ func TestQQCommandRegistryCoversAllCommands(t *testing.T) {
 
 func TestQQHelpIncludesAdvancedCommands(t *testing.T) {
 	help := qqHelpMessage()
-	for _, want := range []string{"/rag", "/sessions", "/remember", "/embedder", "/learn_start", "/msg_gateway"} {
+	for _, want := range []string{"/rag", "/sessions", "/remember", "/embedder", "/msg_gateway"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help is missing %s:\n%s", want, help)
 		}

@@ -4735,12 +4735,6 @@ func TestV054HandleCommandAll(t *testing.T) {
 		{"embedder", "list"},
 		{"metrics", ""},
 		{"health", ""},
-		{"learn", ""},
-		{"learn_start", "lh-agent-systems"},
-		{"learn_current", ""},
-		{"learn_lab", ""},
-		{"learn_submit", "go test passed"},
-		{"learn_progress", ""},
 		{"remember", "hello memory"},
 		{"remember_long", "hello long memory"},
 		{"recall", "hello"},
@@ -4792,8 +4786,6 @@ func TestV054HandleCommandNormalizesTUIStyleAliases(t *testing.T) {
 	}{
 		{command: "msg-gateway", args: "status", normalized: "msg_gateway"},
 		{command: "remember-long", args: "persist this", normalized: "remember_long"},
-		{command: "learn-start", args: "lh-agent-systems", normalized: "learn_start"},
-		{command: "learn-progress", args: "", normalized: "learn_progress"},
 	} {
 		msg := &gateway.Message{
 			ID: "1",
@@ -4812,85 +4804,6 @@ func TestV054HandleCommandNormalizesTUIStyleAliases(t *testing.T) {
 		if msg.Command != tc.normalized {
 			t.Fatalf("expected command %q to normalize to %q, got %q", tc.command, tc.normalized, msg.Command)
 		}
-	}
-}
-
-func TestV054HandleLearnCommandFlow(t *testing.T) {
-	adapter, sent := newAdapterWithCapturedMessages(t)
-	home := t.TempDir()
-	sessMgr, err := session.NewManager(t.TempDir())
-	if err != nil {
-		t.Fatalf("session manager: %v", err)
-	}
-	mockAgent := &mockAgentProvider{
-		sessions: sessMgr,
-		configSnap: agentConfigSnapshot{
-			HomeDir:  home,
-			Model:    "test-model",
-			Provider: "test-provider",
-		},
-		toolsVal:   tool.NewRegistry(),
-		skillsVal:  []*tool.SkillInfo{},
-		cronEngine: cron.NewEngine(),
-		metricsVal: metrics.NewMetrics(),
-	}
-	handler := &Handler{
-		adapter:           adapter,
-		agent:             mockAgent,
-		state:             mockAgent,
-		chat:              mockAgent,
-		commands:          make(map[string]telegramCommandHandler),
-		watcher:           cron.NewWatcher(mockAgent.cronEngine),
-		sessions:          make(map[string]string),
-		chatStreamTimeout: defaultChatStreamTimeout,
-	}
-	handler.commands = handler.buildCommandRegistry()
-
-	ctx := context.Background()
-	run := func(command, args string) {
-		t.Helper()
-		msg := &gateway.Message{
-			ID:        "1",
-			Chat:      gateway.Chat{ID: "12345", Type: gateway.ChatPrivate},
-			Text:      "/" + command,
-			IsCommand: true,
-			Command:   command,
-			Args:      args,
-		}
-		if err := handler.handleCommand(ctx, msg); err != nil {
-			t.Fatalf("handleCommand(%s) error = %v", command, err)
-		}
-	}
-
-	run("learn", "")
-	run("learn_start", "lh-agent-systems")
-	run("learn_lab", "")
-	run("learn_submit", "go test ./internal/gateway/telegram passed")
-	run("learn_progress", "")
-
-	var combined strings.Builder
-	for _, msg := range *sent {
-		combined.WriteString(msg.Text)
-		combined.WriteString("\n")
-	}
-	got := combined.String()
-	if !strings.Contains(got, "LuckyAgent Learning Mode") {
-		t.Fatalf("expected learn help output, got %q", got)
-	}
-	if !strings.Contains(got, "Learning Started") {
-		t.Fatalf("expected learn start output, got %q", got)
-	}
-	if !strings.Contains(got, "lab-tool-trace-formatting") {
-		t.Fatalf("expected lab output, got %q", got)
-	}
-	if !strings.Contains(got, "Learning Evidence Accepted") {
-		t.Fatalf("expected evidence output, got %q", got)
-	}
-	if !strings.Contains(got, "Completion: 1/4") {
-		t.Fatalf("expected progress output, got %q", got)
-	}
-	if _, err := os.Stat(filepath.Join(home, "learning", "progress.json")); err != nil {
-		t.Fatalf("expected Telegram learning progress file: %v", err)
 	}
 }
 
@@ -5047,6 +4960,28 @@ func TestV054HandleChatStreamSuccess(t *testing.T) {
 	err := handler.handleChat(ctx, msg, agent.TextUserTurnInput("hello"))
 	if err != nil {
 		t.Errorf("expected no error, got: %v", err)
+	}
+}
+
+func TestV054HandleChatStreamDeliversTimeoutFinalAnswer(t *testing.T) {
+	handler, server := newHandlerWithMockAgent(t)
+	defer server.Close()
+
+	const timeoutFinal = "This request timed out before a complete final answer was generated.\n\nNext: retry or ask me to continue from these recorded results."
+	handler.agent.(*mockAgentProvider).chatStreamFn = func(context.Context, string, string) (<-chan agent.ChatEvent, error) {
+		ch := make(chan agent.ChatEvent, 1)
+		ch <- agent.ChatEvent{Type: agent.ChatEventDone, Content: timeoutFinal}
+		close(ch)
+		return ch, nil
+	}
+
+	msg := &gateway.Message{ID: "1", Chat: gateway.Chat{ID: "12345", Type: gateway.ChatPrivate}, Text: "download it"}
+	sender := &mockStreamSender{}
+	if err := handler.handleChatStream(context.Background(), sender, msg, agent.TextUserTurnInput("download it"), handler.getSessionID("12345")); err != nil {
+		t.Fatalf("handleChatStream() error = %v", err)
+	}
+	if !sender.finished || !strings.Contains(sender.result, "timed out") {
+		t.Fatalf("expected timeout final answer to be delivered, got finished=%t result=%q", sender.finished, sender.result)
 	}
 }
 

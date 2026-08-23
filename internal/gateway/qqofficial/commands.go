@@ -11,7 +11,6 @@ const (
 	qqCommandGroupBasic   qqCommandGroup = "Basic"
 	qqCommandGroupSystem  qqCommandGroup = "System"
 	qqCommandGroupSession qqCommandGroup = "Session"
-	qqCommandGroupLearn   qqCommandGroup = "Learning"
 )
 
 type qqCommandSpec struct {
@@ -49,12 +48,6 @@ func qqCommandSpecs() []qqCommandSpec {
 		{Command: "embedder", Usage: "/embedder [list|switch|test]", Description: "管理 embedding 模型", Group: qqCommandGroupSystem},
 		{Command: "metrics", Usage: "/metrics", Description: "查看运行指标", Group: qqCommandGroupSystem},
 		{Command: "health", Usage: "/health", Description: "查看系统健康状态", Group: qqCommandGroupSystem},
-		{Command: "learn", Usage: "/learn", Description: "查看学习模式命令", Group: qqCommandGroupLearn},
-		{Command: "learn_start", Usage: "/learn_start <course>", Description: "开始或恢复课程", Group: qqCommandGroupLearn},
-		{Command: "learn_current", Usage: "/learn_current", Description: "查看当前学习模块", Group: qqCommandGroupLearn},
-		{Command: "learn_lab", Usage: "/learn_lab", Description: "查看当前 lab", Group: qqCommandGroupLearn},
-		{Command: "learn_submit", Usage: "/learn_submit <evidence>", Description: "提交 lab 证据", Group: qqCommandGroupLearn},
-		{Command: "learn_progress", Usage: "/learn_progress", Description: "查看学习进度", Group: qqCommandGroupLearn},
 		{Command: "remember", Usage: "/remember <content>", Description: "保存中期记忆", Group: qqCommandGroupSession},
 		{Command: "remember_long", Usage: "/remember_long <content>", Description: "保存长期记忆", Group: qqCommandGroupSession},
 		{Command: "recall", Usage: "/recall <query>", Description: "检索记忆", Group: qqCommandGroupSession},
@@ -87,7 +80,7 @@ func qqCommandNames() []string {
 func qqHelpMessage() string {
 	var sb strings.Builder
 	sb.WriteString("可用命令：\n")
-	for _, group := range []qqCommandGroup{qqCommandGroupBasic, qqCommandGroupSystem, qqCommandGroupLearn, qqCommandGroupSession} {
+	for _, group := range []qqCommandGroup{qqCommandGroupBasic, qqCommandGroupSystem, qqCommandGroupSession} {
 		sb.WriteString("\n")
 		sb.WriteString(string(group))
 		sb.WriteString(":\n")

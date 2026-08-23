@@ -17,8 +17,8 @@ Primary entry points:
 - `lh serve`: HTTP API server.
 - `lh msg-gateway start`: external chat gateways.
 - `lh rag`: RAG index/search/stats commands.
-- `lh config`, `lh soul`, `lh dashboard`, `lh tui`, and `lh learn`: runtime
-  management surfaces.
+- `lh config`, `lh soul`, `lh dashboard`, and `lh tui`: runtime management
+  surfaces.
 
 The runtime home defaults to `${HOME}/.luckyagent`. Source checkouts may also
 contain a local `config.json`, but deployed runtime state belongs under the
