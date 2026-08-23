@@ -77,6 +77,7 @@ Common routes include:
 - `/api/v1/rag/stream/*` for stream indexer watch, scan, start, stop, queue,
   status, and process operations.
 - `/api/v1/context` and `/api/v1/context/fit` for context inspection.
+- `POST /api/v1/config/reload` to safely reload configuration for later requests.
 - `/api/v1/health/live`, `/ready`, `/detail`, and `/api/v1/metrics`.
 - `/api/v1/ws` and `/api/v1/ws/stats`.
 

@@ -389,6 +389,24 @@ func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime
 		tokenStore = nil
 	}
 
+	p, err := buildConfiguredProvider(c, registry)
+	if err != nil {
+		return providerRuntime{}, err
+	}
+	p = wrapProviderWithMiddleware(p, c)
+
+	return providerRuntime{
+		provider:   p,
+		registry:   registry,
+		catalog:    catalog,
+		tokenStore: tokenStore,
+	}, nil
+}
+
+func buildConfiguredProvider(c *config.Config, registry *provider.Registry) (provider.Provider, error) {
+	if c == nil || registry == nil {
+		return nil, fmt.Errorf("provider configuration is unavailable")
+	}
 	var p provider.Provider
 	if len(c.Fallbacks) > 0 {
 		fallbackConfigs := make([]provider.FallbackConfig, 0, len(c.Fallbacks)+1)
@@ -410,24 +428,18 @@ func initProviderRuntime(cfg *config.Manager, c *config.Config) (providerRuntime
 		}
 		chain, err := provider.NewFallbackChain(fallbackConfigs, registry)
 		if err != nil {
-			return providerRuntime{}, fmt.Errorf("create fallback chain: %w", err)
+			return nil, fmt.Errorf("create fallback chain: %w", err)
 		}
 		p = chain
 	} else {
 		pCfg := toProviderConfig(c, "", "")
+		var err error
 		p, err = registry.Resolve(pCfg)
 		if err != nil {
-			return providerRuntime{}, fmt.Errorf("resolve provider: %w", err)
+			return nil, fmt.Errorf("resolve provider: %w", err)
 		}
 	}
-	p = wrapProviderWithMiddleware(p, c)
-
-	return providerRuntime{
-		provider:   p,
-		registry:   registry,
-		catalog:    catalog,
-		tokenStore: tokenStore,
-	}, nil
+	return p, nil
 }
 
 /**
@@ -870,13 +882,83 @@ func (a *Agent) StartConfigWatch(interval time.Duration) (func(), error) {
 	if err != nil {
 		return func() {}, err
 	}
-	w.OnChange(func(_, newCfg *config.Config) {
-		a.ReloadHooks(newCfg)
+	w.OnValidate(func(_, newCfg *config.Config) error {
+		return a.ValidateRuntimeConfig(newCfg)
+	})
+	w.OnChange(func(oldCfg, newCfg *config.Config) {
+		if err := a.ApplyRuntimeConfig(newCfg); err != nil {
+			logger.Warn("configuration reload could not update provider runtime", "error", err)
+			return
+		}
+		_, restartRequired := config.ReloadClassification(oldCfg, newCfg)
+		logger.Info("configuration reloaded for subsequent requests", "restart_required", restartRequired)
+	})
+	w.OnError(func(err error) {
+		logger.Warn("configuration reload rejected; keeping previous configuration", "error", err)
 	})
 	if err := w.Start(); err != nil {
 		return func() {}, err
 	}
 	return w.Stop, nil
+}
+
+func (a *Agent) ValidateRuntimeConfig(c *config.Config) error {
+	if a == nil {
+		return fmt.Errorf("agent is unavailable")
+	}
+	_, err := buildConfiguredProvider(c, provider.NewRegistry())
+	return err
+}
+
+func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
+	if a == nil {
+		return fmt.Errorf("agent is unavailable")
+	}
+	registry := provider.NewRegistry()
+	nextProvider, err := buildConfiguredProvider(c, registry)
+	if err != nil {
+		return err
+	}
+	nextCatalog := provider.NewModelCatalog()
+	for _, custom := range c.CustomModels {
+		if strings.TrimSpace(custom.ID) == "" {
+			continue
+		}
+		nextCatalog.Register(provider.ModelInfo{
+			ID:            custom.ID,
+			Provider:      custom.Provider,
+			DisplayName:   custom.DisplayName,
+			Capabilities:  append([]string(nil), custom.Capabilities...),
+			ContextWindow: custom.ContextWindow,
+			CostPer1kIn:   custom.CostPer1kIn,
+			CostPer1kOut:  custom.CostPer1kOut,
+		})
+	}
+	a.providerMu.Lock()
+	a.provider = wrapProviderWithMiddleware(nextProvider, c)
+	a.registry = registry
+	a.catalog = nextCatalog
+	a.activeModel = c.Model
+	a.activeAPIBase = c.APIBase
+	a.providerMu.Unlock()
+	a.ReloadHooks(c)
+	return nil
+}
+
+func (a *Agent) ReloadConfig() (config.ReloadResult, error) {
+	if a == nil || a.cfg == nil {
+		return config.ReloadResult{}, fmt.Errorf("agent configuration is unavailable")
+	}
+	result, err := a.cfg.ReloadValidated(func(_, newCfg *config.Config) error {
+		return a.ValidateRuntimeConfig(newCfg)
+	})
+	if err != nil || !result.Changed {
+		return result, err
+	}
+	if err := a.ApplyRuntimeConfig(result.New); err != nil {
+		return config.ReloadResult{}, err
+	}
+	return result, nil
 }
 
 type multimodalRuntimeConfig struct {
@@ -3365,7 +3447,13 @@ func (a *Agent) Tools() *tool.Registry {
 
 // Catalog 返回模型目录
 func (a *Agent) Catalog() *provider.ModelCatalog {
-	return a.catalog
+	if a == nil {
+		return nil
+	}
+	a.providerMu.RLock()
+	catalog := a.catalog
+	a.providerMu.RUnlock()
+	return catalog
 }
 
 // Provider 返回当前 provider
@@ -3389,6 +3477,8 @@ func (a *Agent) SwitchModel(modelID string) error {
 	if a == nil || a.catalog == nil || a.cfg == nil || a.registry == nil {
 		return fmt.Errorf("agent provider runtime is not initialized")
 	}
+	a.providerMu.Lock()
+	defer a.providerMu.Unlock()
 	modelInfo, err := a.catalog.Get(modelID)
 	if err != nil {
 		return fmt.Errorf("model %s is not registered in catalog: %w", modelID, err)
@@ -3405,14 +3495,12 @@ func (a *Agent) SwitchModel(modelID string) error {
 		},
 	}
 
-	a.providerMu.Lock()
 	p, err := a.registry.Create(pCfg.LlmProvider.Name, pCfg)
 	if err == nil && p != nil {
 		a.provider = wrapProviderWithMiddleware(p, cfg)
 		a.activeModel = modelID
 		a.activeAPIBase = cfg.APIBase
 	}
-	a.providerMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("create provider %s: %w", modelInfo.Provider, err)
 	}

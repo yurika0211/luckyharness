@@ -1450,10 +1450,11 @@ func cloneConfig(in *Config) *Config {
 
 // Manager 管理配置的加载和保存
 type Manager struct {
-	mu      sync.RWMutex
-	config  *Config
-	homeDir string
-	cfgPath string
+	mu       sync.RWMutex
+	reloadMu sync.Mutex
+	config   *Config
+	homeDir  string
+	cfgPath  string
 }
 
 // NewManager 创建配置管理器
@@ -1482,24 +1483,7 @@ func NewManagerWithDir(homeDir string) (*Manager, error) {
 
 // Load 从磁盘加载配置
 func (m *Manager) Load() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	data, err := os.ReadFile(m.cfgPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // 使用默认配置
-		}
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	cfg, err := parseConfigData(data)
-	if err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-
-	m.config = cfg
-	return nil
+	return m.Reload()
 }
 
 // Save 保存配置到磁盘

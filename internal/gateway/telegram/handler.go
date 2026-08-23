@@ -113,6 +113,8 @@ type agentConfigSnapshot struct {
 	Provider                  string
 	APIKey                    string
 	APIBase                   string
+	ExtraHeaders              map[string]string
+	CustomModels              []provider.ModelInfo
 	SoulPath                  string
 	MaxTokens                 int
 	Temperature               float64
@@ -303,6 +305,8 @@ func (w agentConfigWrapper) Get() agentConfigSnapshot {
 		Provider:                  cfg.Provider,
 		APIKey:                    cfg.APIKey,
 		APIBase:                   cfg.APIBase,
+		ExtraHeaders:              cloneStringMap(cfg.ExtraHeaders),
+		CustomModels:              customModelInfos(cfg.CustomModels),
 		SoulPath:                  cfg.SoulPath,
 		MaxTokens:                 cfg.MaxTokens,
 		Temperature:               cfg.Temperature,
@@ -339,6 +343,39 @@ func (w agentConfigWrapper) Set(key, value string) error {
 
 func (w agentConfigWrapper) Save() error {
 	return w.mgr.Save()
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(values))
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func customModelInfos(models []config.CustomModelInfo) []provider.ModelInfo {
+	if len(models) == 0 {
+		return nil
+	}
+	result := make([]provider.ModelInfo, 0, len(models))
+	for _, model := range models {
+		if strings.TrimSpace(model.ID) == "" {
+			continue
+		}
+		result = append(result, provider.ModelInfo{
+			ID:            model.ID,
+			Provider:      model.Provider,
+			DisplayName:   model.DisplayName,
+			Capabilities:  append([]string(nil), model.Capabilities...),
+			ContextWindow: model.ContextWindow,
+			CostPer1kIn:   model.CostPer1kIn,
+			CostPer1kOut:  model.CostPer1kOut,
+		})
+	}
+	return result
 }
 
 type telegramCommandHandler func(ctx context.Context, msg *gateway.Message) error
@@ -384,6 +421,7 @@ type Handler struct {
 	memoryTraceLevel      string
 	memoryTraceMaxResults int
 	memoryTraceMaxHops    int
+	modelDiscovery        *provider.ModelDiscovery
 
 	memeDir         string
 	memeProbability float64
@@ -454,6 +492,7 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		memoryTraceLevel:          resolveMemoryTraceLevel(state),
 		memoryTraceMaxResults:     resolveMemoryTraceMaxResults(state),
 		memoryTraceMaxHops:        resolveMemoryTraceMaxHops(state),
+		modelDiscovery:            provider.NewModelDiscovery(),
 		memeDir:                   memeDir,
 		memeProbability:           memeProbability,
 		memeCooldown:              memeCooldown,
@@ -3227,41 +3266,114 @@ func buildInfo() (version, commit, date string) {
 
 func (h *Handler) handleModels(ctx context.Context, msg *gateway.Message) error {
 	state := h.stateService()
-	if state == nil || state.Catalog() == nil {
-		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model catalog unavailable")
+	if state == nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model discovery unavailable")
 	}
-
-	models := state.Catalog().List()
-	if len(models) == 0 {
-		return h.adapter.Send(ctx, msg.Chat.ID, "📋 Model catalog is empty.")
+	refresh := strings.EqualFold(strings.TrimSpace(msg.Args), "refresh")
+	if strings.TrimSpace(msg.Args) != "" && !refresh {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/models [refresh]`")
 	}
-
 	cfg := h.configSnapshot()
+	models, source, err := h.discoverModels(ctx, cfg, refresh)
+	if err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, telegramModelDiscoveryError(err))
+	}
+	if catalog := state.Catalog(); catalog != nil {
+		for _, model := range models {
+			catalog.Register(model)
+		}
+	}
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("📋 *Available Models* (%d):\n\n", len(models)))
-	currentProvider := ""
+	sb.WriteString(fmt.Sprintf("📋 *Available Models* (%d, %s):\n\n", len(models), source))
 	limit := min(len(models), 40)
 	for i := 0; i < limit; i++ {
 		m := models[i]
-		if m.Provider != currentProvider {
-			currentProvider = m.Provider
-			sb.WriteString(fmt.Sprintf("\n[%s]\n", currentProvider))
-		}
 		marker := "•"
 		if m.ID == cfg.Model {
 			marker = "✅"
 		}
-		cost := "free/local"
-		if m.CostPer1kIn > 0 || m.CostPer1kOut > 0 {
-			cost = fmt.Sprintf("$%.4f/$%.4f per 1k", m.CostPer1kIn, m.CostPer1kOut)
-		}
-		sb.WriteString(fmt.Sprintf("%s `%s` — %s (%s)\n", marker, m.ID, truncateForTelegramList(m.DisplayName, 48), cost))
+		sb.WriteString(fmt.Sprintf("%s `%s` — %s\n", marker, m.ID, truncateForTelegramList(m.DisplayName, 48)))
 	}
 	if len(models) > limit {
 		sb.WriteString(fmt.Sprintf("\n... and %d more", len(models)-limit))
 	}
-	sb.WriteString("\n\nUse `/model <id>` to switch.")
+	sb.WriteString("\n\nUse `/model <id>` to switch. Use `/models refresh` to query again.")
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) discoverModels(ctx context.Context, cfg agentConfigSnapshot, refresh bool) ([]provider.ModelInfo, string, error) {
+	discovery := h.modelDiscovery
+	if discovery == nil {
+		discovery = provider.NewModelDiscovery()
+		h.mu.Lock()
+		if h.modelDiscovery == nil {
+			h.modelDiscovery = discovery
+		} else {
+			discovery = h.modelDiscovery
+		}
+		h.mu.Unlock()
+	}
+	models, err := discovery.Discover(ctx, provider.ModelDiscoveryConfig{
+		Provider:     cfg.Provider,
+		APIKey:       cfg.APIKey,
+		APIBase:      cfg.APIBase,
+		Model:        cfg.Model,
+		ExtraHeaders: cfg.ExtraHeaders,
+	}, refresh)
+	if err == nil {
+		return models, "verified by current credentials", nil
+	}
+	if !errors.Is(err, provider.ErrModelDiscoveryUnsupported) {
+		return nil, "", err
+	}
+	manual := configuredModelsForProvider(cfg)
+	if len(manual) == 0 {
+		return nil, "", err
+	}
+	return manual, "manual configuration (provider has no model-list API)", nil
+}
+
+func configuredModelsForProvider(cfg agentConfigSnapshot) []provider.ModelInfo {
+	models := make([]provider.ModelInfo, 0, len(cfg.CustomModels)+1)
+	providerName := strings.TrimSpace(cfg.Provider)
+	for _, model := range cfg.CustomModels {
+		if strings.EqualFold(strings.TrimSpace(model.Provider), providerName) && strings.TrimSpace(model.ID) != "" {
+			models = append(models, model)
+		}
+	}
+	if currentModel := strings.TrimSpace(cfg.Model); currentModel != "" {
+		found := false
+		for _, model := range models {
+			if model.ID == currentModel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			models = append(models, provider.ModelInfo{ID: currentModel, Provider: providerName, DisplayName: currentModel})
+		}
+	}
+	slices.SortFunc(models, func(left, right provider.ModelInfo) int { return strings.Compare(left.ID, right.ID) })
+	return models
+}
+
+func telegramModelDiscoveryError(err error) string {
+	var discoveryErr *provider.ModelDiscoveryError
+	if errors.As(err, &discoveryErr) {
+		switch discoveryErr.Kind {
+		case provider.ModelDiscoveryAuthentication:
+			return "❌ Could not list models: authentication failed. Check the active provider credentials."
+		case provider.ModelDiscoveryRateLimited:
+			return "❌ Could not list models: provider rate limit reached. Try `/models refresh` later."
+		case provider.ModelDiscoveryUnsupported:
+			return "❌ This provider does not expose a model-list API. Configure `custom_models` to list manually configured models."
+		case provider.ModelDiscoveryNetwork:
+			return "❌ Could not reach the provider model-list endpoint. Check the configured API base and network."
+		default:
+			return "❌ Could not list models: the provider returned an invalid or unsupported response."
+		}
+	}
+	return "❌ Could not list models. Check the active provider configuration."
 }
 
 // handleSoul shows the current SOUL info.

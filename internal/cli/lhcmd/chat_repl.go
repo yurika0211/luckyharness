@@ -63,14 +63,28 @@ func startREPL(mgr *config.Manager) error {
 
 	// 启动配置热重载
 	configWatcher, _ := mgr.WatchConfig(5 * time.Second)
+	configWatcher.OnValidate(func(_ *config.Config, newCfg *config.Config) error {
+		return a.ValidateRuntimeConfig(newCfg)
+	})
 	configWatcher.OnChange(func(oldCfg, newCfg *config.Config) {
-		a.ReloadHooks(newCfg)
+		if err := a.ApplyRuntimeConfig(newCfg); err != nil {
+			fmt.Println("⚠️ 配置已读取，但运行时更新失败；后续请求继续使用此前 Provider")
+			return
+		}
 		diff := config.DiffConfig(oldCfg, newCfg)
 		if diff.HasChanged() {
 			fmt.Println("\n📋 配置已更新:")
 			fmt.Print(diff.Format())
-			fmt.Println("  hooks 已热重载；其它改动重启后生效")
+			_, restartRequired := config.ReloadClassification(oldCfg, newCfg)
+			if len(restartRequired) == 0 {
+				fmt.Println("  后续请求已使用可热更新项")
+			} else {
+				fmt.Printf("  后续请求已使用可热更新项；需重启: %s\n", strings.Join(restartRequired, ", "))
+			}
 		}
+	})
+	configWatcher.OnError(func(error) {
+		fmt.Println("⚠️ 配置重载被拒绝；继续使用上一份有效配置")
 	})
 	configWatcher.Start()
 	defer configWatcher.Stop()

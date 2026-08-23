@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -244,5 +245,81 @@ func TestManagerWatchConfig(t *testing.T) {
 	}
 	if watcher == nil {
 		t.Error("expected non-nil watcher")
+	}
+}
+
+func TestConfigWatcherInvalidUpdatePreservesManagerConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := mgr.Set("provider", "openai"); err != nil {
+		t.Fatalf("Set provider: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	watcher := NewConfigWatcher(mgr, 10*time.Millisecond)
+	errors := make(chan error, 1)
+	watcher.OnError(func(err error) {
+		select {
+		case errors <- err:
+		default:
+		}
+	})
+	if err := watcher.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer watcher.Stop()
+	if err := os.WriteFile(mgr.ConfigFile(), []byte(`{"llm_provider":`), 0o600); err != nil {
+		t.Fatalf("write invalid config: %v", err)
+	}
+	select {
+	case <-errors:
+	case <-time.After(time.Second):
+		t.Fatal("expected invalid config error")
+	}
+	if got := mgr.Get().Provider; got != "openai" {
+		t.Fatalf("invalid config replaced active value with %q", got)
+	}
+}
+
+func TestManagerReloadValidatedRejectsBeforeSwap(t *testing.T) {
+	tmpDir := t.TempDir()
+	mgr, err := NewManagerWithDir(tmpDir)
+	if err != nil {
+		t.Fatalf("NewManagerWithDir: %v", err)
+	}
+	if err := mgr.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := os.WriteFile(mgr.ConfigFile(), []byte(`{"llm_provider":{"name":"anthropic","model":"claude-test"}}`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err = mgr.ReloadValidated(func(oldCfg, newCfg *Config) error {
+		return fmt.Errorf("provider is not approved")
+	})
+	if err == nil {
+		t.Fatal("expected validation failure")
+	}
+	if got := mgr.Get().Provider; got != "openai" {
+		t.Fatalf("validation failure replaced active value with %q", got)
+	}
+}
+
+func TestReloadClassificationSeparatesRestartRequiredSettings(t *testing.T) {
+	oldCfg := DefaultConfig()
+	newCfg := cloneConfig(oldCfg)
+	newCfg.LlmProvider.Model = "next-model"
+	normalizeConfig(newCfg)
+	newCfg.Server.Addr = ":9091"
+	newCfg.MsgGateway.Telegram.Token = "changed-token"
+	hotReloaded, restartRequired := ReloadClassification(oldCfg, newCfg)
+	if len(hotReloaded) == 0 || hotReloaded[0] != "llm_provider" {
+		t.Fatalf("expected llm_provider hot reload, got %#v", hotReloaded)
+	}
+	if len(restartRequired) != 2 || restartRequired[0] != "server" || restartRequired[1] != "msg_gateway" {
+		t.Fatalf("unexpected restart-required groups %#v", restartRequired)
 	}
 }

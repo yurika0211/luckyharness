@@ -324,6 +324,7 @@ func (s *Server) Start() error {
 		{path: "/api/v1/health/ready", handler: s.handleHealthReadiness},
 		{path: "/api/v1/health/detail", handler: s.handleHealthDetail},
 		{path: "/api/v1/metrics", handler: s.handleMetrics},
+		{path: "/api/v1/config/reload", handler: s.handleConfigReload},
 		{path: "/api/v1/chat", handler: s.handleChat},
 		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
 		{path: "/api/v1/sessions", handler: s.handleSessions},
@@ -1345,6 +1346,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"endpoints": []string{
 			"POST /api/v1/chat       — 流式聊天 (SSE)",
 			"POST /api/v1/chat/sync  — 同步聊天",
+			"POST /api/v1/config/reload — 重载后续请求的配置",
 			"GET  /api/v1/ws         — WebSocket 实时通信",
 			"GET  /api/v1/ws/stats   — WebSocket 统计",
 			"GET  /api/v1/sessions   — 会话列表",

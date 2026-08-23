@@ -243,6 +243,17 @@ Recall example:
 curl "http://127.0.0.1:9090/api/v1/memory/recall?q=project"
 ```
 
+## Configuration
+
+### `POST /api/v1/config/reload`
+
+Reload the active configuration without interrupting in-flight requests. The
+response lists configuration groups applied to later requests and groups that
+still require a process restart. Invalid or unsupported provider configuration
+is rejected and the previous configuration remains active.
+
+Sensitive values, including API keys, are never returned.
+
 ## Tools, Stats, Soul, Health
 
 | Method | Path | Description |
