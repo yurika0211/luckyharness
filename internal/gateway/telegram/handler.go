@@ -70,6 +70,14 @@ type stateRuntime interface {
 	EmbedderRegistry() *embedder.Registry
 }
 
+type unifiedModelRuntime interface {
+	SwitchModelKind(kind config.ModelKind, modelID string, opts agent.SwitchModelOptions) error
+	CurrentModel(kind config.ModelKind) (agent.ModelRef, bool)
+	ListModels(kind *config.ModelKind) []agent.ModelRef
+	ModelProfiles() map[string]map[config.ModelKind]string
+	ApplyModelProfile(name string) error
+}
+
 type agentProvider interface {
 	chatRuntime
 	stateRuntime
@@ -171,6 +179,26 @@ func (a agentProviderAdapter) Config() agentConfigProvider {
 
 func (a agentProviderAdapter) SwitchModel(modelID string) error {
 	return a.inner.SwitchModel(modelID)
+}
+
+func (a agentProviderAdapter) SwitchModelKind(kind config.ModelKind, modelID string, opts agent.SwitchModelOptions) error {
+	return a.inner.SwitchModelKind(kind, modelID, opts)
+}
+
+func (a agentProviderAdapter) CurrentModel(kind config.ModelKind) (agent.ModelRef, bool) {
+	return a.inner.CurrentModel(kind)
+}
+
+func (a agentProviderAdapter) ListModels(kind *config.ModelKind) []agent.ModelRef {
+	return a.inner.ListModels(kind)
+}
+
+func (a agentProviderAdapter) ModelProfiles() map[string]map[config.ModelKind]string {
+	return a.inner.ModelProfiles()
+}
+
+func (a agentProviderAdapter) ApplyModelProfile(name string) error {
+	return a.inner.ApplyModelProfile(name)
 }
 
 func (a agentProviderAdapter) Soul() *soul.Soul {
@@ -2999,6 +3027,9 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 // handleModel shows or sets the current model.
 func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
 	state := h.stateService()
+	if unified, ok := state.(unifiedModelRuntime); ok {
+		return h.handleUnifiedModel(ctx, msg, unified)
+	}
 	if msg.Args == "" {
 		cfg := h.configSnapshot()
 		routerNote := ""
@@ -3044,6 +3075,93 @@ func (h *Handler) handleModel(ctx context.Context, msg *gateway.Message) error {
 	}
 
 	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched runtime model: `%s`\nThis config provider does not support saving, so restart may restore the configured model.", modelID))
+}
+
+func (h *Handler) handleUnifiedModel(ctx context.Context, msg *gateway.Message, state unifiedModelRuntime) error {
+	args := strings.Fields(strings.TrimSpace(msg.Args))
+	if len(args) == 0 {
+		lines := []string{"*Current models*"}
+		for _, kind := range config.ModelKinds() {
+			if current, ok := state.CurrentModel(kind); ok {
+				providerName := current.Provider
+				if providerName == "" {
+					providerName = "default"
+				}
+				lines = append(lines, fmt.Sprintf("• `%s`: `%s` (%s)", kind, current.ID, providerName))
+			}
+		}
+		if h.configSnapshot().ModelRouterEnabled {
+			lines = append(lines, "\nModel router is enabled; chat requests may be routed by task complexity.")
+		}
+		lines = append(lines, "\nUse `/model <kind> <id>` to switch, or `/model <id>` for chat compatibility.")
+		return h.adapter.Send(ctx, msg.Chat.ID, strings.Join(lines, "\n"))
+	}
+
+	if strings.EqualFold(args[0], "profile") {
+		if len(args) == 1 || strings.EqualFold(args[1], "list") {
+			profiles := state.ModelProfiles()
+			if len(profiles) == 0 {
+				return h.adapter.Send(ctx, msg.Chat.ID, "No model profiles are configured.")
+			}
+			names := make([]string, 0, len(profiles))
+			for name := range profiles {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			return h.adapter.Send(ctx, msg.Chat.ID, "*Model profiles*\n• `"+strings.Join(names, "`\n• `")+"`")
+		}
+		if len(args) != 2 {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/model profile [list|name]`")
+		}
+		if err := state.ApplyModelProfile(args[1]); err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to apply profile: %s", err))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Applied model profile `%s`.", args[1]))
+	}
+
+	if strings.EqualFold(args[0], "router") {
+		if len(args) == 1 || strings.EqualFold(args[1], "show") {
+			enabled := h.configSnapshot().ModelRouterEnabled
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("Model router: `%t`\nUse the Configuration Center or `lh config set model_router.enable <true|false>` to change routing.", enabled))
+		}
+		return h.adapter.Send(ctx, msg.Chat.ID, "Router changes are available in the Configuration Center; they are intentionally not applied from a chat command without reviewing the full routing policy.")
+	}
+
+	pinned := false
+	filtered := args[:0]
+	for _, arg := range args {
+		if arg == "--pin" {
+			pinned = true
+			continue
+		}
+		filtered = append(filtered, arg)
+	}
+	args = filtered
+	if len(args) == 0 || len(args) > 2 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/model [chat|vision|embedding|transcription|image|tts|reranker] <id> [--pin]`")
+	}
+
+	kind := config.ModelKindChat
+	modelID := args[0]
+	if len(args) == 2 {
+		parsed, err := config.ParseModelKind(args[0])
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ %s", err))
+		}
+		kind = parsed
+		modelID = args[1]
+	}
+	if err := state.SwitchModelKind(kind, modelID, agent.SwitchModelOptions{Persist: true, Pin: pinned}); err != nil {
+		return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("❌ Failed to switch %s model: %s", kind, err))
+	}
+	note := ""
+	if kind == config.ModelKindChat && h.configSnapshot().ModelRouterEnabled {
+		note = "\nModel router is enabled; future turns may still route by task complexity."
+	}
+	if pinned {
+		note += "\n`--pin` is accepted for compatible clients; this gateway currently reports the configured global selection."
+	}
+	return h.adapter.Send(ctx, msg.Chat.ID, fmt.Sprintf("✅ Switched `%s` model to `%s` and saved it to config.%s", kind, modelID, note))
 }
 
 func (h *Handler) handleReview(ctx context.Context, msg *gateway.Message) error {
@@ -3252,6 +3370,9 @@ func (h *Handler) handleModels(ctx context.Context, msg *gateway.Message) error 
 	if state == nil {
 		return h.adapter.Send(ctx, msg.Chat.ID, "❌ Model discovery unavailable")
 	}
+	if unified, ok := state.(unifiedModelRuntime); ok && !strings.EqualFold(strings.TrimSpace(msg.Args), "refresh") {
+		return h.handleUnifiedModels(ctx, msg, unified)
+	}
 	refresh := strings.EqualFold(strings.TrimSpace(msg.Args), "refresh")
 	if strings.TrimSpace(msg.Args) != "" && !refresh {
 		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/models [refresh]`")
@@ -3281,6 +3402,60 @@ func (h *Handler) handleModels(ctx context.Context, msg *gateway.Message) error 
 		sb.WriteString(fmt.Sprintf("\n... and %d more", len(models)-limit))
 	}
 	sb.WriteString("\n\nUse `/model <id>` to switch. Use `/models refresh` to query again.")
+	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
+}
+
+func (h *Handler) handleUnifiedModels(ctx context.Context, msg *gateway.Message, state unifiedModelRuntime) error {
+	args := strings.Fields(strings.TrimSpace(msg.Args))
+	var kind *config.ModelKind
+	providerName := ""
+	if len(args) == 1 && !strings.EqualFold(args[0], "all") {
+		parsed, err := config.ParseModelKind(args[0])
+		if err != nil {
+			return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/models [all|chat|vision|embedding|transcription|image|tts|reranker|provider <name>|refresh]`")
+		}
+		kind = &parsed
+	} else if len(args) == 2 && strings.EqualFold(args[0], "provider") {
+		providerName = args[1]
+	} else if len(args) > 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "Usage: `/models [all|chat|vision|embedding|transcription|image|tts|reranker|provider <name>|refresh]`")
+	}
+
+	models := state.ListModels(kind)
+	if providerName != "" {
+		filtered := models[:0]
+		for _, model := range models {
+			if strings.EqualFold(model.Provider, providerName) {
+				filtered = append(filtered, model)
+			}
+		}
+		models = filtered
+	}
+	if len(models) == 0 {
+		return h.adapter.Send(ctx, msg.Chat.ID, "No configured models match this filter.")
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 *Models* (%d):\n\n", len(models)))
+	limit := min(len(models), 40)
+	for index := 0; index < limit; index++ {
+		model := models[index]
+		marker := "•"
+		if model.Current {
+			marker = "✅"
+		}
+		display := model.DisplayName
+		if display == "" {
+			display = model.Provider
+		}
+		if display == "" {
+			display = "configured"
+		}
+		sb.WriteString(fmt.Sprintf("%s `%s` · %s · %s\n", marker, model.ID, model.Kind, truncateForTelegramList(display, 40)))
+	}
+	if len(models) > limit {
+		sb.WriteString(fmt.Sprintf("\n... and %d more", len(models)-limit))
+	}
+	sb.WriteString("\nUse `/model <kind> <id>` to switch. Use `/models refresh` to query the chat provider again.")
 	return h.adapter.Send(ctx, msg.Chat.ID, sb.String())
 }
 

@@ -68,6 +68,19 @@ jobs:
           install: >-
             mingw-w64-x86_64-toolchain
 
+      - name: Set up Node.js
+        if: runner.os == 'Windows'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: UI/package-lock.json
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: choco install innosetup --no-progress --yes
+
       - name: Build binary
         if: runner.os != 'Windows'
         shell: bash
@@ -114,18 +127,24 @@ jobs:
       - name: Package release archive
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          VERSION: ${{ github.ref_name }}
         run: |
           New-Item -ItemType Directory -Force -Path "dist/UI/TUI" | Out-Null
           Copy-Item -Force "UI/package.json", "UI/package-lock.json" "dist/UI/"
           Copy-Item -Force "UI/TUI/package.json", "UI/TUI/tsconfig.json" "dist/UI/TUI/"
           Copy-Item -Recurse -Force "UI/TUI/src" "dist/UI/TUI/src"
-          Compress-Archive -Path "dist/${{ matrix.binary_name }}", "dist/UI" -DestinationPath "${{ matrix.archive_name }}" -Force
+          Copy-Item -Force "packaging/windows/ConfigurationCenter.ps1" "dist/ConfigurationCenter.ps1"
+          Compress-Archive -Path "dist/${{ matrix.binary_name }}", "dist/UI", "dist/ConfigurationCenter.ps1" -DestinationPath "${{ matrix.archive_name }}" -Force
+          ./scripts/build-windows-installer.ps1 -Version $env:VERSION
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ matrix.archive_name }}
+          path: |
+            ${{ matrix.archive_name }}
+            dist/LuckyAgent-Setup-*.exe
           if-no-files-found: error
 
   release:

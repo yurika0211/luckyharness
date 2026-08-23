@@ -30,6 +30,15 @@ func (s *Services) SetComputerUseService(service *ComputerUseToolService) *Servi
 	return s
 }
 
+// ReloadMediaTools updates the three media tools without rebuilding unrelated
+// registry entries such as skills, MCP servers, or scheduled-task tools.
+func (s *Services) ReloadMediaTools(r *Registry, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults) {
+	if s == nil || s.Builtin == nil {
+		return
+	}
+	s.Builtin.ReloadMedia(r, defaultImageProvider, mediaProcessor, imageGenerator, imageGenDefaults, speechSynthesizer, ttsDefaults)
+}
+
 // NewServices creates a tool service container.
 func NewServices(searchCfg *WebSearchConfig, opencliCfg *OpenCLIConfig, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults, mem *memory.Store, ragMgr *rag.RAGManager, delegate *DelegateManager, policies ...FilesystemPolicy) *Services {
 	policy := filesystemPolicyFromOptional(policies)

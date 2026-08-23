@@ -126,6 +126,7 @@ type Agent struct {
 	midTerm               *memory.MidTermStore // 中期会话摘要存储
 	sessions              *session.Manager
 	tools                 *tool.Registry
+	toolServices          *tool.Services
 	gateway               *tool.Gateway           // 统一工具网关
 	hooks                 *hook.Runner            // 工具执行前后的 hook 运行器
 	msgGateway            *gateway.GatewayManager // 消息平台网关
@@ -156,6 +157,7 @@ type Agent struct {
 	recentTarget          recentChatTarget
 	externalReplyAnchors  map[string]externalReplyAnchor
 	contextCache          *contextMessageCache
+	mediaMu               sync.RWMutex
 	mediaProcessor        *multimodal.Processor
 	taskStore             taskstore.Store
 	autoCompactMu         sync.Mutex
@@ -942,6 +944,7 @@ func (a *Agent) ApplyRuntimeConfig(c *config.Config) error {
 	a.activeModel = c.Model
 	a.activeAPIBase = c.APIBase
 	a.providerMu.Unlock()
+	a.reloadMediaRuntime(c)
 	a.ReloadHooks(c)
 	return nil
 }
@@ -1220,6 +1223,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		midTerm:             memoryRT.mid,
 		sessions:            memoryRT.sessions,
 		tools:               supportRT.tools,
+		toolServices:        supportRT.toolServices,
 		gateway:             supportRT.toolGateway,
 		hooks:               hook.NewRunner(buildHookRuntimeConfig(c)),
 		msgGateway:          gateway.NewGatewayManager(),
@@ -3565,39 +3569,10 @@ func (a *Agent) Registry() *provider.Registry {
 	return a.registry
 }
 
-// SwitchModel 切换模型（通过 catalog 推断 provider）
+// SwitchModel switches the chat model without persisting it. It preserves the
+// historic API; new callers should use SwitchModelKind with Persist enabled.
 func (a *Agent) SwitchModel(modelID string) error {
-	if a == nil || a.catalog == nil || a.cfg == nil || a.registry == nil {
-		return fmt.Errorf("agent provider runtime is not initialized")
-	}
-	a.providerMu.Lock()
-	defer a.providerMu.Unlock()
-	modelInfo, err := a.catalog.Get(modelID)
-	if err != nil {
-		return fmt.Errorf("model %s is not registered in catalog: %w", modelID, err)
-	}
-
-	cfg := a.cfg.Get()
-	pCfg := provider.Config{
-		LlmProvider: provider.LlmProvider{
-			Name:     modelInfo.Provider,
-			APIKey:   cfg.APIKey,
-			BaseURL:  cfg.APIBase,
-			Model:    modelID,
-			Protocol: cfg.LlmProvider.Protocol,
-		},
-	}
-
-	p, err := a.registry.Create(pCfg.LlmProvider.Name, pCfg)
-	if err == nil && p != nil {
-		a.provider = wrapProviderWithMiddleware(p, cfg)
-		a.activeModel = modelID
-		a.activeAPIBase = cfg.APIBase
-	}
-	if err != nil {
-		return fmt.Errorf("create provider %s: %w", modelInfo.Provider, err)
-	}
-	return nil
+	return a.SwitchModelKind(config.ModelKindChat, modelID, SwitchModelOptions{})
 }
 
 // MCPClient 返回 MCP 客户端

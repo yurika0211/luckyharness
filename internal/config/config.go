@@ -26,6 +26,10 @@ type Config struct {
 	// 自定义模型目录
 	CustomModels []CustomModelInfo `json:"custom_models,omitempty"`
 
+	// Models stores the active model for every runtime purpose while preserving
+	// the legacy per-feature fields above for existing installations.
+	Models ModelsConfig `json:"models,omitempty"`
+
 	// 降级链配置
 	Fallbacks []FallbackEntry `json:"fallbacks,omitempty"`
 
@@ -170,13 +174,14 @@ type LlmProviderConfig struct {
 
 // CustomModelInfo 自定义模型信息配置
 type CustomModelInfo struct {
-	ID            string   `json:"id"`                        // 模型ID，必填
-	Provider      string   `json:"provider,omitempty"`        // 提供商
-	DisplayName   string   `json:"display_name,omitempty"`    // 显示名称
-	Capabilities  []string `json:"capabilities,omitempty"`    // 能力: "chat", "streaming", "tools", "vision"
-	ContextWindow int      `json:"context_window,omitempty"`  // 上下文窗口大小
-	CostPer1kIn   float64  `json:"cost_per_1k_in,omitempty"`  // 输入价格
-	CostPer1kOut  float64  `json:"cost_per_1k_out,omitempty"` // 输出价格
+	ID            string      `json:"id"`                        // 模型ID，必填
+	Provider      string      `json:"provider,omitempty"`        // 提供商
+	DisplayName   string      `json:"display_name,omitempty"`    // 显示名称
+	Kinds         []ModelKind `json:"kinds,omitempty"`           // 用途: chat, vision, embedding, ...
+	Capabilities  []string    `json:"capabilities,omitempty"`    // 能力: "chat", "streaming", "tools", "vision"
+	ContextWindow int         `json:"context_window,omitempty"`  // 上下文窗口大小
+	CostPer1kIn   float64     `json:"cost_per_1k_in,omitempty"`  // 输入价格
+	CostPer1kOut  float64     `json:"cost_per_1k_out,omitempty"` // 输出价格
 }
 
 type EmbeddingConfig struct {
@@ -1333,6 +1338,7 @@ func normalizeConfig(cfg *Config) {
 	if strings.TrimSpace(cfg.MsgGateway.OpenClawWeixin.GroupPolicy) == "" {
 		cfg.MsgGateway.OpenClawWeixin.GroupPolicy = def.MsgGateway.OpenClawWeixin.GroupPolicy
 	}
+	normalizeModels(cfg)
 }
 
 // applyLegacyComputerUseExtra migrates settings written by older binaries
@@ -1400,6 +1406,37 @@ func cloneConfig(in *Config) *Config {
 		cp.ExtraHeaders = make(map[string]string, len(in.ExtraHeaders))
 		for k, v := range in.ExtraHeaders {
 			cp.ExtraHeaders[k] = v
+		}
+	}
+	if in.Models.Active != nil {
+		cp.Models.Active = make(map[ModelKind]string, len(in.Models.Active))
+		for kind, modelID := range in.Models.Active {
+			cp.Models.Active[kind] = modelID
+		}
+	}
+	if in.Models.Endpoints != nil {
+		cp.Models.Endpoints = make(map[ModelKind]ModelEndpointConfig, len(in.Models.Endpoints))
+		for kind, endpoint := range in.Models.Endpoints {
+			endpoint.ExtraHeaders = cloneStringMap(endpoint.ExtraHeaders)
+			cp.Models.Endpoints[kind] = endpoint
+		}
+	}
+	if in.Models.Profiles != nil {
+		cp.Models.Profiles = make(map[string]map[ModelKind]string, len(in.Models.Profiles))
+		for name, profile := range in.Models.Profiles {
+			copyProfile := make(map[ModelKind]string, len(profile))
+			for kind, modelID := range profile {
+				copyProfile[kind] = modelID
+			}
+			cp.Models.Profiles[name] = copyProfile
+		}
+	}
+	if in.CustomModels != nil {
+		cp.CustomModels = make([]CustomModelInfo, len(in.CustomModels))
+		for index, model := range in.CustomModels {
+			model.Kinds = append([]ModelKind(nil), model.Kinds...)
+			model.Capabilities = append([]string(nil), model.Capabilities...)
+			cp.CustomModels[index] = model
 		}
 	}
 	if in.ToolTrace.Templates != nil {

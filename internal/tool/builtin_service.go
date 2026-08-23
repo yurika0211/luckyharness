@@ -1,9 +1,14 @@
 package tool
 
-import "github.com/yurika0211/luckyagent/internal/multimodal"
+import (
+	"sync"
+
+	"github.com/yurika0211/luckyagent/internal/multimodal"
+)
 
 // BuiltinToolService wraps the generic builtin tool registrations.
 type BuiltinToolService struct {
+	mu                   sync.RWMutex
 	searchCfg            *WebSearchConfig
 	opencliCfg           *OpenCLIConfig
 	mediaProcessor       *multimodal.Processor
@@ -72,4 +77,30 @@ func (s *BuiltinToolService) SetComputerUseService(service *ComputerUseToolServi
 	if s != nil {
 		s.computerUse = service
 	}
+}
+
+// ReloadMedia replaces only media-dependent tool implementations. Existing
+// invocations retain their captured provider while new tool calls use the
+// updated model configuration.
+func (s *BuiltinToolService) ReloadMedia(r *Registry, defaultImageProvider string, mediaProcessor *multimodal.Processor, imageGenerator multimodal.ImageGenerator, imageGenDefaults ImageGenerationDefaults, speechSynthesizer multimodal.SpeechSynthesizer, ttsDefaults TTSDefaults) {
+	if s == nil || r == nil {
+		return
+	}
+	s.mu.Lock()
+	s.defaultImageProvider = defaultImageProvider
+	s.mediaProcessor = mediaProcessor
+	s.imageGenerator = imageGenerator
+	s.imageGenDefaults = imageGenDefaults
+	s.speechSynthesizer = speechSynthesizer
+	s.ttsDefaults = ttsDefaults
+	processor := s.mediaProcessor
+	providerName := s.defaultImageProvider
+	generator := s.imageGenerator
+	imageDefaults := s.imageGenDefaults
+	synthesizer := s.speechSynthesizer
+	speechDefaults := s.ttsDefaults
+	s.mu.Unlock()
+	r.Register(ImageAnalyzeTool(processor, providerName))
+	r.Register(ImageGenerateTool(generator, imageDefaults))
+	r.Register(TextToSpeechTool(synthesizer, speechDefaults))
 }

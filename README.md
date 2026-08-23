@@ -153,6 +153,15 @@ la tui
 
 ### Windows
 
+GitHub Releases 还提供 `LuckyAgent-Setup-<version>-x64.exe` 安装器。双击后会安装 `lh.exe`、本地 Dashboard 配置中心和开始菜单快捷方式；首次启动会初始化 `%USERPROFILE%\.luckyagent`，不会在升级或卸载时删除配置、记忆、RAG 或会话数据。配置中心可保存 Provider、模型、API Base、API Key 和 Agent 设置，并提供安全的脱敏导出。
+
+开始菜单中的 **LuckyAgent Configuration Center** 会启动本地 API 与 Dashboard。需要停止或重启本地进程时，可以运行：
+
+```powershell
+& "$env:LOCALAPPDATA\LuckyAgent\ConfigurationCenter.ps1" -Action Stop
+& "$env:LOCALAPPDATA\LuckyAgent\ConfigurationCenter.ps1" -Action Restart
+```
+
 Windows 用户可以用 PowerShell：
 
 ```powershell

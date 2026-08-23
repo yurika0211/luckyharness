@@ -10,6 +10,29 @@
     "model": "gpt-5.4-mini",
     "protocol": "chat_completions"
   },
+  "models": {
+    "active": {
+      "chat": "gpt-5.4-mini",
+      "vision": "gpt-5.4-mini",
+      "embedding": "jina-embeddings-v4",
+      "transcription": "whisper-1",
+      "image": "gpt-image-1.5",
+      "tts": "gpt-4o-mini-tts"
+    },
+    "endpoints": {
+      "chat": {
+        "provider": "openai",
+        "api_base": "https://api.openai.com/v1",
+        "protocol": "chat_completions"
+      }
+    },
+    "profiles": {
+      "fast": {
+        "chat": "gpt-5.4-mini",
+        "vision": "gpt-5.4-mini"
+      }
+    }
+  },
   "embedding": {
     "model": "jina-embeddings-v4",
     "api_key": "",

@@ -16,7 +16,7 @@ import (
 AnalyzeAttachments 使用多模态处理器分析附件并返回汇总文本。
 */
 func (a *Agent) AnalyzeAttachments(ctx context.Context, attachments []gateway.Attachment) (string, error) {
-	if a == nil || a.mediaProcessor == nil || len(attachments) == 0 {
+	if a == nil || a.currentMediaProcessor() == nil || len(attachments) == 0 {
 		return "", nil
 	}
 
@@ -74,7 +74,8 @@ func analyzeDocumentAttachment(att gateway.Attachment, idx int) (string, bool) {
 }
 
 func (a *Agent) analyzeMultimodalInput(ctx context.Context, input *multimodal.Input) (*multimodal.AnalysisResult, error) {
-	if a == nil || a.mediaProcessor == nil {
+	processor := a.currentMediaProcessor()
+	if processor == nil {
 		return nil, fmt.Errorf("multimodal processor is not configured")
 	}
 	if input == nil {
@@ -82,9 +83,19 @@ func (a *Agent) analyzeMultimodalInput(ctx context.Context, input *multimodal.In
 	}
 
 	if providerName := a.preferredMultimodalProvider(input.Modality); providerName != "" {
-		return a.mediaProcessor.AnalyzeWithProvider(ctx, providerName, input)
+		return processor.AnalyzeWithProvider(ctx, providerName, input)
 	}
-	return a.mediaProcessor.Analyze(ctx, input)
+	return processor.Analyze(ctx, input)
+}
+
+func (a *Agent) currentMediaProcessor() *multimodal.Processor {
+	if a == nil {
+		return nil
+	}
+	a.mediaMu.RLock()
+	processor := a.mediaProcessor
+	a.mediaMu.RUnlock()
+	return processor
 }
 
 func (a *Agent) preferredMultimodalProvider(modality multimodal.Modality) string {

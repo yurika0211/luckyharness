@@ -170,8 +170,8 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 		fmt.Println("  /quit, /exit       退出")
 		fmt.Println("  /help              显示帮助")
 		fmt.Println("  /yolo              切换自动批准工具调用")
-		fmt.Println("  /model [name]      切换模型 (无参数显示当前)")
-		fmt.Println("  /models            列出可用模型")
+		fmt.Println("  /model [kind] [name]  查看或切换指定类型模型")
+		fmt.Println("  /models [kind]     列出模型（可按类型过滤）")
 		fmt.Println("  /soul              显示当前 SOUL")
 		fmt.Println("  /tools             列出可用工具 (含权限)")
 		fmt.Println("  /skills [dir]      加载 Skill 插件")
@@ -247,36 +247,66 @@ func buildREPLCommandRegistry() map[string]replCommandFunc {
 			return true, false
 		},
 		"/model": func(ctx replCommandContext, arg string) (bool, bool) {
-			if arg == "" {
-				fmt.Printf("当前模型: %s\n", ctx.agent.Provider().Name())
-			} else {
-				if err := ctx.agent.SwitchModel(arg); err != nil {
+			args := strings.Fields(arg)
+			if len(args) == 0 {
+				fmt.Println("当前模型:")
+				for _, kind := range config.ModelKinds() {
+					if current, ok := ctx.agent.CurrentModel(kind); ok {
+						fmt.Printf("  %-14s %-32s %s\n", kind, current.ID, current.Provider)
+					}
+				}
+				return true, false
+			}
+			if len(args) == 2 && args[0] == "profile" {
+				if err := ctx.agent.ApplyModelProfile(args[1]); err != nil {
 					fmt.Printf("❌ %v\n", err)
 				} else {
-					fmt.Printf("✅ 已切换到模型: %s\n", arg)
+					fmt.Printf("✅ 已应用模型 Profile: %s\n", args[1])
 				}
+				return true, false
+			}
+			kind := config.ModelKindChat
+			modelID := args[0]
+			if len(args) == 2 {
+				parsed, err := config.ParseModelKind(args[0])
+				if err != nil {
+					fmt.Printf("❌ %v\n", err)
+					return true, false
+				}
+				kind, modelID = parsed, args[1]
+			}
+			if len(args) > 2 {
+				fmt.Println("用法: /model [chat|vision|embedding|transcription|image|tts|reranker] <id>")
+				return true, false
+			}
+			if err := ctx.agent.SwitchModelKind(kind, modelID, agent.SwitchModelOptions{Persist: true}); err != nil {
+				fmt.Printf("❌ %v\n", err)
+			} else {
+				fmt.Printf("✅ 已切换 %s 模型: %s\n", kind, modelID)
 			}
 			return true, false
 		},
-		"/models": func(ctx replCommandContext, _ string) (bool, bool) {
-			models := ctx.agent.Catalog().List()
+		"/models": func(ctx replCommandContext, arg string) (bool, bool) {
+			var kind *config.ModelKind
+			if raw := strings.TrimSpace(arg); raw != "" && raw != "all" {
+				parsed, err := config.ParseModelKind(raw)
+				if err != nil {
+					fmt.Printf("❌ %v\n", err)
+					return true, false
+				}
+				kind = &parsed
+			}
+			models := ctx.agent.ListModels(kind)
 			if len(models) == 0 {
 				fmt.Println("📋 模型目录为空")
 			} else {
 				fmt.Println("📋 可用模型:")
-				currentProvider := ""
-				for _, m := range models {
-					if m.Provider != currentProvider {
-						currentProvider = m.Provider
-						fmt.Printf("\n  [%s]\n", currentProvider)
+				for _, model := range models {
+					marker := " "
+					if model.Current {
+						marker = "*"
 					}
-					costInfo := ""
-					if m.CostPer1kIn > 0 {
-						costInfo = fmt.Sprintf(" ($%.4f/$%.4f per 1k)", m.CostPer1kIn, m.CostPer1kOut)
-					} else {
-						costInfo = " (免费/本地)"
-					}
-					fmt.Printf("    %-40s %s%s\n", m.ID, m.DisplayName, costInfo)
+					fmt.Printf("  %s %-14s %-36s %s\n", marker, model.Kind, model.ID, model.Provider)
 				}
 			}
 			return true, false
