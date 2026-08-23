@@ -48,6 +48,21 @@ func TestAppendNaturalCitationsClosesOpenFenceBeforeFooter(t *testing.T) {
 	}
 }
 
+func TestAppendNaturalCitationsSummarizesUnknownTool(t *testing.T) {
+	got := appendNaturalCitations("已完成", []toolCallLog{{
+		Name:      "custom_report_tool",
+		Arguments: `{"path":"reports/status.json"}`,
+		Result:    "报告已生成，共 12 项。",
+	}})
+
+	if !strings.Contains(got, "Tool result. Tool: custom_report_tool.") {
+		t.Fatalf("expected tool name in citation, got:\n%s", got)
+	}
+	if !strings.Contains(got, "调用了 custom_report_tool，已获得结果：报告已生成，共 12 项") {
+		t.Fatalf("expected deterministic annotation and result hint, got:\n%s", got)
+	}
+}
+
 func TestStringArgMissingKeyIsEmpty(t *testing.T) {
 	if got := stringArg(map[string]any{"query": "x"}, "url"); got != "" {
 		t.Fatalf("expected missing arg to be empty, got %q", got)

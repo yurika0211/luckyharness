@@ -120,6 +120,19 @@ func renderTelegramToolTraceCardWithTemplateDetails(steps []telegramToolTraceSte
 func renderTelegramAgentTraceCard(steps []telegramToolTraceStep) string {
 	segments := make([]string, 0, len(steps))
 	shown := 0
+	total := 0
+	completed, failed := 0, 0
+	for _, step := range steps {
+		if telegramToolTraceVisibility(step.Name) != "agent" {
+			continue
+		}
+		total++
+		if step.Success {
+			completed++
+		} else {
+			failed++
+		}
+	}
 	for _, step := range steps {
 		if telegramToolTraceVisibility(step.Name) != "agent" {
 			continue
@@ -137,8 +150,8 @@ func renderTelegramAgentTraceCard(steps []telegramToolTraceStep) string {
 	if shown == 0 {
 		return ""
 	}
-	body := strings.Join(segments, "\n")
-	body += "\nDone · " + fmt.Sprintf("%d agent steps", shown)
+	body := fmt.Sprintf("Task Overview · total: %d · completed: %d · failed: %d\n\n%s", total, completed, failed, strings.Join(segments, "\n"))
+	body += fmt.Sprintf("\nDone · %d agent steps · %d succeeded, %d failed", total, completed, failed)
 	return "<b>🧭 Agent Trace</b>\n<pre><code>" + html.EscapeString(body) + "</code></pre>"
 }
 
@@ -564,7 +577,16 @@ func formatTelegramAgentTraceLine(index int, step telegramToolTraceStep) string 
 	if !step.Success {
 		status = "⚠️"
 	}
-	return fmt.Sprintf("[%d] %s %s %s", index, compactAgentTraceName(name), compactAgentTraceDetail(step.Args), status)
+	detail := compactAgentTraceDetail(step.Args)
+	line := fmt.Sprintf("[%d] %s %s %s", index, compactAgentTraceName(name), detail, status)
+	if result := clipOneLine(step.Result, 120); result != "" {
+		if step.Success {
+			line += "\n    Result: " + result
+		} else {
+			line += "\n    Error: " + result
+		}
+	}
+	return line
 }
 
 func compactToolTraceName(name string) string {

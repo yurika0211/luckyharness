@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -169,14 +170,34 @@ func TestTelegramProgressCards(t *testing.T) {
 			{Name: "web_search", Args: `{"query":"agent"}`, Result: "ok", Success: true},
 		})
 		assert.Contains(t, got, "<b>🧭 Agent Trace</b>")
+		assert.Contains(t, got, "Task Overview · total: 3 · completed: 2 · failed: 1")
 		assert.Contains(t, got, "delegate")
 		assert.Contains(t, got, "inspect repo")
 		assert.Contains(t, got, "autonomy")
 		assert.Contains(t, got, "nightly replay")
 		assert.Contains(t, got, "heartbeat")
 		assert.Contains(t, got, "⚠️")
-		assert.Contains(t, got, "Done · 3 agent steps")
+		assert.Contains(t, got, "Error: error: timeout")
+		assert.Contains(t, got, "Done · 3 agent steps · 2 succeeded, 1 failed")
 		assert.NotContains(t, got, "web_search")
+	})
+
+	t.Run("agent trace summary counts collapsed tasks", func(t *testing.T) {
+		steps := make([]telegramToolTraceStep, 0, 7)
+		for i := 0; i < 7; i++ {
+			steps = append(steps, telegramToolTraceStep{
+				Name:    "delegate_task",
+				Args:    fmt.Sprintf(`{"task":"task-%d"}`, i+1),
+				Result:  "ok",
+				Success: true,
+			})
+		}
+		got := renderTelegramAgentTraceCard(steps)
+		assert.Contains(t, got, "Done · 7 agent steps · 7 succeeded, 0 failed")
+		assert.Contains(t, got, "task-1")
+		assert.Contains(t, got, "task-6")
+		assert.Contains(t, got, "Task Overview · total: 7 · completed: 7 · failed: 0")
+		assert.NotContains(t, got, "task-7")
 	})
 
 	t.Run("memory trace card summarizes results and hops", func(t *testing.T) {

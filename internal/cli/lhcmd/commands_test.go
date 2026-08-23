@@ -143,6 +143,98 @@ func TestRunConfigGetSupportsMultimodalKeys(t *testing.T) {
 	}
 }
 
+func TestRunConfigGetSupportsProtocol(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	configDir := filepath.Join(home, ".luckyagent")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), []byte(`{
+  "llm_provider": {"protocol": "responses"}
+}`), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	for _, key := range []string{"protocol", "llm_provider.protocol"} {
+		out, err := captureStdout(t, func() error {
+			return runConfigGet(&cobra.Command{}, []string{key})
+		})
+		if err != nil {
+			t.Fatalf("runConfigGet %s: %v", key, err)
+		}
+		if strings.TrimSpace(out) != "responses" {
+			t.Fatalf("%s output = %q, want responses", key, out)
+		}
+	}
+}
+
+func TestRunConfigTimeoutPrintsEffectiveValues(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	out, err := captureStdout(t, func() error {
+		return runConfigTimeout(&cobra.Command{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runConfigTimeout: %v", err)
+	}
+	for _, want := range []string{
+		"Telegram Gateway Chat:       600s (10m)",
+		"Agent Loop:                  60s (1m)",
+		"Simple Local Inspection:     25s",
+		"OpenCLI:                     20s",
+		"Computer Use (total):        300s (5m)",
+		"Computer Use (step):         30s",
+		"Hooks:                        30s",
+		"[msg_gateway.telegram.chat_timeout_seconds]",
+		"[agent.timeout_seconds]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected timeout output to contain %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestConfigTimeoutListFlagIsRegistered(t *testing.T) {
+	root := newRootCmd()
+	config, _, err := root.Find([]string{"config", "timeout"})
+	if err != nil {
+		t.Fatalf("find config timeout command: %v", err)
+	}
+	if config.Flags().Lookup("list") == nil {
+		t.Fatal("expected config timeout --list compatibility flag")
+	}
+}
+
+func TestRunDiagTimeoutWithoutRecord(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	out, err := captureStdout(t, func() error {
+		return runDiagTimeout(&cobra.Command{}, nil)
+	})
+	if err != nil {
+		t.Fatalf("runDiagTimeout: %v", err)
+	}
+	if strings.TrimSpace(out) != "暂无超时诊断记录。" {
+		t.Fatalf("unexpected diagnostic output: %q", out)
+	}
+}
+
+func TestDiagTimeoutLastErrorFlagIsRegistered(t *testing.T) {
+	root := newRootCmd()
+	diag, _, err := root.Find([]string{"diag", "timeout"})
+	if err != nil {
+		t.Fatalf("find diag timeout command: %v", err)
+	}
+	if diag.Flags().Lookup("last-error") == nil {
+		t.Fatal("expected diag timeout --last-error flag")
+	}
+}
+
 func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

@@ -31,11 +31,13 @@ type Adapter struct {
 	bot     *tgbotapi.BotAPI
 	running bool
 	cancel  context.CancelFunc
+	wg      sync.WaitGroup
 
-	mu        sync.RWMutex
-	handler   gateway.MessageHandler
-	rateLimit map[string]*rateBucket
-	threadIDs map[string]string
+	mu              sync.RWMutex
+	handler         gateway.MessageHandler
+	callbackHandler func(context.Context, *tgbotapi.CallbackQuery)
+	rateLimit       map[string]*rateBucket
+	threadIDs       map[string]string
 
 	// Bot username for mention detection
 	botUsername string
@@ -83,6 +85,15 @@ func (a *Adapter) SetHandler(handler gateway.MessageHandler) {
 	a.handler = handler
 }
 
+// SetCallbackHandler registers the handler for inline-keyboard callback
+// queries. It is intentionally Telegram-specific and does not widen the
+// generic gateway interface.
+func (a *Adapter) SetCallbackHandler(handler func(context.Context, *tgbotapi.CallbackQuery)) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.callbackHandler = handler
+}
+
 // Start connects to Telegram and begins polling for updates.
 func (a *Adapter) Start(ctx context.Context) error {
 	if a.cfg.Token == "" {
@@ -111,7 +122,11 @@ func (a *Adapter) Start(ctx context.Context) error {
 	a.running = true
 
 	// Start polling in background
-	go a.poll(pollCtx)
+	a.wg.Add(1)
+	go func() {
+		defer a.wg.Done()
+		a.poll(pollCtx)
+	}()
 
 	return nil
 }
@@ -227,6 +242,10 @@ func (a *Adapter) Stop() error {
 		a.cancel()
 	}
 	a.running = false
+	// Wait for the polling goroutine to fully exit before returning, so a
+	// subsequent Start() cannot create a second concurrent poller (which
+	// previously caused duplicate-process behavior after /restart).
+	a.wg.Wait()
 	return nil
 }
 
@@ -267,28 +286,67 @@ func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message st
 
 // SendHTML sends a pre-rendered Telegram HTML message without markdown reformatting.
 func (a *Adapter) SendHTML(ctx context.Context, chatID string, message string) error {
+	_, err := a.SendHTMLWithReceipt(ctx, chatID, message)
+	return err
+}
+
+func (a *Adapter) SendHTMLWithReceipt(ctx context.Context, chatID string, message string) (gateway.SentMessage, error) {
 	if !a.running || a.bot == nil {
-		return fmt.Errorf("telegram: adapter not running")
+		return gateway.SentMessage{}, fmt.Errorf("telegram: adapter not running")
 	}
 
 	message = strings.TrimSpace(message)
 	if message == "" {
-		return nil
+		return gateway.SentMessage{}, nil
 	}
 	chunks := a.splitHTMLMessage(message)
 	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
 	if err != nil {
-		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+		return gateway.SentMessage{}, fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
 	}
 
+	receipt := gateway.SentMessage{ChatID: chatID}
 	for _, chunk := range chunks {
-		if err := a.sendChunkHTML(ctx, chatIDInt, 0, chunk); err != nil {
-			return err
+		sent, err := a.sendTelegramText(chatIDInt, 0, 0, chunk, tgbotapi.ModeHTML)
+		if err != nil {
+			return gateway.SentMessage{}, fmt.Errorf("telegram: send html message: %w", err)
+		}
+		if receipt.ID == "" && sent.MessageID > 0 {
+			receipt.ID = strconv.Itoa(sent.MessageID)
 		}
 		a.waitRateLimit(chatID)
 	}
 
-	return nil
+	return receipt, nil
+}
+
+func (a *Adapter) EditHTML(ctx context.Context, chatID, messageID, message string, markup *tgbotapi.InlineKeyboardMarkup) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+	chatIDInt, err := strconv.ParseInt(chatID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid chat ID %q: %w", chatID, err)
+	}
+	messageIDInt, err := strconv.Atoi(messageID)
+	if err != nil {
+		return fmt.Errorf("telegram: invalid message ID %q: %w", messageID, err)
+	}
+	edit := tgbotapi.NewEditMessageText(chatIDInt, messageIDInt, message)
+	edit.ParseMode = tgbotapi.ModeHTML
+	if markup != nil {
+		edit.ReplyMarkup = markup
+	}
+	_, err = a.bot.Send(edit)
+	return err
+}
+
+func (a *Adapter) AnswerCallback(callbackID, text string) error {
+	if !a.running || a.bot == nil {
+		return fmt.Errorf("telegram: adapter not running")
+	}
+	_, err := a.bot.Request(tgbotapi.NewCallback(callbackID, text))
+	return err
 }
 
 // SendWithReply sends a message as a reply to a specific message.
@@ -489,14 +547,20 @@ func (a *Adapter) ReactToMessage(chatID string, messageID string, emoji string) 
 		return
 	}
 
-	// best-effort，不阻塞消息处理主路径。
-	go a.callSetMessageReaction(chatIDInt, msgIDInt, emoji)
+	// Best effort: a reaction failure must not interrupt the chat handler, but
+	// the route is retained in the warning so permissions/API failures can be
+	// diagnosed from gateway logs.
+	go func() {
+		if err := a.callSetMessageReaction(chatIDInt, msgIDInt, emoji); err != nil {
+			fmt.Printf("[telegram] setMessageReaction failed: %v\n", err)
+		}
+	}()
 }
 
 // callSetMessageReaction 调用 Telegram setMessageReaction API
 func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji string) error {
 	if a.bot == nil {
-		return fmt.Errorf("telegram: bot is not initialized")
+		return fmt.Errorf("telegram: setMessageReaction chat_id=%d message_id=%d: bot is not initialized", chatID, messageID)
 	}
 	params := tgbotapi.Params{
 		"chat_id":    strconv.FormatInt(chatID, 10),
@@ -508,10 +572,13 @@ func (a *Adapter) callSetMessageReaction(chatID int64, messageID int, emoji stri
 			"emoji": emoji,
 		},
 	}); err != nil {
-		return err
+		return fmt.Errorf("telegram: setMessageReaction chat_id=%d message_id=%d: encode reaction: %w", chatID, messageID, err)
 	}
 	_, err := a.bot.MakeRequest("setMessageReaction", params)
-	return err
+	if err != nil {
+		return fmt.Errorf("telegram: setMessageReaction chat_id=%d message_id=%d: %w", chatID, messageID, err)
+	}
+	return nil
 }
 
 // callTelegramAPI 调用 Telegram Bot API 的通用方法
@@ -793,6 +860,14 @@ func (s *telegramStreamSender) editMessageWithMode(text string, parseMode string
 func (a *Adapter) poll(ctx context.Context) {
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = a.cfg.PollTimeout
+	// Telegram persists allowed_updates across calls. Declare channel_post
+	// explicitly so a previous webhook/poll configuration cannot silently
+	// prevent channel messages from reaching the reaction handler.
+	u.AllowedUpdates = []string{
+		tgbotapi.UpdateTypeMessage,
+		tgbotapi.UpdateTypeChannelPost,
+		tgbotapi.UpdateTypeCallbackQuery,
+	}
 
 	for {
 		select {
@@ -824,8 +899,10 @@ func (a *Adapter) poll(ctx context.Context) {
 				continue
 			}
 			u.Offset = update.UpdateID + 1
-			// v0.36.0: 处理所有消息类型（文本、图片、语音、视频、文件）
-			if update.Message == nil {
+			// Channel posts arrive in channel_post rather than message. Both are
+			// ordinary inbound content for this adapter, so keep them on the same
+			// processing path.
+			if update.Message == nil && update.ChannelPost == nil {
 				continue
 			}
 			a.processUpdateWithThreadID(ctx, update.Update, update.MessageThreadID)
@@ -850,15 +927,33 @@ func (a *Adapter) processUpdate(ctx context.Context, update tgbotapi.Update) {
 }
 
 func (a *Adapter) processUpdateWithThreadID(ctx context.Context, update tgbotapi.Update, threadID string) {
+	if update.CallbackQuery != nil {
+		a.mu.RLock()
+		callbackHandler := a.callbackHandler
+		a.mu.RUnlock()
+		if callbackHandler != nil {
+			callbackHandler(ctx, update.CallbackQuery)
+		}
+		return
+	}
 	tgMsg := update.Message
 	if tgMsg == nil {
+		tgMsg = update.ChannelPost
+	}
+	if tgMsg == nil || tgMsg.Chat == nil {
 		return
 	}
 	a.rememberTelegramThread(strconv.FormatInt(tgMsg.Chat.ID, 10), strconv.Itoa(tgMsg.MessageID), threadID)
 
 	chatID := strconv.FormatInt(tgMsg.Chat.ID, 10)
+	senderName := ""
+	if tgMsg.From != nil {
+		senderName = tgMsg.From.UserName
+	} else if tgMsg.SenderChat != nil {
+		senderName = tgMsg.SenderChat.UserName
+	}
 	fmt.Printf("[telegram] received msg: chatID=%s, chatType=%s, from=%v, text=%q\n",
-		chatID, tgMsg.Chat.Type, tgMsg.From.UserName, func() string {
+		chatID, tgMsg.Chat.Type, senderName, func() string {
 			if len(tgMsg.Text) > 80 {
 				return tgMsg.Text[:80]
 			}
@@ -873,12 +968,17 @@ func (a *Adapter) processUpdateWithThreadID(ctx context.Context, update tgbotapi
 	msg := a.convertMessageWithThreadID(tgMsg, threadID)
 
 	// In group chats, only respond to @bot mentions or replies to bot's own messages
-	if msg.Chat.Type != gateway.ChatPrivate {
+	if msg.Chat.Type != gateway.ChatPrivate && msg.Chat.Type != gateway.ChatChannel {
 		mentioned := a.isMentioned(tgMsg)
 		replyToBot := a.isReplyToBot(tgMsg)
 		fmt.Printf("[telegram] group msg: chatID=%s, mentioned=%v, replyToBot=%v, botUsername=%s, text=%q\n",
 			chatID, mentioned, replyToBot, a.botUsername, msg.Text[:min(80, len(msg.Text))])
 		if !mentioned && !replyToBot {
+			// Privacy/trigger filtering controls Agent dispatch, not receipt
+			// feedback. Confirm ordinary group messages without forwarding them.
+			if !a.cfg.DisableAutoReaction {
+				a.ReactToMessage(msg.Chat.ID, msg.ID, "👍")
+			}
 			return
 		}
 		// Strip @botusername from text
@@ -920,6 +1020,9 @@ func (a *Adapter) convertMessageWithAttachments(tgMsg *tgbotapi.Message, include
 }
 
 func (a *Adapter) convertMessageWithAttachmentsAndThreadID(tgMsg *tgbotapi.Message, includeAttachments bool, threadID string) *gateway.Message {
+	if tgMsg == nil || tgMsg.Chat == nil {
+		return nil
+	}
 	chatType := gateway.ChatPrivate
 	switch tgMsg.Chat.Type {
 	case "group":
@@ -928,6 +1031,22 @@ func (a *Adapter) convertMessageWithAttachmentsAndThreadID(tgMsg *tgbotapi.Messa
 		chatType = gateway.ChatSuperGroup
 	case "channel":
 		chatType = gateway.ChatChannel
+	}
+
+	sender := gateway.User{}
+	if tgMsg.From != nil {
+		sender = gateway.User{
+			ID:        strconv.FormatInt(tgMsg.From.ID, 10),
+			Username:  tgMsg.From.UserName,
+			FirstName: tgMsg.From.FirstName,
+			LastName:  tgMsg.From.LastName,
+		}
+	} else if tgMsg.SenderChat != nil {
+		sender = gateway.User{
+			ID:        strconv.FormatInt(tgMsg.SenderChat.ID, 10),
+			Username:  tgMsg.SenderChat.UserName,
+			FirstName: tgMsg.SenderChat.Title,
+		}
 	}
 
 	msg := &gateway.Message{
@@ -939,12 +1058,7 @@ func (a *Adapter) convertMessageWithAttachmentsAndThreadID(tgMsg *tgbotapi.Messa
 			Title:    tgMsg.Chat.Title,
 			Username: tgMsg.Chat.UserName,
 		},
-		Sender: gateway.User{
-			ID:        strconv.FormatInt(tgMsg.From.ID, 10),
-			Username:  tgMsg.From.UserName,
-			FirstName: tgMsg.From.FirstName,
-			LastName:  tgMsg.From.LastName,
-		},
+		Sender:    sender,
 		Text:      tgMsg.Text,
 		Timestamp: time.Unix(int64(tgMsg.Date), 0),
 	}

@@ -164,6 +164,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.APIBase)
 	case "model":
 		fmt.Println(cfg.Model)
+	case "protocol", "llm_provider.protocol":
+		fmt.Println(cfg.LlmProvider.Protocol)
 	case "embedding.model":
 		fmt.Println(cfg.Embedding.Model)
 	case "embedding.api_base":
@@ -397,6 +399,71 @@ func runConfigList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  proactive.kernel_learning_rate: %.2f\n", cfg.Proactive.KernelLearningRate)
 	fmt.Printf("  proactive.kernel_min_samples: %d\n", cfg.Proactive.KernelMinSamples)
 	return nil
+}
+
+// runConfigTimeout prints the effective timeout budget for each runtime layer.
+// Values come from the normalized configuration, so omitted settings show the
+// same defaults that a running Agent would use.
+func runConfigTimeout(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	cfg := mgr.Get()
+	fmt.Println("LuckyAgent 超时配置（有效值）:")
+	fmt.Printf("  Telegram Gateway Chat:       %ds (%s)  [msg_gateway.telegram.chat_timeout_seconds]\n", cfg.MsgGateway.Telegram.ChatTimeoutSeconds, formatTimeoutDuration(cfg.MsgGateway.Telegram.ChatTimeoutSeconds))
+	fmt.Printf("  Agent Loop:                  %ds (%s)  [agent.timeout_seconds]\n", cfg.Agent.TimeoutSeconds, formatTimeoutDuration(cfg.Agent.TimeoutSeconds))
+	fmt.Printf("  Simple Local Inspection:     %ds (%s)  [agent.simple_local_inspection.timeout_seconds]\n", cfg.Agent.SimpleLocalInspection.TimeoutSeconds, formatTimeoutDuration(cfg.Agent.SimpleLocalInspection.TimeoutSeconds))
+	fmt.Printf("  OpenCLI:                     %ds (%s)  [opencli.timeout_seconds]\n", cfg.OpenCLI.TimeoutSeconds, formatTimeoutDuration(cfg.OpenCLI.TimeoutSeconds))
+	fmt.Printf("  Computer Use (total):        %ds (%s)  [tools.computer_use.timeout_seconds]\n", cfg.Tools.ComputerUse.TimeoutSeconds, formatTimeoutDuration(cfg.Tools.ComputerUse.TimeoutSeconds))
+	fmt.Printf("  Computer Use (step):         %ds (%s)  [tools.computer_use.step_timeout_seconds]\n", cfg.Tools.ComputerUse.StepTimeoutSeconds, formatTimeoutDuration(cfg.Tools.ComputerUse.StepTimeoutSeconds))
+	fmt.Printf("  Circuit Breaker:              %ds (%s)  [circuit_breaker.timeout_seconds]\n", cfg.CircuitBreaker.TimeoutSeconds, formatTimeoutDuration(cfg.CircuitBreaker.TimeoutSeconds))
+	fmt.Printf("  Autonomy Worker:              %ds (%s)  [autonomy.worker.timeout_seconds]\n", cfg.Autonomy.Worker.TimeoutSeconds, formatTimeoutDuration(cfg.Autonomy.Worker.TimeoutSeconds))
+	fmt.Printf("  Hooks:                        %ds (%s)  [hooks.timeout_seconds]\n", cfg.Hooks.TimeoutSeconds, formatTimeoutDuration(cfg.Hooks.TimeoutSeconds))
+	fmt.Printf("  Limits (max):                 %ds (%s)  [limits.max_timeout_seconds]\n", cfg.Limits.MaxTimeoutSeconds, formatTimeoutDuration(cfg.Limits.MaxTimeoutSeconds))
+	return nil
+}
+
+func runDiagTimeout(cmd *cobra.Command, args []string) error {
+	mgr, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Load(); err != nil {
+		return err
+	}
+	event, err := gateway.ReadTimeoutEvent(mgr.HomeDir())
+	if err != nil {
+		if os.IsNotExist(err) {
+			fmt.Println("暂无超时诊断记录。")
+			return nil
+		}
+		return err
+	}
+	fmt.Println("最近一次超时诊断:")
+	fmt.Printf("  Timeout Layer: %s\n", event.Layer)
+	fmt.Printf("  Timeout Value: %ds (%s)\n", event.ConfiguredSeconds, formatTimeoutDuration(event.ConfiguredSeconds))
+	fmt.Printf("  Config Path:   %s\n", event.ConfigPath)
+	fmt.Printf("  Error:         %s\n", event.Error)
+	fmt.Printf("  Recorded At:   %s\n", event.UpdatedAt.Local().Format(time.RFC3339))
+	fmt.Printf("  Suggestion:    调整 %s\n", event.ConfigPath)
+	return nil
+}
+
+func formatTimeoutDuration(seconds int) string {
+	if seconds <= 0 {
+		return "未设置"
+	}
+	if seconds%3600 == 0 {
+		return fmt.Sprintf("%dh", seconds/3600)
+	}
+	if seconds%60 == 0 {
+		return fmt.Sprintf("%dm", seconds/60)
+	}
+	return fmt.Sprintf("%ds", seconds)
 }
 
 func runSoulShow(cmd *cobra.Command, args []string) error {
@@ -932,6 +999,13 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	homeDir := a.Config().HomeDir()
+	if opts.Platform == "telegram" {
+		releaseTelegramLease, err := gateway.AcquireTelegramGatewayLease(homeDir)
+		if err != nil {
+			return err
+		}
+		defer releaseTelegramLease()
+	}
 	syncTelegramState := func(registered, connected bool) {
 		stats, _ := gm.Stats("telegram")
 		_ = gateway.WriteSharedTelegramState(homeDir, gateway.SharedTelegramState{
@@ -959,8 +1033,9 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 	switch opts.Platform {
 	case "telegram":
 		tgAdapter := telegram.NewAdapter(telegram.Config{
-			Token: opts.Token,
-			Proxy: cfg.MsgGateway.Telegram.Proxy,
+			Token:               opts.Token,
+			Proxy:               cfg.MsgGateway.Telegram.Proxy,
+			DisableAutoReaction: cfg.MsgGateway.Telegram.DisableAutoReaction,
 		})
 		handler := telegram.NewHandler(tgAdapter, a)
 		handler.SetDataDir(filepath.Join(a.Config().HomeDir(), "data", "telegram"))

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	appTool "github.com/yurika0211/luckyagent/internal/tool"
 )
 
 const (
@@ -228,8 +230,31 @@ func naturalCitationFromToolLog(call toolCallLog) (naturalCitation, bool) {
 		}
 		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Memory recall. Query: \"%s\".", clipCitationText(query, 80))}, true
 	default:
-		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Tool result. Tool: %s.", name)}, true
+		// Keep citations useful even for newly added tools. The deterministic
+		// tool annotation summarizes the supplied arguments without another LLM
+		// request; append a short result hint when the annotation is generic.
+		annotation := strings.TrimSpace(appTool.AnnotateToolCall(name, call.Arguments, result))
+		if annotation == "" {
+			annotation = fmt.Sprintf("Tool %s returned a result", name)
+		}
+		if strings.HasPrefix(strings.ToLower(annotation), "调用了 ") {
+			if hint := citationResultHint(result); hint != "" {
+				annotation += "：" + hint
+			}
+		}
+		return naturalCitation{Tool: name, Summary: fmt.Sprintf("Tool result. Tool: %s. %s", name, annotation)}, true
 	}
+}
+
+func citationResultHint(result string) string {
+	for _, line := range strings.Split(strings.TrimSpace(result), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		return clipCitationText(line, 120)
+	}
+	return ""
 }
 
 type searchCitationEntry struct {

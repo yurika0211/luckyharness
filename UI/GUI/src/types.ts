@@ -27,6 +27,9 @@ export type DashboardData = {
   telegram_connected?: boolean;
   telegram_proxy?: string;
   telegram_timeout_seconds?: number;
+  timeout_events_24h?: number;
+  timeout_events_by_layer?: Record<string, number>;
+  timeout_last_error?: { layer?: string; config_path?: string; configured_seconds?: number; updated_at?: string };
   telegram_messages_received?: number;
   telegram_messages_sent?: number;
   telegram_errors?: number;

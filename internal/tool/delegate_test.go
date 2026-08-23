@@ -302,6 +302,60 @@ func TestDelegateTaskWritesUnifiedTaskEvents(t *testing.T) {
 	t.Fatalf("timed out waiting for unified task completion: %s", taskID)
 }
 
+func TestDelegateTaskPersistsExecutionMetrics(t *testing.T) {
+	store, err := taskstore.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	dm := NewDelegateManager(DefaultDelegateConfig())
+	dm.SetTaskStore(store)
+	dm.SetAgentExecutor(func(ctx context.Context, description, contextStr string) (string, error) {
+		taskID := DelegateTaskID(ctx)
+		if taskID == "" {
+			t.Fatal("delegate task id missing from executor context")
+		}
+		dm.RecordExecutionMetrics(taskID, 3, "file_read")
+		return "metrics result", nil
+	})
+	result, err := dm.handleDelegate(map[string]any{"description": "record metrics"})
+	if err != nil {
+		t.Fatalf("handleDelegate: %v", err)
+	}
+	var start delegateStartResponse
+	if err := json.Unmarshal([]byte(result), &start); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		record, ok, err := store.Get(start.TaskID)
+		if err != nil {
+			t.Fatalf("get task: %v", err)
+		}
+		if ok && record.Status == taskstore.StatusCompleted {
+			if record.Outcome.Cost.ToolCalls != 3 || record.Outcome.Cost.Elapsed <= 0 {
+				t.Fatalf("unexpected cost snapshot: %+v", record.Outcome.Cost)
+			}
+			if record.Metadata["last_tool"] != "file_read" {
+				t.Fatalf("last tool = %q", record.Metadata["last_tool"])
+			}
+			status, err := dm.handleStatus(map[string]any{"task_id": start.TaskID, "include_result": false})
+			if err != nil {
+				t.Fatalf("handleStatus: %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(status), &payload); err != nil {
+				t.Fatalf("decode status: %v", err)
+			}
+			if payload["tool_calls"] != float64(3) || payload["last_tool"] != "file_read" {
+				t.Fatalf("status metrics missing: %+v", payload)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for metrics task %s", start.TaskID)
+}
+
 func TestDelegateTaskAutoModeWritesPlannerTrace(t *testing.T) {
 	store, err := taskstore.NewFileStore(t.TempDir())
 	if err != nil {

@@ -509,6 +509,7 @@ export function App() {
     ['Sessions', String(data.sessions_total ?? status.sessions_total ?? sessions.length)],
     ['Memory', String(data.memory_total ?? status.memory_total ?? 0)],
     ['Tools', String(data.tools_total ?? data.tools_enabled ?? status.tools_builtin_total ?? 0)],
+    ['Timeouts (24h)', String(data.timeout_events_24h ?? 0)],
   ];
 
   const runtimeRows = [
@@ -650,6 +651,14 @@ export function App() {
                     <strong>{formatValue(value)}</strong>
                   </div>
                 ))}
+              </div>
+              <div className="panel-body timeout-panel">
+                <div className="kv"><span>Timeout events (24h)</span><strong>{data.timeout_events_24h ?? 0}</strong></div>
+                {data.timeout_last_error ? (
+                  <div className="muted-tag">
+                    Last: {data.timeout_last_error.layer || 'unknown'} · {data.timeout_last_error.config_path || 'n/a'}
+                  </div>
+                ) : <div className="muted-tag">No timeout events recorded</div>}
               </div>
             </section>
 

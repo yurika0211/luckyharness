@@ -116,7 +116,24 @@ func newRootCmd() *cobra.Command {
 		Short: "列出所有配置",
 		RunE:  runConfigList,
 	}
-	configCmd.AddCommand(configGetCmd, configSetCmd, configListCmd)
+	configTimeoutCmd := &cobra.Command{
+		Use:   "timeout",
+		Short: "查看各运行层的有效超时配置",
+		Args:  cobra.NoArgs,
+		RunE:  runConfigTimeout,
+	}
+	configTimeoutCmd.Flags().Bool("list", false, "以列表形式显示有效超时配置（兼容别名）")
+	configCmd.AddCommand(configGetCmd, configSetCmd, configListCmd, configTimeoutCmd)
+
+	diagCmd := &cobra.Command{Use: "diag", Short: "查看运行诊断信息"}
+	diagTimeoutCmd := &cobra.Command{
+		Use:   "timeout",
+		Short: "查看最近一次超时诊断",
+		Args:  cobra.NoArgs,
+		RunE:  runDiagTimeout,
+	}
+	diagTimeoutCmd.Flags().Bool("last-error", false, "显示最近一次超时记录")
+	diagCmd.AddCommand(diagTimeoutCmd)
 
 	soulCmd := &cobra.Command{
 		Use:   "soul",
@@ -322,7 +339,7 @@ func newRootCmd() *cobra.Command {
 	addDashboardCmd(rootCmd)
 	addTUICmd(rootCmd)
 	addLearnCmd(rootCmd)
-	rootCmd.AddCommand(initCmd, chatCmd, configCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
+	rootCmd.AddCommand(initCmd, chatCmd, configCmd, diagCmd, soulCmd, versionCmd, serveCmd, msgGatewayCmd, ragCmd, memoryCmd, proactiveCmd, newSessionCmd())
 
 	return rootCmd
 }

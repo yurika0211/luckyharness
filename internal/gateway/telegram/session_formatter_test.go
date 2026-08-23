@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"html"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,7 @@ func TestTelegramFormatterPaginatesAndCategorizesSessions(t *testing.T) {
 		}
 		switch index {
 		case 1:
+			info.ID = "session<&>-01"
 			info.Title = "活跃 <会话>\n[Telegram delivery rule]\ninternal"
 			info.UpdatedAt = now
 		case 2:
@@ -62,12 +64,13 @@ func TestTelegramFormatterPaginatesAndCategorizesSessions(t *testing.T) {
 		infos = append(infos, info)
 	}
 
-	firstPage := (TelegramFormatter{}).FormatSessionsList(infos, "session-01", 1)
+	firstPage := (TelegramFormatter{}).FormatSessionsList(infos, "session<&>-01", 1)
 	for _, expected := range []string{
 		"<b>会话列表</b>（第 1/2 页，共 11 个会话）",
 		"🟢 <b>活跃会话</b>（1 个）",
 		"⏸️ <b>后台任务</b>（1 个）",
 		"活跃 &lt;会话&gt;",
+		"<code>session&lt;&amp;&gt;-01</code>",
 		"<code>/sessions 2</code>",
 		"<code>/session &lt;序号或 ID&gt;</code>",
 	} {
@@ -82,6 +85,20 @@ func TestTelegramFormatterPaginatesAndCategorizesSessions(t *testing.T) {
 	lastPage := (TelegramFormatter{}).FormatSessionsList(infos, "", 99)
 	if !strings.Contains(lastPage, "第 2/2 页") || !strings.Contains(lastPage, "[11] 历史会话 11") {
 		t.Fatalf("expected clamped final page, got:\n%s", lastPage)
+	}
+}
+
+func TestTelegramFormatterRendersLongSessionIDAsEscapedCode(t *testing.T) {
+	longID := strings.Repeat("session<&>-", 24)
+	page := (TelegramFormatter{}).FormatSessionsList([]session.SessionInfo{{
+		ID:        longID,
+		Title:     "长 ID 会话",
+		UpdatedAt: time.Now(),
+	}}, longID, 1)
+
+	want := "<code>" + html.EscapeString(longID) + "</code>"
+	if !strings.Contains(page, want) {
+		t.Fatalf("long session ID is missing or malformed:\n%s", page)
 	}
 }
 

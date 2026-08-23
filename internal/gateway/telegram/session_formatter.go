@@ -73,6 +73,7 @@ func writeTelegramSessionGroup(body *strings.Builder, title string, items []tele
 			current = " <b>（当前）</b>"
 		}
 		body.WriteString(fmt.Sprintf("%s [%d] %s%s\n", prefix, item.index, escapeTelegramCommandHTML(telegramSessionDisplayTitle(item.info.Title)), current))
+		body.WriteString(fmt.Sprintf("%s├─ ID: <code>%s</code>\n", indent, escapeTelegramCommandHTML(item.info.ID)))
 		body.WriteString(fmt.Sprintf("%s└─ %d 条消息 | 最近更新 %s\n", indent, item.info.MessageCount, telegramSessionShortTime(item.info.UpdatedAt)))
 	}
 	body.WriteString("\n")

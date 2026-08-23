@@ -32,6 +32,7 @@ import (
 	"github.com/yurika0211/luckyagent/internal/rag"
 	"github.com/yurika0211/luckyagent/internal/session"
 	"github.com/yurika0211/luckyagent/internal/soul"
+	taskstore "github.com/yurika0211/luckyagent/internal/task"
 	"github.com/yurika0211/luckyagent/internal/tool"
 	"github.com/yurika0211/luckyagent/internal/utils"
 )
@@ -155,6 +156,9 @@ type contextWindowSnapshot struct {
 type agentProviderAdapter struct {
 	inner *agent.Agent
 }
+
+func (a agentProviderAdapter) TaskStore() taskstore.Store      { return a.inner.TaskStore() }
+func (a agentProviderAdapter) Delegate() *tool.DelegateManager { return a.inner.Delegate() }
 
 func (a agentProviderAdapter) Sessions() *session.Manager {
 	return a.inner.Sessions()
@@ -349,13 +353,16 @@ type Handler struct {
 	commands map[string]telegramCommandHandler
 	watcher  *cron.Watcher
 
-	mu              sync.RWMutex
-	sessions        map[string]string // chatID → sessionID
-	tasks           map[string]*chatTask
-	queues          map[string]*chatQueue
-	chatWorkerSlots chan struct{}
-	lucky           *luckycollector.Lucky
-	restarting      bool
+	mu                sync.RWMutex
+	sessions          map[string]string // chatID → sessionID
+	tasks             map[string]*chatTask
+	queues            map[string]*chatQueue
+	chatWorkerSlots   chan struct{}
+	lucky             *luckycollector.Lucky
+	restarting        bool
+	delegateChats     map[string]string
+	delegateTrackers  map[string]*delegateProgressTracker
+	delegateTaskChats map[string]string
 
 	// v0.44.0: chatID→sessionID 映射持久化
 	dataDir string
@@ -453,8 +460,12 @@ func NewHandler(adapter *Adapter, a *agent.Agent) *Handler {
 		memeRand:                  rand.New(rand.NewSource(time.Now().UnixNano())),
 		memeNow:                   time.Now,
 		memeLastSent:              make(map[string]time.Time),
+		delegateChats:             make(map[string]string),
+		delegateTrackers:          make(map[string]*delegateProgressTracker),
+		delegateTaskChats:         make(map[string]string),
 	}
 	h.commands = h.buildCommandRegistry()
+	adapter.SetCallbackHandler(h.handleDelegateCallback)
 	return h
 }
 
@@ -1445,14 +1456,38 @@ func telegramChatErrorFeedback(err error) string {
 		strings.Contains(lower, "不支持 chat completions"):
 		return "❌ 模型协议不匹配：该模型需要 Responses API。请将 `protocol` 设为 `responses` 后重试。"
 	case isTaskTimeoutError(err):
-		return "⏱ 请求超时，请稍后重试或缩短请求内容。"
+		return "⏱ 请求超时。任务可能太复杂或工具执行缓慢；可分解任务，或调整 `msg_gateway.telegram.chat_timeout_seconds` / `agent.timeout_seconds`。"
 	default:
 		return "❌ 请求失败：" + utils.TruncateKeepLength(err.Error(), 200)
 	}
 }
 
+func (h *Handler) telegramTimeoutFeedback(err error) string {
+	if h != nil && h.state != nil {
+		cfg := h.state.Config().Get()
+		if strings.TrimSpace(cfg.HomeDir) != "" {
+			_ = gateway.WriteTimeoutEvent(cfg.HomeDir, gateway.TimeoutEvent{
+				Layer:             "Telegram Gateway Chat",
+				ConfigPath:        "msg_gateway.telegram.chat_timeout_seconds",
+				ConfiguredSeconds: cfg.ChatTimeoutSeconds,
+				Error:             utils.TruncateKeepLength(fmt.Sprint(err), 200),
+			})
+		}
+	}
+	return telegramChatErrorFeedback(err)
+}
+
 // HandleMessage processes an incoming gateway message.
 func (h *Handler) HandleMessage(ctx context.Context, msg *gateway.Message) error {
+	if msg == nil {
+		return nil
+	}
+	// Channel posts are broadcast content rather than user prompts. Confirm
+	// receipt with a reaction without submitting every post to the agent.
+	if msg.Chat.Type == gateway.ChatChannel {
+		h.reactToIncomingMessage(msg)
+		return nil
+	}
 	if msg.IsCommand {
 		return h.handleCommand(ctx, msg)
 	}
@@ -1817,7 +1852,16 @@ func (h *Handler) reactToIncomingMessage(msg *gateway.Message) {
 }
 
 func telegramAutoReaction(msg *gateway.Message, disabled bool) (string, bool) {
-	if disabled || msg == nil || strings.TrimSpace(msg.ID) == "" || msg.Chat.Type == gateway.ChatPrivate {
+	if disabled || msg == nil || strings.TrimSpace(msg.ID) == "" {
+		return "", false
+	}
+	switch msg.Chat.Type {
+	case gateway.ChatPrivate:
+		// Private chats use a consistent acknowledgement, including replies to
+		// earlier bot messages.
+		return "👍", true
+	case gateway.ChatGroup, gateway.ChatSuperGroup, gateway.ChatChannel:
+	default:
 		return "", false
 	}
 	if msg.ReplyTo != nil {
@@ -2378,7 +2422,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 	if err != nil {
 		switch {
 		case isTaskTimeoutError(err):
-			emitProgress("⏱ 请求超时")
+			emitProgress(h.telegramTimeoutFeedback(err))
 		case isTaskCanceledError(err):
 			emitProgress("🛑 当前任务已停止")
 		default:
@@ -2406,7 +2450,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 		events,
 		func(err error) bool {
 			if errors.Is(err, context.DeadlineExceeded) {
-				emitProgress("⏱ 请求超时")
+				emitProgress(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 			} else {
 				emitProgress("🛑 当前任务已停止")
 			}
@@ -2459,6 +2503,9 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 						}
 					}
 					break
+				}
+				if evt.Name == "delegate_task" {
+					h.observeDelegateToolResult(msg, evt.Result)
 				}
 				if len(toolTraceSteps) > 0 {
 					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
@@ -2513,7 +2560,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			case agent.ChatEventError:
 				fmt.Printf("[telegram] chat event error: chatID=%s sessionID=%s err=%v\n", msg.Chat.ID, sessionID, evt.Err)
 				if isTaskTimeoutError(evt.Err) {
-					emitProgress("⏱ 请求超时")
+					emitProgress(h.telegramTimeoutFeedback(evt.Err))
 				} else if isTaskCanceledError(evt.Err) {
 					emitProgress("🛑 当前任务已停止")
 				} else {
@@ -2553,7 +2600,7 @@ func (h *Handler) handleChatNarrativeStream(ctx context.Context, msg *gateway.Me
 			}
 			h.sendFinalAssistantResponse(msg, wrapFinalConclusion(finalOutput))
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
-			emitProgress("⏱ 请求超时")
+			emitProgress(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):
 			emitProgress("🛑 当前任务已停止")
 		default:
@@ -2579,7 +2626,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 	events, err := h.openChatEventStream(chatCtx, telegramConversationScope(msg), input, sessionID)
 	if err != nil {
 		if isTaskTimeoutError(err) {
-			sender.SetResult("⏱ 请求超时")
+			sender.SetResult(h.telegramTimeoutFeedback(err))
 			sender.Finish()
 			return nil
 		}
@@ -2613,7 +2660,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 		events,
 		func(err error) bool {
 			if errors.Is(err, context.DeadlineExceeded) {
-				sender.SetResult("⏱ 请求超时")
+				sender.SetResult(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 			} else {
 				sender.SetResult("🛑 当前任务已停止")
 			}
@@ -2683,6 +2730,9 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 						}
 					}
 					break
+				}
+				if evt.Name == "delegate_task" {
+					h.observeDelegateToolResult(msg, evt.Result)
 				}
 				if len(toolTraceSteps) > 0 {
 					for i := len(toolTraceSteps) - 1; i >= 0; i-- {
@@ -2769,7 +2819,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 			case agent.ChatEventError:
 				fmt.Printf("[telegram] chat event error: chatID=%s sessionID=%s err=%v\n", msg.Chat.ID, sessionID, evt.Err)
 				if isTaskTimeoutError(evt.Err) {
-					sender.SetResult("⏱ 请求超时")
+					sender.SetResult(h.telegramTimeoutFeedback(evt.Err))
 					sender.Finish()
 					return true, true
 				}
@@ -2834,7 +2884,7 @@ func (h *Handler) handleChatStream(ctx context.Context, sender gateway.StreamSen
 				}
 			}
 		case errors.Is(chatCtx.Err(), context.DeadlineExceeded):
-			sender.SetResult("⏱ 请求超时")
+			sender.SetResult(h.telegramTimeoutFeedback(context.DeadlineExceeded))
 		case errors.Is(chatCtx.Err(), context.Canceled):
 			sender.SetResult("🛑 当前任务已停止")
 		default:
@@ -2912,7 +2962,7 @@ func (h *Handler) handleChatSync(ctx context.Context, msg *gateway.Message, inpu
 		}
 		if err != nil {
 			if isTaskTimeoutError(err) {
-				return h.adapter.Send(ctx, msg.Chat.ID, "⏱ 请求超时")
+				return h.adapter.Send(ctx, msg.Chat.ID, h.telegramTimeoutFeedback(err))
 			}
 			if isTaskCanceledError(err) {
 				return h.adapter.Send(context.Background(), msg.Chat.ID, "🛑 当前任务已停止")

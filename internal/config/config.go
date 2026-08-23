@@ -823,6 +823,9 @@ func DefaultConfig() *Config {
 				AllowHighRiskActions: false,
 			},
 		},
+		Hooks: HooksConfig{
+			TimeoutSeconds: 30,
+		},
 		MsgGateway: MsgGatewayConfig{
 			APIAddr: "127.0.0.1:9090",
 			Telegram: MsgGatewayTelegram{
@@ -1055,6 +1058,9 @@ func normalizeConfig(cfg *Config) {
 	}
 	if cfg.CircuitBreaker.HalfOpenMaxReqs <= 0 {
 		cfg.CircuitBreaker.HalfOpenMaxReqs = def.CircuitBreaker.HalfOpenMaxReqs
+	}
+	if cfg.Hooks.TimeoutSeconds <= 0 {
+		cfg.Hooks.TimeoutSeconds = def.Hooks.TimeoutSeconds
 	}
 
 	if cfg.RateLimit.RequestsPerMinute <= 0 {

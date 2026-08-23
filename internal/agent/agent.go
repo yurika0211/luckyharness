@@ -1246,6 +1246,13 @@ func New(cfg *config.Manager) (*Agent, error) {
 		loopCfg.AutoApprove = false // 子代理不自动批准危险工具
 		loopCfg.MaxIterations = 5   // 子代理限制更严格
 		result, err := a.RunLoopWithSession(ctx, sess, prompt, loopCfg)
+		if result != nil {
+			lastTool := ""
+			if n := len(result.ToolCalls); n > 0 {
+				lastTool = result.ToolCalls[n-1].Name
+			}
+			supportRT.delegateMgr.RecordExecutionMetrics(tool.DelegateTaskID(ctx), len(result.ToolCalls), lastTool)
+		}
 		if err != nil {
 			return "", err
 		}

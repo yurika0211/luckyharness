@@ -243,6 +243,8 @@ type DelegateTask struct {
 	Error          string
 	StartedAt      time.Time
 	CompletedAt    time.Time
+	ToolCalls      int
+	LastTool       string
 }
 
 type delegateStartResponse struct {
@@ -272,6 +274,9 @@ type delegateStatusResponse struct {
 	Error           string                          `json:"error,omitempty"`
 	StartedAt       string                          `json:"started_at"`
 	CompletedAt     string                          `json:"completed_at"`
+	ToolCalls       int                             `json:"tool_calls,omitempty"`
+	ElapsedMS       int64                           `json:"elapsed_ms,omitempty"`
+	LastTool        string                          `json:"last_tool,omitempty"`
 	Observation     *taskstore.MainAgentObservation `json:"observation,omitempty"`
 	Events          []taskstore.Event               `json:"events,omitempty"`
 	PlannerTrace    json.RawMessage                 `json:"planner_trace,omitempty"`
@@ -291,6 +296,9 @@ type delegateListItem struct {
 	Error           string `json:"error,omitempty"`
 	StartedAt       string `json:"started_at"`
 	CompletedAt     string `json:"completed_at,omitempty"`
+	ToolCalls       int    `json:"tool_calls,omitempty"`
+	ElapsedMS       int64  `json:"elapsed_ms,omitempty"`
+	LastTool        string `json:"last_tool,omitempty"`
 }
 
 type delegateListResponse struct {
@@ -320,6 +328,19 @@ type delegateWaitResponse struct {
 // AgentExecutorFunc 子代理执行函数 — 通过 Agent Loop 真正执行任务
 // v0.38.0: 让 delegate 不再是占位，而是真正走 LLM
 type AgentExecutorFunc func(ctx context.Context, description, contextStr string) (string, error)
+
+type delegateTaskIDContextKey struct{}
+
+// DelegateTaskID returns the task id while a delegate executor is running.
+// It lets the host Agent attach execution metrics without changing the
+// long-standing AgentExecutorFunc signature.
+func DelegateTaskID(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	id, _ := ctx.Value(delegateTaskIDContextKey{}).(string)
+	return strings.TrimSpace(id)
+}
 
 // DelegateManager 子代理委派管理器
 type DelegateManager struct {
@@ -359,6 +380,88 @@ func (dm *DelegateManager) SetTaskStore(store taskstore.Store) {
 		return
 	}
 	dm.taskEvents = taskstore.NewEventBus(store)
+}
+
+// RecordExecutionMetrics attaches host Agent loop metrics to a delegated task.
+// The values are persisted when the task reaches a terminal state.
+func (dm *DelegateManager) RecordExecutionMetrics(taskID string, toolCalls int, lastTool string) {
+	if dm == nil || strings.TrimSpace(taskID) == "" {
+		return
+	}
+	dm.mu.Lock()
+	task := dm.tasks[taskID]
+	store := dm.taskStore
+	events := dm.taskEvents
+	if task == nil {
+		dm.mu.Unlock()
+		return
+	}
+	if toolCalls >= 0 {
+		task.ToolCalls = toolCalls
+	}
+	if strings.TrimSpace(lastTool) != "" {
+		task.LastTool = strings.TrimSpace(lastTool)
+	}
+	snapshot := cloneDelegateTask(task)
+	dm.mu.Unlock()
+	if store == nil {
+		return
+	}
+	if record, ok, err := store.Get(taskID); err == nil && ok {
+		record.Outcome.Cost.ToolCalls = snapshot.ToolCalls
+		record.Outcome.Cost.Elapsed = delegateElapsedMillisAsDuration(snapshot.StartedAt, time.Now())
+		if record.Metadata == nil {
+			record.Metadata = make(map[string]string)
+		}
+		if snapshot.LastTool != "" {
+			record.Metadata["last_tool"] = snapshot.LastTool
+		}
+		_ = store.Update(record)
+		if events != nil {
+			_ = events.Emit(taskstore.Event{Type: taskstore.EventToolUsed, TaskID: taskID, Status: record.Status, Cost: record.Outcome.Cost, Metadata: map[string]string{"last_tool": snapshot.LastTool}})
+		}
+	}
+}
+
+func delegateElapsedMillisAsDuration(start time.Time, end time.Time) time.Duration {
+	if start.IsZero() || end.Before(start) {
+		return 0
+	}
+	return end.Sub(start)
+}
+
+// RetryTask creates a fresh delegated task from a failed/cancelled task. The
+// original task remains immutable for audit history; the returned value is the
+// normal delegate_task start response for the new task.
+func (dm *DelegateManager) RetryTask(taskID string) (string, error) {
+	taskID = strings.TrimSpace(taskID)
+	if taskID == "" {
+		return "", fmt.Errorf("task_id is required")
+	}
+	dm.mu.RLock()
+	task := dm.tasks[taskID]
+	store := dm.taskStore
+	dm.mu.RUnlock()
+	if task == nil && store != nil {
+		record, ok, err := store.Get(taskID)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("task not found: %s", taskID)
+		}
+		if record.Status != taskstore.StatusFailed && record.Status != taskstore.StatusCancelled && record.Status != taskstore.StatusBlocked {
+			return "", fmt.Errorf("task %s is not retryable from status %s", taskID, record.Status)
+		}
+		return dm.handleDelegate(map[string]any{"description": record.Description, "context": record.Input})
+	}
+	if task == nil {
+		return "", fmt.Errorf("task not found: %s", taskID)
+	}
+	if task.Status != StatusFailed && task.Status != StatusCancelled {
+		return "", fmt.Errorf("task %s is not retryable from status %s", taskID, task.Status.String())
+	}
+	return dm.handleDelegate(map[string]any{"description": task.Description, "context": task.Context})
 }
 
 func (dm *DelegateManager) delegateTimeoutFromArgs(args map[string]any) time.Duration {
@@ -576,6 +679,19 @@ func cloneDelegateTask(task *DelegateTask) DelegateTask {
 		return DelegateTask{}
 	}
 	return *task
+}
+
+func delegateElapsedMillis(start, end time.Time) int64 {
+	if start.IsZero() {
+		return 0
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+	if end.Before(start) {
+		return 0
+	}
+	return end.Sub(start).Milliseconds()
 }
 
 func summarizeDelegateResult(result string, maxBytes int) (summary, inline string, resultBytes int, truncated bool) {
@@ -913,7 +1029,7 @@ func (dm *DelegateManager) executeTask(taskID, description, contextStr string, t
 	dm.mu.Lock()
 	task := dm.tasks[taskID]
 	task.Status = StatusRunning
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.WithValue(context.Background(), delegateTaskIDContextKey{}, taskID), timeout)
 	dm.cancels[taskID] = cancel
 	executor := dm.agentExecutor
 	store := dm.taskStore
@@ -1018,6 +1134,9 @@ func (dm *DelegateManager) handleStatus(args map[string]any) (string, error) {
 		Error:           snapshot.Error,
 		StartedAt:       snapshot.StartedAt.Format(time.RFC3339),
 		CompletedAt:     formatDelegateCompletedAt(snapshot.CompletedAt),
+		ToolCalls:       snapshot.ToolCalls,
+		ElapsedMS:       delegateElapsedMillis(snapshot.StartedAt, snapshot.CompletedAt),
+		LastTool:        snapshot.LastTool,
 	}
 	if includeResult {
 		resp.Result = inline
@@ -1216,6 +1335,9 @@ func (dm *DelegateManager) handleUnifiedStatus(store taskstore.Store, taskID str
 		ResultTruncated: truncated,
 		StartedAt:       formatDelegateCompletedAt(record.StartedAt),
 		CompletedAt:     formatDelegateCompletedAt(record.CompletedAt),
+		ToolCalls:       record.Outcome.Cost.ToolCalls,
+		ElapsedMS:       delegateElapsedMillis(record.StartedAt, record.CompletedAt),
+		LastTool:        record.Metadata["last_tool"],
 	}
 	if includeResult {
 		resp.Result = inline
@@ -1325,6 +1447,9 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 			Error:       t.Error,
 			StartedAt:   t.StartedAt.Format(time.RFC3339),
 			CompletedAt: formatDelegateCompletedAt(t.CompletedAt),
+			ToolCalls:   t.ToolCalls,
+			ElapsedMS:   delegateElapsedMillis(t.StartedAt, t.CompletedAt),
+			LastTool:    t.LastTool,
 		}
 		if includeResult {
 			item.ResultSummary = summary
@@ -1358,6 +1483,9 @@ func (dm *DelegateManager) handleList(args map[string]any) (string, error) {
 					Error:       record.Outcome.UserFeedback,
 					StartedAt:   formatDelegateCompletedAt(record.StartedAt),
 					CompletedAt: formatDelegateCompletedAt(record.CompletedAt),
+					ToolCalls:   record.Outcome.Cost.ToolCalls,
+					ElapsedMS:   delegateElapsedMillis(record.StartedAt, record.CompletedAt),
+					LastTool:    record.Metadata["last_tool"],
 				}
 				if includeResult {
 					item.ResultSummary = summary
@@ -1518,6 +1646,18 @@ func (dm *DelegateManager) recordDelegateTaskFinished(store taskstore.Store, eve
 	record.Status = delegateStatusToUnified(task.Status)
 	record.CompletedAt = task.CompletedAt
 	record.Outcome.Status = record.Status
+	if task.ToolCalls > 0 {
+		record.Outcome.Cost.ToolCalls = task.ToolCalls
+	}
+	if !task.StartedAt.IsZero() && !task.CompletedAt.IsZero() && task.CompletedAt.After(task.StartedAt) {
+		record.Outcome.Cost.Elapsed = task.CompletedAt.Sub(task.StartedAt)
+	}
+	if strings.TrimSpace(task.LastTool) != "" {
+		if record.Metadata == nil {
+			record.Metadata = make(map[string]string)
+		}
+		record.Metadata["last_tool"] = task.LastTool
+	}
 	if task.Error != "" {
 		record.Outcome.UserFeedback = task.Error
 	}

@@ -83,6 +83,8 @@ Sub-agent task completed (no executor): <description>
 | `task_id` | 是 | 无 | 要查询的任务 ID。 |
 | `include_result` | 否 | `true` | 是否返回内联结果文本。 |
 
+状态响应还包含可观测性字段：`tool_calls`（子 Agent 已执行的工具调用次数）、`elapsed_ms`（从启动到完成/当前的耗时）和 `last_tool`（最近一次工具名）。这些字段也会写入统一任务存储，供 Telegram Agent Trace 和 Dashboard 使用。
+
 输出：
 
 ```json
@@ -94,8 +96,11 @@ Sub-agent task completed (no executor): <description>
   "result_summary": "...",
   "result": "...",
   "result_bytes": 123,
-  "result_truncated": false,
-  "started_at": "2026-07-03T00:00:00+08:00",
+      "result_truncated": false,
+      "tool_calls": 3,
+      "elapsed_ms": 1200,
+      "last_tool": "file_read",
+      "started_at": "2026-07-03T00:00:00+08:00",
   "completed_at": "2026-07-03T00:01:00+08:00"
 }
 ```

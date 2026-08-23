@@ -6,6 +6,7 @@ type Config struct {
 	Proxy                     string   // Optional proxy URL for Telegram API (http/https/socks5)
 	AllowedChats              []string // Chat ID whitelist (empty = allow all)
 	AdminIDs                  []string // Admin user IDs
+	DisableAutoReaction       bool     // Disable automatic acknowledgement reactions
 	MaxMessageLen             int      // Max message length before splitting (default 4000)
 	RateLimit                 int      // Messages per second per chat (default 1)
 	PollTimeout               int      // Long polling timeout in seconds (default 30)

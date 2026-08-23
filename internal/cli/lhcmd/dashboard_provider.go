@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yurika0211/luckyagent/internal/agent"
+	"github.com/yurika0211/luckyagent/internal/config"
 	"github.com/yurika0211/luckyagent/internal/cron"
 	"github.com/yurika0211/luckyagent/internal/gateway"
 	"github.com/yurika0211/luckyagent/internal/memory"
@@ -65,6 +66,23 @@ func (p *replDashboardProvider) DashboardData() map[string]interface{} {
 	data["telegram_platform"] = cfg.MsgGateway.Platform
 	data["telegram_proxy"] = cfg.MsgGateway.Telegram.Proxy
 	data["telegram_timeout_seconds"] = cfg.MsgGateway.Telegram.ChatTimeoutSeconds
+	timeoutEvents, timeoutEventsErr := gateway.ReadTimeoutEventsSince(homeDir, time.Now().Add(-24*time.Hour))
+	data["timeout_recommendations"] = buildTimeoutRecommendations(cfg, timeoutEvents)
+	if timeoutEventsErr == nil {
+		byLayer := map[string]int{}
+		for _, event := range timeoutEvents {
+			byLayer[event.Layer]++
+		}
+		data["timeout_events_24h"] = len(timeoutEvents)
+		data["timeout_events_by_layer"] = byLayer
+		if last, err := gateway.ReadTimeoutEvent(homeDir); err == nil {
+			data["timeout_last_error"] = map[string]interface{}{
+				"layer": last.Layer, "config_path": last.ConfigPath,
+				"configured_seconds": last.ConfiguredSeconds,
+				"updated_at":         last.UpdatedAt.Format(time.RFC3339),
+			}
+		}
+	}
 
 	if sessions := p.agent.Sessions(); sessions != nil {
 		infos := sessions.ListInfo()
@@ -176,6 +194,83 @@ func (p *replDashboardProvider) DashboardData() map[string]interface{} {
 	}
 
 	return data
+}
+
+// buildTimeoutRecommendations exposes safe, copy-pasteable timeout profiles to
+// the Dashboard. It intentionally returns configuration paths and numeric
+// values only; credentials, prompts, and timeout event contents are excluded.
+// The current values are included next to each profile so operators can see
+// which settings would change before applying a suggestion.
+func buildTimeoutRecommendations(cfg *config.Config, events []gateway.TimeoutEvent) []map[string]interface{} {
+	if cfg == nil {
+		cfg = config.DefaultConfig()
+	}
+	current := map[string]int{
+		"msg_gateway.telegram.chat_timeout_seconds": cfg.MsgGateway.Telegram.ChatTimeoutSeconds,
+		"agent.timeout_seconds":                     cfg.Agent.TimeoutSeconds,
+		"opencli.timeout_seconds":                   cfg.OpenCLI.TimeoutSeconds,
+		"tools.computer_use.timeout_seconds":        cfg.Tools.ComputerUse.TimeoutSeconds,
+		"tools.computer_use.step_timeout_seconds":   cfg.Tools.ComputerUse.StepTimeoutSeconds,
+	}
+
+	profiles := []struct {
+		id        string
+		label     string
+		reason    string
+		suggested map[string]int
+	}{
+		{
+			id:     "quick_response",
+			label:  "快速响应",
+			reason: "适合短请求和低延迟交互，避免单轮工具等待过久。",
+			suggested: map[string]int{
+				"msg_gateway.telegram.chat_timeout_seconds": 300,
+				"agent.timeout_seconds":                     30,
+				"opencli.timeout_seconds":                   15,
+			},
+		},
+		{
+			id:     "complex_tasks",
+			label:  "复杂任务",
+			reason: "适合多工具、文件处理和 Computer Use 等需要更长等待的任务。",
+			suggested: map[string]int{
+				"msg_gateway.telegram.chat_timeout_seconds": 1200,
+				"agent.timeout_seconds":                     120,
+				"opencli.timeout_seconds":                   60,
+				"tools.computer_use.timeout_seconds":        600,
+				"tools.computer_use.step_timeout_seconds":   60,
+			},
+		},
+	}
+
+	result := make([]map[string]interface{}, 0, len(profiles))
+	for _, profile := range profiles {
+		result = append(result, map[string]interface{}{
+			"id":              profile.id,
+			"label":           profile.label,
+			"reason":          profile.reason,
+			"priority":        timeoutRecommendationPriority(profile.id, events),
+			"evidence_events": len(events),
+			"current":         current,
+			"suggested":       profile.suggested,
+		})
+	}
+	return result
+}
+
+func timeoutRecommendationPriority(profileID string, events []gateway.TimeoutEvent) string {
+	if len(events) == 0 {
+		return "info"
+	}
+	for _, event := range events {
+		if strings.EqualFold(strings.TrimSpace(event.Layer), "Telegram Gateway Chat") {
+			if profileID == "complex_tasks" {
+				return "recommended"
+			}
+			return "alternative"
+		}
+	}
+	return "recommended"
 }
 
 func minInt(a, b int) int {

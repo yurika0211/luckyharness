@@ -1011,6 +1011,34 @@ func TestV054CallSetMessageReactionWithMockBot(t *testing.T) {
 	}
 }
 
+func TestV054CallSetMessageReactionIncludesRouteInAPIError(t *testing.T) {
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			return map[string]any{
+				"ok":          false,
+				"error_code":  400,
+				"description": "Bad Request: reaction is not allowed",
+			}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("failed to create mock bot: %v", err)
+	}
+
+	adapter := NewAdapter(DefaultConfig())
+	adapter.bot = bot
+	err = adapter.callSetMessageReaction(-1001234567890, 42, "👍")
+	if err == nil {
+		t.Fatal("expected setMessageReaction API error")
+	}
+	for _, want := range []string{"setMessageReaction", "chat_id=-1001234567890", "message_id=42", "reaction is not allowed"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, missing %q", err, want)
+		}
+	}
+}
+
 // ============================================================
 // callTelegramAPI 测试 (mock server)
 // ============================================================
@@ -1652,6 +1680,88 @@ func TestV054ProcessUpdateNilMessage(t *testing.T) {
 	adapter.processUpdate(ctx, update)
 }
 
+func TestV054PollSubscribesToChannelPosts(t *testing.T) {
+	updatesSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "getUpdates") {
+			_ = r.ParseForm()
+			select {
+			case updatesSeen <- r.Form:
+			default:
+			}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("new mock bot: %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token, PollTimeout: 1})
+	adapter.bot = bot
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go adapter.poll(ctx)
+
+	select {
+	case form := <-updatesSeen:
+		var allowed []string
+		if err := json.Unmarshal([]byte(form.Get("allowed_updates")), &allowed); err != nil {
+			t.Fatalf("decode allowed_updates %q: %v", form.Get("allowed_updates"), err)
+		}
+		if len(allowed) != 3 || allowed[0] != tgbotapi.UpdateTypeMessage || allowed[1] != tgbotapi.UpdateTypeChannelPost || allowed[2] != tgbotapi.UpdateTypeCallbackQuery {
+			t.Fatalf("allowed_updates = %#v, want message, channel_post, and callback_query", allowed)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected getUpdates request")
+	}
+}
+
+func TestV054ProcessChannelPostReactsWithoutDispatchingToAgent(t *testing.T) {
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			reactionSeen <- r.Form
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("new mock bot: %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token})
+	adapter.bot = bot
+	handler := NewHandler(adapter, nil)
+	adapter.SetHandler(handler.HandleMessage)
+
+	adapter.processUpdate(context.Background(), tgbotapi.Update{ChannelPost: &tgbotapi.Message{
+		MessageID: 42,
+		Chat: &tgbotapi.Chat{
+			ID:       -100123,
+			Type:     "channel",
+			Title:    "Release notes",
+			UserName: "release_notes",
+		},
+		SenderChat: &tgbotapi.Chat{ID: -100123, Type: "channel", Title: "Release notes"},
+		Text:       "new release",
+	}})
+
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "-100123" {
+			t.Fatalf("reaction chat_id = %q, want -100123", got)
+		}
+		if got := form.Get("message_id"); got != "42" {
+			t.Fatalf("reaction message_id = %q, want 42", got)
+		}
+		if got := form.Get("reaction"); !strings.Contains(got, `"emoji":"👍"`) {
+			t.Fatalf("reaction payload = %q, want thumbs-up", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a reaction for channel post")
+	}
+}
+
 func TestV054ProcessUpdateGroupMention(t *testing.T) {
 	adapter, server, err := newAdapterWithMockBot()
 	if err != nil {
@@ -1700,6 +1810,56 @@ func TestV054ProcessUpdateGroupMention(t *testing.T) {
 
 	if !handlerCalled {
 		t.Error("expected handler to be called for group mention")
+	}
+}
+
+func TestV054ProcessUpdateUnmentionedGroupReactsWithoutDispatching(t *testing.T) {
+	reactionSeen := make(chan url.Values, 1)
+	bot, err := newMockBot(func(r *http.Request) map[string]any {
+		if containsMethod(r.URL.Path, "setMessageReaction") {
+			_ = r.ParseForm()
+			select {
+			case reactionSeen <- r.Form:
+			default:
+			}
+		}
+		return defaultMockBotResponse(r)
+	})
+	if err != nil {
+		t.Fatalf("new mock bot: %v", err)
+	}
+
+	adapter := NewAdapter(Config{Token: bot.Token})
+	adapter.bot = bot
+	handlerCalled := false
+	adapter.SetHandler(func(context.Context, *gateway.Message) error {
+		handlerCalled = true
+		return nil
+	})
+
+	adapter.processUpdate(context.Background(), tgbotapi.Update{Message: &tgbotapi.Message{
+		MessageID: 43,
+		Chat:      &tgbotapi.Chat{ID: -100123, Type: "supergroup", Title: "Team"},
+		From:      &tgbotapi.User{ID: 9, UserName: "member"},
+		Text:      "ordinary group message",
+	}})
+
+	select {
+	case form := <-reactionSeen:
+		if got := form.Get("chat_id"); got != "-100123" {
+			t.Fatalf("reaction chat_id = %q, want -100123", got)
+		}
+		if got := form.Get("message_id"); got != "43" {
+			t.Fatalf("reaction message_id = %q, want 43", got)
+		}
+		if got := form.Get("reaction"); !strings.Contains(got, `"emoji":"👍"`) {
+			t.Fatalf("reaction payload = %q, want thumbs-up", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected a reaction for unmentioned group message")
+	}
+	if handlerCalled {
+		t.Fatal("ordinary group message must not be dispatched to the agent")
 	}
 }
 
