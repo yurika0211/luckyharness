@@ -290,6 +290,8 @@ func runConfigGet(cmd *cobra.Command, args []string) error {
 		fmt.Println(cfg.MsgGateway.QQOfficial.AppID)
 	case "msg_gateway.qqofficial.app_secret":
 		fmt.Println(maskKey(cfg.MsgGateway.QQOfficial.AppSecret))
+	case "msg_gateway.qqofficial.proxy":
+		fmt.Println(cfg.MsgGateway.QQOfficial.Proxy)
 	case "msg_gateway.qqofficial.sandbox":
 		fmt.Println(cfg.MsgGateway.QQOfficial.Sandbox)
 	case "msg_gateway.qqofficial.api_base_url":
@@ -1121,9 +1123,11 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		qqAdapter := qqofficial.NewAdapter(qqofficial.Config{
 			AppID:         opts.QQAppID,
 			AppSecret:     opts.QQAppSecret,
+			Proxy:         cfg.MsgGateway.QQOfficial.Proxy,
 			Sandbox:       opts.QQSandbox,
 			APIBaseURL:    cfg.MsgGateway.QQOfficial.APIBaseURL,
 			GatewayURL:    cfg.MsgGateway.QQOfficial.GatewayURL,
+			LogPath:       filepath.Join(a.Config().HomeDir(), "logs", "qqofficial-gateway.log"),
 			AllowedChats:  append([]string(nil), cfg.MsgGateway.QQOfficial.AllowedChats...),
 			AllowedUsers:  append([]string(nil), cfg.MsgGateway.QQOfficial.AllowedUsers...),
 			RemoveAt:      cfg.MsgGateway.QQOfficial.RemoveAt,

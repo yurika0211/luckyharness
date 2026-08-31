@@ -397,6 +397,7 @@ type MsgGatewayTelegram struct {
 type MsgGatewayQQOfficial struct {
 	AppID         string   `json:"app_id,omitempty"`
 	AppSecret     string   `json:"app_secret,omitempty"`
+	Proxy         string   `json:"proxy,omitempty"`
 	Sandbox       bool     `json:"sandbox,omitempty"`
 	APIBaseURL    string   `json:"api_base_url,omitempty"`
 	GatewayURL    string   `json:"gateway_url,omitempty"`
@@ -1961,6 +1962,8 @@ func (m *Manager) Set(key, value string) error {
 		m.config.MsgGateway.QQOfficial.AppID = value
 	case "msg_gateway.qqofficial.app_secret":
 		m.config.MsgGateway.QQOfficial.AppSecret = value
+	case "msg_gateway.qqofficial.proxy":
+		m.config.MsgGateway.QQOfficial.Proxy = value
 	case "msg_gateway.qqofficial.sandbox":
 		m.config.MsgGateway.QQOfficial.Sandbox = parseBool(value)
 	case "msg_gateway.qqofficial.api_base_url":

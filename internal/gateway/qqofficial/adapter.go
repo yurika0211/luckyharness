@@ -6,7 +6,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	xproxy "golang.org/x/net/proxy"
 
 	"github.com/yurika0211/luckyagent/internal/gateway"
 )
@@ -145,8 +148,11 @@ type Adapter struct {
 	conn            *websocket.Conn
 	httpClient      *http.Client
 	gatewayDialer   websocketDialer
+	networkInitErr  error
 	accessTokenURL  string
 	reconnectSignal chan struct{}
+	logMu           sync.Mutex
+	logFile         *os.File
 
 	accessToken string
 	tokenExpiry time.Time
@@ -183,13 +189,21 @@ func NewAdapter(cfg Config) *Adapter {
 	}
 	cfg.RemoveAt = cfg.RemoveAt || def.RemoveAt
 
-	return &Adapter{
+	adapter := &Adapter{
 		cfg:             cfg,
 		httpClient:      &http.Client{Timeout: 15 * time.Second},
 		gatewayDialer:   websocket.DefaultDialer,
 		accessTokenURL:  "https://bots.qq.com/app/getAppAccessToken",
 		reconnectSignal: make(chan struct{}, 1),
 	}
+	httpClient, gatewayDialer, err := newNetworkClients(cfg.Proxy)
+	if err != nil {
+		adapter.networkInitErr = err
+		return adapter
+	}
+	adapter.httpClient = httpClient
+	adapter.gatewayDialer = gatewayDialer
+	return adapter
 }
 
 func (a *Adapter) Name() string { return "qqofficial" }
@@ -201,8 +215,14 @@ func (a *Adapter) SetHandler(handler gateway.MessageHandler) {
 }
 
 func (a *Adapter) Start(ctx context.Context) error {
+	if err := a.initializeLogger(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(a.cfg.AppID) == "" || strings.TrimSpace(a.cfg.AppSecret) == "" {
-		return fmt.Errorf("qqofficial: app_id and app_secret are required")
+		return a.startError(fmt.Errorf("qqofficial: app_id and app_secret are required"))
+	}
+	if a.networkInitErr != nil {
+		return a.startError(a.networkInitErr)
 	}
 	a.mu.Lock()
 	if a.running {
@@ -222,23 +242,23 @@ func (a *Adapter) Start(ctx context.Context) error {
 		a.mu.Lock()
 		a.running = false
 		a.mu.Unlock()
-		return err
+		return a.startError(err)
 	}
 	if err := a.connectGateway(startCtx); err != nil {
 		cancel()
 		a.mu.Lock()
 		a.running = false
 		a.mu.Unlock()
-		return err
+		return a.startError(err)
 	}
 
+	a.logf("connected gateway=%s sandbox=%t proxy=%s", a.cfg.normalizedGatewayURL(), a.cfg.Sandbox, a.proxyDescription())
 	go a.superviseGateway(startCtx)
 	return nil
 }
 
 func (a *Adapter) Stop() error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.cancel != nil {
 		a.cancel()
 	}
@@ -247,6 +267,8 @@ func (a *Adapter) Stop() error {
 		a.conn = nil
 	}
 	a.running = false
+	a.mu.Unlock()
+	a.closeLogger()
 	return nil
 }
 
@@ -469,7 +491,7 @@ func (a *Adapter) superviseGateway(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			fmt.Printf("[qqofficial] gateway connection closed: %v\n", err)
+			a.logf("gateway connection closed: %v", err)
 		}
 		a.closeCurrentConn()
 		if !a.waitBeforeReconnect(ctx) {
@@ -480,7 +502,7 @@ func (a *Adapter) superviseGateway(ctx context.Context) {
 				return
 			}
 			if err := a.connectGateway(ctx); err != nil {
-				fmt.Printf("[qqofficial] reconnect failed: %v\n", err)
+				a.logf("reconnect failed: %v", err)
 				if !a.waitBeforeReconnect(ctx) {
 					return
 				}
@@ -489,6 +511,114 @@ func (a *Adapter) superviseGateway(ctx context.Context) {
 			break
 		}
 	}
+}
+
+func newNetworkClients(proxyValue string) (*http.Client, *websocket.Dialer, error) {
+	transport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, nil, fmt.Errorf("qqofficial: clone default HTTP transport")
+	}
+	transport = transport.Clone()
+	transport.Proxy = nil
+
+	dialer := *websocket.DefaultDialer
+	dialer.Proxy = nil
+
+	proxyValue = strings.TrimSpace(proxyValue)
+	if proxyValue == "" {
+		return &http.Client{Transport: transport, Timeout: 15 * time.Second}, &dialer, nil
+	}
+
+	proxyURL, err := url.Parse(proxyValue)
+	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return nil, nil, fmt.Errorf("qqofficial: invalid proxy URL")
+	}
+
+	switch strings.ToLower(proxyURL.Scheme) {
+	case "http", "https":
+		transport.Proxy = http.ProxyURL(proxyURL)
+		dialer.Proxy = http.ProxyURL(proxyURL)
+	case "socks5", "socks5h":
+		proxyDialer, err := xproxy.FromURL(proxyURL, &net.Dialer{})
+		if err != nil {
+			return nil, nil, fmt.Errorf("qqofficial: create SOCKS5 proxy dialer: %w", err)
+		}
+		dialContext := contextDialFunc(proxyDialer)
+		transport.DialContext = dialContext
+		dialer.NetDialContext = dialContext
+	default:
+		return nil, nil, fmt.Errorf("qqofficial: unsupported proxy scheme %q", proxyURL.Scheme)
+	}
+
+	return &http.Client{Transport: transport, Timeout: 15 * time.Second}, &dialer, nil
+}
+
+func contextDialFunc(dialer xproxy.Dialer) func(context.Context, string, string) (net.Conn, error) {
+	if contextDialer, ok := dialer.(xproxy.ContextDialer); ok {
+		return contextDialer.DialContext
+	}
+	return func(_ context.Context, network, address string) (net.Conn, error) {
+		return dialer.Dial(network, address)
+	}
+}
+
+func (a *Adapter) initializeLogger() error {
+	path := strings.TrimSpace(a.cfg.LogPath)
+	if path == "" {
+		return nil
+	}
+
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	if a.logFile != nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("qqofficial: create log directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("qqofficial: open log file: %w", err)
+	}
+	a.logFile = file
+	return nil
+}
+
+func (a *Adapter) closeLogger() {
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	if a.logFile != nil {
+		_ = a.logFile.Close()
+		a.logFile = nil
+	}
+}
+
+func (a *Adapter) startError(err error) error {
+	a.logf("start failed: %v (sandbox=%t gateway=%s proxy=%s)", err, a.cfg.Sandbox, a.cfg.normalizedGatewayURL(), a.proxyDescription())
+	return err
+}
+
+func (a *Adapter) logf(format string, args ...any) {
+	message := fmt.Sprintf(format, args...)
+	fmt.Fprintf(os.Stderr, "[qqofficial] %s\n", message)
+
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
+	if a.logFile != nil {
+		_, _ = fmt.Fprintf(a.logFile, "%s %s\n", time.Now().Format(time.RFC3339), message)
+	}
+}
+
+func (a *Adapter) proxyDescription() string {
+	proxyValue := strings.TrimSpace(a.cfg.Proxy)
+	if proxyValue == "" {
+		return "direct"
+	}
+	proxyURL, err := url.Parse(proxyValue)
+	if err != nil || proxyURL.Scheme == "" || proxyURL.Host == "" {
+		return "invalid"
+	}
+	return strings.ToLower(proxyURL.Scheme) + "://" + proxyURL.Host
 }
 
 func (a *Adapter) readLoop(ctx context.Context) error {

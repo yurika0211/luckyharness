@@ -6,9 +6,11 @@ import "strings"
 type Config struct {
 	AppID         string
 	AppSecret     string
+	Proxy         string
 	Sandbox       bool
 	APIBaseURL    string
 	GatewayURL    string
+	LogPath       string
 	AllowedChats  []string
 	AllowedUsers  []string
 	RemoveAt      bool

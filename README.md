@@ -486,7 +486,9 @@ lh msg-gateway start --platform telegram
 
 QQ 官方机器人依赖平台侧的 AppID 和 AppSecret。启动前，先确认凭证已经写入配置，`sandbox` 与你的机器人环境一致；如果入口需要收窄，再补上会话或用户白名单。
 
-需要重点看的字段是 `msg_gateway.qqofficial.app_id`、`msg_gateway.qqofficial.app_secret`、`msg_gateway.qqofficial.sandbox`，以及可选的 `msg_gateway.qqofficial.allowed_chats`、`msg_gateway.qqofficial.allowed_users`。
+需要重点看的字段是 `msg_gateway.qqofficial.app_id`、`msg_gateway.qqofficial.app_secret`、`msg_gateway.qqofficial.sandbox`，以及可选的 `msg_gateway.qqofficial.proxy`、`msg_gateway.qqofficial.allowed_chats`、`msg_gateway.qqofficial.allowed_users`。`proxy` 支持 `http`、`https`、`socks5` 和 `socks5h` URL；留空时 QQ 官方网关始终直连，不读取 `HTTP_PROXY`、`HTTPS_PROXY` 或 `ALL_PROXY`。
+
+连接或重连失败会同时输出到启动终端和 `${HOME}/.luckyagent/logs/qqofficial-gateway.log`，其中包含沙箱状态、网关地址和代理模式，便于跨机器排查。
 
 常用启动命令：
 

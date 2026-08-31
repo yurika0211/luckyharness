@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -227,6 +228,104 @@ func TestAccessTokenResponseUnmarshalExpiresInNumber(t *testing.T) {
 	}
 	if resp.AccessToken != "abc" || resp.ExpiresIn != 7200 {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestNewAdapterUsesDirectNetworkingWithoutProxy(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://127.0.0.1:7897")
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
+	t.Setenv("ALL_PROXY", "socks5://127.0.0.1:7897")
+
+	adapter := NewAdapter(Config{})
+	transport, ok := adapter.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTP transport = %T, want *http.Transport", adapter.httpClient.Transport)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("empty proxy configuration must not use proxy environment variables")
+	}
+
+	dialer, ok := adapter.gatewayDialer.(*websocket.Dialer)
+	if !ok {
+		t.Fatalf("gateway dialer = %T, want *websocket.Dialer", adapter.gatewayDialer)
+	}
+	if dialer.Proxy != nil {
+		t.Fatal("websocket dialer must not use proxy environment variables")
+	}
+}
+
+func TestNewAdapterConfiguresHTTPProxyForHTTPAndWebSocket(t *testing.T) {
+	adapter := NewAdapter(Config{Proxy: "http://127.0.0.1:7897"})
+	transport, ok := adapter.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTP transport = %T, want *http.Transport", adapter.httpClient.Transport)
+	}
+	dialer, ok := adapter.gatewayDialer.(*websocket.Dialer)
+	if !ok {
+		t.Fatalf("gateway dialer = %T, want *websocket.Dialer", adapter.gatewayDialer)
+	}
+
+	requestURL, err := url.Parse("https://bots.qq.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, proxyFunc := range map[string]func(*http.Request) (*url.URL, error){
+		"HTTP":      transport.Proxy,
+		"WebSocket": dialer.Proxy,
+	} {
+		if proxyFunc == nil {
+			t.Fatalf("%s proxy function is nil", name)
+		}
+		proxyURL, err := proxyFunc(&http.Request{URL: requestURL})
+		if err != nil {
+			t.Fatalf("%s proxy lookup: %v", name, err)
+		}
+		if proxyURL == nil || proxyURL.String() != "http://127.0.0.1:7897" {
+			t.Fatalf("%s proxy = %v, want http://127.0.0.1:7897", name, proxyURL)
+		}
+	}
+}
+
+func TestNewAdapterConfiguresSOCKS5ProxyForHTTPAndWebSocket(t *testing.T) {
+	adapter := NewAdapter(Config{Proxy: "socks5://127.0.0.1:7890"})
+	transport, ok := adapter.httpClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("HTTP transport = %T, want *http.Transport", adapter.httpClient.Transport)
+	}
+	dialer, ok := adapter.gatewayDialer.(*websocket.Dialer)
+	if !ok {
+		t.Fatalf("gateway dialer = %T, want *websocket.Dialer", adapter.gatewayDialer)
+	}
+	if transport.Proxy != nil || transport.DialContext == nil {
+		t.Fatalf("unexpected HTTP SOCKS configuration: hasProxy=%t hasDialContext=%t", transport.Proxy != nil, transport.DialContext != nil)
+	}
+	if dialer.Proxy != nil || dialer.NetDialContext == nil {
+		t.Fatalf("unexpected WebSocket SOCKS configuration: hasProxy=%t hasNetDialContext=%t", dialer.Proxy != nil, dialer.NetDialContext != nil)
+	}
+}
+
+func TestStartLogsInvalidProxyConfiguration(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "logs", "qqofficial-gateway.log")
+	adapter := NewAdapter(Config{
+		AppID:     "app-id",
+		AppSecret: "app-secret",
+		Proxy:     "ftp://127.0.0.1:21",
+		LogPath:   logPath,
+	})
+	defer adapter.Stop()
+
+	err := adapter.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "unsupported proxy scheme") {
+		t.Fatalf("Start() error = %v, want unsupported proxy scheme", err)
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read gateway log: %v", err)
+	}
+	for _, want := range []string{"start failed", "unsupported proxy scheme", "sandbox=false", "proxy=ftp://127.0.0.1:21"} {
+		if !strings.Contains(string(content), want) {
+			t.Fatalf("gateway log missing %q:\n%s", want, content)
+		}
 	}
 }
 

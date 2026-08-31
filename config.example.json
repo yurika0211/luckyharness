@@ -277,6 +277,7 @@
     "qqofficial": {
       "app_id": "",
       "app_secret": "",
+      "proxy": "",
       "sandbox": true,
       "api_base_url": "",
       "gateway_url": "",

@@ -155,6 +155,21 @@ func TestManagerSetTelegramProxy(t *testing.T) {
 	}
 }
 
+func TestManagerSetQQOfficialProxy(t *testing.T) {
+	mgr, err := NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	if err := mgr.Set("msg_gateway.qqofficial.proxy", "socks5://127.0.0.1:7890"); err != nil {
+		t.Fatalf("Set QQ Official proxy: %v", err)
+	}
+
+	if got := mgr.Get().MsgGateway.QQOfficial.Proxy; got != "socks5://127.0.0.1:7890" {
+		t.Errorf("QQ Official proxy = %q, want socks5://127.0.0.1:7890", got)
+	}
+}
+
 func TestDefaultFeishuConfig(t *testing.T) {
 	cfg := DefaultConfig().MsgGateway.Feishu
 	if cfg.ListenAddr != "127.0.0.1:6710" {

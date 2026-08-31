@@ -66,6 +66,7 @@ func TestResolveMsgGatewayStartOptionsUsesConfigDefaults(t *testing.T) {
 	cfg.MsgGateway.Telegram.Token = "tg-token"
 	cfg.MsgGateway.QQOfficial.AppID = "qq-app"
 	cfg.MsgGateway.QQOfficial.AppSecret = "qq-secret"
+	cfg.MsgGateway.QQOfficial.Proxy = "http://127.0.0.1:7897"
 	cfg.MsgGateway.QQOfficial.Sandbox = true
 	cfg.MsgGateway.NapCat.ListenAddr = "127.0.0.1:6701"
 	cfg.MsgGateway.NapCat.Path = "/onebot/v11/ws"
@@ -245,6 +246,9 @@ func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
 	}
 	data := []byte(`{
   "msg_gateway": {
+    "qqofficial": {
+      "proxy": "socks5://127.0.0.1:7890"
+    },
     "feishu": {
       "app_id": "cli_test",
       "app_secret": "secret-1234567890",
@@ -275,6 +279,16 @@ func TestRunConfigGetSupportsFeishuKeys(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "secret-1..." {
 		t.Fatalf("unexpected masked app_secret output: %q", out)
+	}
+
+	out, err = captureStdout(t, func() error {
+		return runConfigGet(&cobra.Command{}, []string{"msg_gateway.qqofficial.proxy"})
+	})
+	if err != nil {
+		t.Fatalf("runConfigGet QQ Official proxy: %v", err)
+	}
+	if strings.TrimSpace(out) != "socks5://127.0.0.1:7890" {
+		t.Fatalf("unexpected QQ Official proxy output: %q", out)
 	}
 }
 
