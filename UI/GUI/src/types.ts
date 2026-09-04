@@ -59,6 +59,79 @@ export type ProviderMessage = {
 
 export type SessionHistory = RuntimeSession & {
   messages?: ProviderMessage[];
+  /** Paging fields, present only when the request carried a `limit`. */
+  limit?: number;
+  offset?: number;
+  returned?: number;
+  has_more?: boolean;
+};
+
+/**
+ * Mirrors `gateway.Attachment` on the runtime. `file_path` is what the
+ * multimodal pipeline reads: the upload endpoint writes the bytes to disk and
+ * hands this descriptor back, because the chat WebSocket caps frames at 64 KiB.
+ */
+export type RuntimeAttachment = {
+  type: 'image' | 'audio' | 'video' | 'document';
+  file_name?: string;
+  file_path?: string;
+  file_url?: string;
+  mime_type?: string;
+  file_size?: number;
+};
+
+export type UploadResponse = {
+  attachments?: RuntimeAttachment[];
+  count?: number;
+};
+
+/** One note in the memory vault, or a wikilink target with no note behind it. */
+export type MemoryTopologyNode = {
+  id: string;
+  title: string;
+  category?: string;
+  tier?: string;
+  path?: string;
+  tags?: string[];
+  importance: number;
+  degree: number;
+  resolved: boolean;
+};
+
+export type MemoryTopologyEdge = {
+  source: string;
+  target: string;
+  weight: number;
+};
+
+export type MemoryTopology = {
+  nodes: MemoryTopologyNode[];
+  edges: MemoryTopologyEdge[];
+  total_notes: number;
+  total_edges: number;
+  isolated_count: number;
+  unresolved: number;
+  truncated: boolean;
+  categories?: string[];
+};
+
+/** A slash command the runtime can execute for a UI. */
+export type CommandSpec = {
+  name: string;
+  usage: string;
+  description: string;
+  group: string;
+};
+
+export type CommandListResponse = {
+  commands?: CommandSpec[];
+  count?: number;
+};
+
+export type CommandResult = {
+  command: string;
+  ok: boolean;
+  output: string;
 };
 
 export type SessionsResponse = {
@@ -96,10 +169,21 @@ export type WsPayload = {
 
 export type ChatMessage = {
   id: string;
-  role: 'user' | 'assistant' | 'tool' | 'system' | 'error';
+  /** `reasoning` and `tool_call` are live turn steps rendered inline in the thread. */
+  role: 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'reasoning' | 'tool_call';
   title: string;
   body: string;
   meta?: string;
+};
+
+/** Live state of one tool call, merged from its `tool_call` and `tool_result` events. */
+export type ToolStep = {
+  name: string;
+  args?: string;
+  output?: string;
+  success?: boolean;
+  round?: number;
+  done: boolean;
 };
 
 export type GatewayStats = {

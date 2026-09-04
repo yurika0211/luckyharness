@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -17,8 +18,12 @@ type MarkdownProps = {
  * Renders message bodies as Markdown with GitHub-flavored extensions
  * (tables, task lists, strikethrough) plus KaTeX math ($inline$ and $$block$$).
  * Tolerant of partial input so it can render mid-stream.
+ *
+ * Memoized on `source`: a thread re-renders on every streamed chunk, and
+ * re-running the remark/rehype/KaTeX pipeline over every settled message would
+ * dominate that frame. Only the message whose text actually changed re-parses.
  */
-export function Markdown({ source }: MarkdownProps) {
+export const Markdown = memo(function Markdown({ source }: MarkdownProps) {
   return (
     <div className="markdown-body">
       <ReactMarkdown
@@ -30,4 +35,4 @@ export function Markdown({ source }: MarkdownProps) {
       </ReactMarkdown>
     </div>
   );
-}
+});

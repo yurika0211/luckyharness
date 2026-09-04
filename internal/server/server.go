@@ -37,6 +37,8 @@ var jsonAPI = jsoniter.ConfigCompatibleWithStandardLibrary
 const (
 	defaultSessionsLimit = 50
 	maxSessionsLimit     = 200
+	defaultHistoryLimit  = 60
+	maxHistoryLimit      = 500
 )
 
 // Server 是 LuckyAgent 的 HTTP API Server
@@ -333,11 +335,14 @@ func (s *Server) Start() error {
 		{path: "/api/v1/chat/sync", handler: s.handleChatSync},
 		{path: "/api/v1/sessions", handler: s.handleSessions},
 		{path: "/api/v1/sessions/", handler: s.handleSessionByID},
+		{path: "/api/v1/uploads", handler: s.handleUploads},
+		{path: "/api/v1/commands", handler: s.handleCommands},
 		{path: "/api/v1/tasks", handler: s.handleTasks},
 		{path: "/api/v1/tasks/", handler: s.handleTaskByID},
 		{path: "/api/v1/memory", handler: s.handleMemory},
 		{path: "/api/v1/memory/recall", handler: s.handleMemoryRecall},
 		{path: "/api/v1/memory/stats", handler: s.handleMemoryStats},
+		{path: "/api/v1/memory/graph", handler: s.handleMemoryGraph},
 		{path: "/api/v1/proactive/status", handler: s.handleProactiveStatus},
 		{path: "/api/v1/tools", handler: s.handleTools},
 		{path: "/api/v1/stats", handler: s.handleStats},
@@ -953,14 +958,43 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 	}
 
 	messages := sess.GetMessages()
-	s.sendJSON(w, http.StatusOK, map[string]interface{}{
+	total := len(messages)
+
+	payload := map[string]interface{}{
 		"id":            sess.ID,
 		"title":         sess.Title,
-		"message_count": len(messages),
+		"message_count": total,
 		"created_at":    sess.CreatedAt.Format(time.RFC3339),
 		"updated_at":    sess.UpdatedAt.Format(time.RFC3339),
 		"messages":      messages,
-	})
+	}
+
+	// Without a limit the whole history is returned, as before. With one, page
+	// backwards from the newest message: offset counts messages skipped from
+	// the end, so a client walks into older history by growing the offset.
+	// Long sessions run to thousands of messages and megabytes of JSON, which
+	// no interactive client wants in a single response.
+	if r.URL.Query().Has("limit") {
+		limit := boundedQueryInt(r, "limit", defaultHistoryLimit, 1, maxHistoryLimit)
+		offset := boundedQueryInt(r, "offset", 0, 0, 1_000_000)
+
+		end := total - offset
+		if end < 0 {
+			end = 0
+		}
+		start := end - limit
+		if start < 0 {
+			start = 0
+		}
+
+		payload["messages"] = messages[start:end]
+		payload["limit"] = limit
+		payload["offset"] = offset
+		payload["returned"] = end - start
+		payload["has_more"] = start > 0
+	}
+
+	s.sendJSON(w, http.StatusOK, payload)
 }
 
 func (s *Server) handleSessionSubresource(w http.ResponseWriter, r *http.Request, sess *session.Session, parts []string) {
