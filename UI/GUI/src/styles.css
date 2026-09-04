@@ -1227,8 +1227,9 @@ svg {
 
 .step-payload pre {
   margin: 0;
-  max-height: 260px;
-  overflow: auto;
+  /* No height cap: the block lives inside a collapsed <details>, so a long
+     payload is only laid out once the reader asks for it. */
+  overflow-x: auto;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   background: var(--code-bg);

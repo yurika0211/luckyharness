@@ -918,7 +918,11 @@ export function App() {
       case 'tool_call': {
         const name = String(payload.name || 'tool');
         const stepId = String(payload.step_id || '');
-        const args = String(payload.display || payload.args || (payload.params ? JSON.stringify(payload.params, null, 2) : ''));
+        // `display` is the compact one-line label the drawer uses and it is
+        // capped server-side; the step card wants the untruncated payload.
+        const args = String(
+          payload.args || (payload.params ? JSON.stringify(payload.params, null, 2) : '') || payload.display || '',
+        );
         pushActivity('tool', `Calling ${name}`, preview(payload.display || payload.args || payload.params), String(payload.phase || 'start'));
         upsertToolStep(stepId, name, (prev) => ({
           name,
@@ -933,7 +937,9 @@ export function App() {
       case 'tool_result': {
         const name = String(payload.name || 'tool');
         const stepId = String(payload.step_id || '');
-        const output = String(payload.display || payload.output || '');
+        // Same here: `output` carries the whole result, `display` is truncated
+        // to ~160 characters for compact surfaces.
+        const output = String(payload.output || payload.display || '');
         pushActivity(payload.success === false ? 'error' : 'tool', `Result ${name}`, preview(payload.display || payload.output), 'done');
         upsertToolStep(stepId, name, (prev) => ({
           name,
