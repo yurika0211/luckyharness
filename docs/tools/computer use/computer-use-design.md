@@ -1,15 +1,15 @@
 # LuckyAgent Computer Use 能力设计
 
-> 状态：MVP 已实现，跨平台与完整审批闭环仍按阶段推进  
+> 状态：MVP、Windows Win32 backend 已实现，完整审批闭环仍按阶段推进
 > 适用范围：LuckyAgent 本地 Agent Loop、CLI/TUI、HTTP API 与消息网关  
 > 参考资料：`luckyAgent：如何实现computer use能力.md`  
-> 最后核对代码：2026-08-06
+> 最后核对代码：2026-09-05
 
 ## 1. 结论
 
 LuckyAgent 应当把 computer use（模型观察屏幕并驱动鼠标、键盘）实现为一组有状态的内置工具，而不是把一个平台相关的 `ComputerAdapter` 直接挂到 `Agent` 上。
 
-当前代码已经完成第一版闭环：`internal/computer` 提供会话化 Manager 和 X11 backend，`internal/tool` 提供 `computer_observe` / `computer_act`，Agent Loop 会把最新截图作为临时视觉消息回灌模型，HTTP SSE 会输出 observation 与 approval_required 事件。默认仍关闭 computer use；本机 X11 截图可用，输入动作需要额外安装 `xdotool`。
+当前代码已经完成第一版闭环：`internal/computer` 提供会话化 Manager、X11 backend 和 Windows Win32 backend，`internal/tool` 提供 `computer_observe` / `computer_act`，Agent Loop 会把最新截图作为临时视觉消息回灌模型，HTTP SSE 会输出 observation 与 approval_required 事件。默认仍关闭 computer use；Linux X11 输入需要 `xdotool`，Windows 使用 GDI 截图和 `SendInput`，不依赖额外的桌面自动化包。
 
 推荐架构是：
 
@@ -593,7 +593,15 @@ Wayland（Linux 新图形会话协议）通常限制任意全局截图和输入�
 
 ### 12.3 Windows
 
-建议使用独立 `backend_windows.go`，通过 Windows 原生输入和截图 API 实现。需要验证：
+`backend_windows.go` 已通过 Windows 原生 API 实现：GDI 捕获虚拟桌面，`SendInput` 执行鼠标、热键和 UTF-16 Unicode 文本输入。`backend=auto` 会在 Windows 自动选择该 backend，`backend=windows` 可显式指定。
+
+已覆盖：
+
+- 虚拟桌面截图与对应物理像素坐标；多显示器被合并为一个 `virtual` 画面。
+- 点击、双击、拖拽、滚动、组合键和中文/emoji 文本输入。
+- 前台窗口标题与边界记录；配置 `allowed_windows` 后，仅标题匹配的最新截图可执行动作。
+
+仍需要在真实 Windows 主机验收：
 
 - 多显示器与缩放比例。
 - UAC（用户账户控制）窗口权限边界。
@@ -614,7 +622,7 @@ RobotGo 可用于快速验证跨平台鼠标键盘能力，但会引入 CGO（Go
 
 独立 sidecar（伴随主进程运行的执行程序）可以把平台依赖和 LuckyAgent 主进程隔离，但会增加安装、版本协商和进程管理成本。
 
-建议：第一阶段使用 X11 backend 验证闭环；领域接口稳定后，再根据发布形态决定原生 Go backend 还是 sidecar，不要在第一阶段同时实现三套生产级平台适配器。
+建议：保持原生 Go backend 的发布路径。Windows backend 避免了 CGO，X11 继续使用受控外部二进制；Wayland 和 macOS 应在各自权限模型下单独实现，而不是强行复用输入注入逻辑。
 
 ## 13. 建议配置
 
@@ -811,7 +819,7 @@ type ComputerUseProvider interface {
 
 ### 阶段 3：跨平台 Backend
 
-目标：补齐 Windows、macOS 和受支持的 Wayland 环境。
+目标：补齐 macOS 和受支持的 Wayland 环境，并完成 Windows 的真实主机验收。
 
 每个平台都应通过相同 Backend contract test（契约测试），而不是复制 Agent Loop。
 

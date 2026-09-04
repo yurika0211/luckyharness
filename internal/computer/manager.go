@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,6 +25,7 @@ type ManagerConfig struct {
 	MaxSteps            int
 	MaxObservationBytes int
 	MaxScreenshotWidth  int
+	AllowedWindows      []string
 }
 
 func DefaultManagerConfig() ManagerConfig {
@@ -42,6 +44,9 @@ func WithFrameTTL(ttl time.Duration) ManagerOption {
 func WithKeepFrames(n int) ManagerOption            { return func(c *ManagerConfig) { c.KeepFrames = n } }
 func WithSettleDelay(d time.Duration) ManagerOption { return func(c *ManagerConfig) { c.Settle = d } }
 func WithMaxSteps(n int) ManagerOption              { return func(c *ManagerConfig) { c.MaxSteps = n } }
+func WithAllowedWindows(names []string) ManagerOption {
+	return func(c *ManagerConfig) { c.AllowedWindows = append([]string(nil), names...) }
+}
 
 type sessionState struct {
 	mu            sync.Mutex
@@ -76,6 +81,7 @@ func NewManager(backend Backend, options ...ManagerOption) (*Manager, error) {
 	if cfg.StorageDir == "" {
 		cfg.StorageDir = filepath.Join(os.TempDir(), "luckyagent-computer")
 	}
+	cfg.AllowedWindows = normalizeAllowedWindows(cfg.AllowedWindows)
 	store, err := NewFrameStore(cfg.StorageDir, cfg.KeepFrames, cfg.FrameTTL)
 	if err != nil {
 		return nil, err
@@ -145,6 +151,9 @@ func (m *Manager) Step(ctx context.Context, sessionID string, action Action) (Ob
 		return Observation{}, fmt.Errorf("%w: expected %s, got %s; observe the current screen before acting", ErrStaleFrame, s.latestFrameID, action.FrameID)
 	}
 	if err := validateActionBounds(action, s.latest); err != nil {
+		return Observation{}, err
+	}
+	if err := validateAllowedWindow(s.latest.ActiveWindow, m.config.AllowedWindows); err != nil {
 		return Observation{}, err
 	}
 	if m.config.MaxSteps > 0 && s.steps >= m.config.MaxSteps {
@@ -222,6 +231,32 @@ func validateActionBounds(action Action, obs Observation) error {
 		}
 	}
 	return nil
+}
+
+func normalizeAllowedWindows(values []string) []string {
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func validateAllowedWindow(activeWindow string, allowed []string) error {
+	if len(allowed) == 0 {
+		return nil
+	}
+	activeWindow = strings.TrimSpace(activeWindow)
+	if activeWindow == "" {
+		return errors.New("computer: active window is unavailable while allowed_windows is configured")
+	}
+	for _, candidate := range allowed {
+		if strings.Contains(strings.ToLower(activeWindow), strings.ToLower(candidate)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("computer: active window %q is not allowed", activeWindow)
 }
 
 func (m *Manager) CloseSession(sessionID string) error {
