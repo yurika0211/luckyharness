@@ -30,6 +30,54 @@ type qqHandlerTestSender struct {
 	events        []string
 }
 
+type qqHandlerTestStreamGateway struct {
+	*qqHandlerTestSender
+	stream       *qqHandlerTestStream
+	chatID       string
+	replyToMsgID string
+}
+
+func (s *qqHandlerTestStreamGateway) SendStream(_ context.Context, chatID string, replyToMsgID string) (gateway.StreamSender, error) {
+	s.chatID = chatID
+	s.replyToMsgID = replyToMsgID
+	return s.stream, nil
+}
+
+type qqHandlerTestStream struct {
+	content  string
+	result   string
+	thinking string
+	toolName string
+	finished bool
+}
+
+func (s *qqHandlerTestStream) Append(content string) error {
+	s.content += content
+	return nil
+}
+
+func (s *qqHandlerTestStream) SetThinking(label string) error {
+	s.thinking = label
+	return nil
+}
+
+func (s *qqHandlerTestStream) SetToolCall(name, _ string) error {
+	s.toolName = name
+	return nil
+}
+
+func (s *qqHandlerTestStream) SetResult(content string) error {
+	s.result = content
+	return nil
+}
+
+func (s *qqHandlerTestStream) Finish() error {
+	s.finished = true
+	return nil
+}
+
+func (s *qqHandlerTestStream) MessageID() string { return "stream-message" }
+
 type qqHandlerForwardedText struct {
 	ChatID string
 	Title  string
@@ -758,6 +806,40 @@ func TestHandlerFinalAnswerOnlySuppressesProgressMessages(t *testing.T) {
 	}
 	if messages[0] != "最终答案" {
 		t.Fatalf("expected final answer only, got %q", messages[0])
+	}
+}
+
+func TestHandlerFinalAnswerOnlyStreamsWhenGatewaySupportsIt(t *testing.T) {
+	stream := &qqHandlerTestStream{}
+	sender := &qqHandlerTestStreamGateway{
+		qqHandlerTestSender: &qqHandlerTestSender{},
+		stream:              stream,
+	}
+	handler := NewHandlerWithOptions(sender, nil, HandlerOptions{
+		PlatformName:    "feishu",
+		FinalAnswerOnly: true,
+	})
+	events := make(chan agent.ChatEvent, 4)
+	events <- agent.ChatEvent{Type: agent.ChatEventThinking, Content: "正在分析"}
+	events <- agent.ChatEvent{Type: agent.ChatEventToolCall, Name: "web_search"}
+	events <- agent.ChatEvent{Type: agent.ChatEventContent, Content: "中间内容"}
+	events <- agent.ChatEvent{Type: agent.ChatEventDone, Content: "最终答案"}
+	close(events)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	msg := &gateway.Message{ID: "om_source", Chat: gateway.Chat{ID: "oc_stream", Type: gateway.ChatPrivate}}
+	if err := handler.handleChatEventStream(ctx, msg, events); err != nil {
+		t.Fatalf("handleChatEventStream() error = %v", err)
+	}
+	if sender.chatID != "oc_stream" || sender.replyToMsgID != "om_source" {
+		t.Fatalf("stream target = chat %q reply %q", sender.chatID, sender.replyToMsgID)
+	}
+	if stream.thinking != "正在分析" || stream.toolName != "web_search" || stream.content != "中间内容" || stream.result != "最终答案" || !stream.finished {
+		t.Fatalf("unexpected stream state: %#v", stream)
+	}
+	if messages := sender.Messages(); len(messages) != 0 {
+		t.Fatalf("streaming gateway should not send a duplicate text response: %#v", messages)
 	}
 }
 

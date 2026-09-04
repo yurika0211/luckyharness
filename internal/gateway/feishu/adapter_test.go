@@ -164,6 +164,77 @@ func TestStartStopAndContextCancellation(t *testing.T) {
 	}
 }
 
+func TestStartUsesLongConnectionWithoutVerificationToken(t *testing.T) {
+	cfg := callbackTestConfig()
+	cfg.VerificationToken = ""
+	a := NewAdapter(cfg)
+	client := &fakeLongConnectionClient{
+		started:        make(chan struct{}),
+		closeRequested: make(chan struct{}),
+	}
+	var receive func(context.Context, longConnectionEvent) error
+	a.newLongConnection = func(got Config, handler func(context.Context, longConnectionEvent) error) longConnectionClient {
+		if got.AppID != cfg.AppID || got.AppSecret != cfg.AppSecret {
+			t.Fatalf("unexpected long connection config: %#v", got)
+		}
+		receive = handler
+		return client
+	}
+
+	received := make(chan *gateway.Message, 1)
+	a.SetHandler(func(_ context.Context, msg *gateway.Message) error {
+		received <- msg
+		return nil
+	})
+	if err := a.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	select {
+	case <-client.started:
+	case <-time.After(time.Second):
+		t.Fatal("long connection did not start")
+	}
+	if receive == nil || !a.IsRunning() {
+		t.Fatalf("long connection was not registered: handler=%v running=%v", receive != nil, a.IsRunning())
+	}
+
+	err := receive(context.Background(), longConnectionEvent{
+		ID:    "evt_long_connection",
+		AppID: cfg.AppID,
+		Message: messageEvent{
+			Sender: eventSender{SenderID: eventUserID{OpenID: "ou_sender"}, SenderType: "user"},
+			Message: eventMessage{
+				MessageID:   "om_long_connection",
+				CreateTime:  "1710000000123",
+				ChatID:      "oc_long_connection",
+				ChatType:    "p2p",
+				MessageType: "text",
+				Content:     `{"text":"hello from long connection"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("long connection receive error = %v", err)
+	}
+	select {
+	case msg := <-received:
+		if msg.ID != "om_long_connection" || msg.Text != "hello from long connection" {
+			t.Fatalf("unexpected long connection message: %#v", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("long connection event was not dispatched")
+	}
+
+	if err := a.Stop(); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	select {
+	case <-client.closeRequested:
+	case <-time.After(time.Second):
+		t.Fatal("long connection was not closed")
+	}
+}
+
 func TestStartRejectsEncryptedConfiguration(t *testing.T) {
 	cfg := callbackTestConfig()
 	cfg.EncryptKey = "configured-key"
@@ -237,4 +308,20 @@ func schemaV2Payload(chatType, text string, mentions []map[string]any) map[strin
 			},
 		},
 	}
+}
+
+type fakeLongConnectionClient struct {
+	started        chan struct{}
+	closeRequested chan struct{}
+}
+
+func (c *fakeLongConnectionClient) Start(ctx context.Context) error {
+	close(c.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func (c *fakeLongConnectionClient) CloseAndWait(context.Context) error {
+	close(c.closeRequested)
+	return nil
 }

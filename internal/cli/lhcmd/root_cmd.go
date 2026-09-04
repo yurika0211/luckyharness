@@ -194,7 +194,7 @@ func newRootCmd() *cobra.Command {
 	msgGatewayStartCmd.Flags().String("napcat-access-token", "", "NapCat OneBot 访问令牌")
 	msgGatewayStartCmd.Flags().String("feishu-app-id", "", "飞书应用 App ID")
 	msgGatewayStartCmd.Flags().String("feishu-app-secret", "", "飞书应用 App Secret")
-	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "飞书事件订阅 Verification Token")
+	msgGatewayStartCmd.Flags().String("feishu-verification-token", "", "可选：填写后使用飞书 HTTP 事件回调")
 	msgGatewayStartCmd.Flags().String("feishu-listen", "", "飞书事件回调监听地址")
 	msgGatewayStartCmd.Flags().String("feishu-path", "", "飞书事件回调路径")
 	msgGatewayStartCmd.Flags().Bool("all", false, "启动所有已配置的网关")

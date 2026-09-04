@@ -432,7 +432,8 @@ type CrossGroupReadConfig struct {
 	LogAccess           bool     `json:"log_access,omitempty"`
 }
 
-// MsgGatewayFeishu configures the Feishu event callback and Open API client.
+// MsgGatewayFeishu configures the Feishu event delivery and Open API client.
+// Leave VerificationToken empty to use the default long connection mode.
 type MsgGatewayFeishu struct {
 	AppID             string   `json:"app_id,omitempty"`
 	AppSecret         string   `json:"app_secret,omitempty"`

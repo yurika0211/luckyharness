@@ -376,17 +376,16 @@ func TestValidateMsgGatewayStartOptionsRejectsMissingFeishuCredentials(t *testin
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if !strings.Contains(err.Error(), "verification_token") {
+	if !strings.Contains(err.Error(), "app_id") || !strings.Contains(err.Error(), "app_secret") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestValidateMsgGatewayStartOptionsAcceptsFeishuCredentials(t *testing.T) {
+func TestValidateMsgGatewayStartOptionsAcceptsFeishuAppIDAndSecret(t *testing.T) {
 	err := validateMsgGatewayStartOptions(msgGatewayStartOptions{
-		Platform:          "feishu",
-		FeishuAppID:       "cli_xxx",
-		FeishuAppSecret:   "secret",
-		FeishuVerifyToken: "verify",
+		Platform:        "feishu",
+		FeishuAppID:     "cli_xxx",
+		FeishuAppSecret: "secret",
 	})
 	if err != nil {
 		t.Fatalf("expected feishu options to validate, got %v", err)

@@ -28,15 +28,17 @@ type Adapter struct {
 	httpClient *http.Client
 	now        func() time.Time
 
-	mu        sync.RWMutex
-	handler   gateway.MessageHandler
-	running   bool
-	cancel    context.CancelFunc
-	server    *http.Server
-	listener  net.Listener
-	serveDone chan struct{}
-	runCtx    context.Context
-	botOpenID string
+	mu                 sync.RWMutex
+	handler            gateway.MessageHandler
+	running            bool
+	cancel             context.CancelFunc
+	server             *http.Server
+	listener           net.Listener
+	serveDone          chan struct{}
+	longConnection     longConnectionClient
+	longConnectionDone chan struct{}
+	runCtx             context.Context
+	botOpenID          string
 
 	identityMu  sync.Mutex
 	tokenMu     sync.Mutex
@@ -45,6 +47,8 @@ type Adapter struct {
 
 	outboundMessages *expiringIDSet
 	receivedEvents   *expiringIDSet
+
+	newLongConnection longConnectionFactory
 }
 
 // NewAdapter creates a Feishu gateway adapter.
@@ -66,16 +70,21 @@ func NewAdapter(cfg Config) *Adapter {
 		client = &http.Client{Timeout: 15 * time.Second}
 	}
 	return &Adapter{
-		cfg:              cfg,
-		httpClient:       client,
-		now:              time.Now,
-		botOpenID:        strings.TrimSpace(cfg.BotOpenID),
-		outboundMessages: newExpiringIDSet(outboundMessageTTL, maxTrackedIDs),
-		receivedEvents:   newExpiringIDSet(eventDedupTTL, maxTrackedIDs),
+		cfg:               cfg,
+		httpClient:        client,
+		now:               time.Now,
+		botOpenID:         strings.TrimSpace(cfg.BotOpenID),
+		outboundMessages:  newExpiringIDSet(outboundMessageTTL, maxTrackedIDs),
+		receivedEvents:    newExpiringIDSet(eventDedupTTL, maxTrackedIDs),
+		newLongConnection: newSDKLongConnection,
 	}
 }
 
 func (a *Adapter) Name() string { return "feishu" }
+
+// UsesLongConnection reports whether this adapter receives events through the
+// outbound Feishu long connection instead of a public HTTP callback.
+func (a *Adapter) UsesLongConnection() bool { return a.cfg.usesLongConnection() }
 
 // SetHandler registers the incoming message handler.
 func (a *Adapter) SetHandler(handler gateway.MessageHandler) {
@@ -84,16 +93,15 @@ func (a *Adapter) SetHandler(handler gateway.MessageHandler) {
 	a.handler = handler
 }
 
-// Start starts the Feishu event callback HTTP server.
+// Start starts either an HTTP callback server or a Feishu long connection.
+// An empty verification token selects the long connection mode so a normal
+// deployment requires only an App ID and App Secret.
 func (a *Adapter) Start(ctx context.Context) error {
 	if strings.TrimSpace(a.cfg.AppID) == "" || strings.TrimSpace(a.cfg.AppSecret) == "" {
 		return fmt.Errorf("feishu: app_id and app_secret are required")
 	}
-	if strings.TrimSpace(a.cfg.VerificationToken) == "" {
-		return fmt.Errorf("feishu: verification_token is required")
-	}
 	if strings.TrimSpace(a.cfg.EncryptKey) != "" {
-		return fmt.Errorf("feishu: encrypted event callbacks are not supported")
+		return fmt.Errorf("feishu: encrypted events are not supported")
 	}
 	if err := a.resolveBotOpenID(ctx); err != nil {
 		return fmt.Errorf("feishu: resolve bot identity: %w", err)
@@ -104,6 +112,36 @@ func (a *Adapter) Start(ctx context.Context) error {
 		a.mu.Unlock()
 		return nil
 	}
+	if a.cfg.usesLongConnection() {
+		startCtx, cancel := context.WithCancel(ctx)
+		factory := a.newLongConnection
+		if factory == nil {
+			a.mu.Unlock()
+			cancel()
+			return fmt.Errorf("feishu: long connection factory is not configured")
+		}
+		client := factory(a.cfg, a.handleLongConnectionEvent)
+		if client == nil {
+			a.mu.Unlock()
+			cancel()
+			return fmt.Errorf("feishu: create long connection client")
+		}
+		done := make(chan struct{})
+		a.cancel = cancel
+		a.longConnection = client
+		a.longConnectionDone = done
+		a.runCtx = startCtx
+		a.running = true
+		a.mu.Unlock()
+
+		go a.serveLongConnection(client, startCtx, done)
+		go func() {
+			<-startCtx.Done()
+			_ = a.stopLongConnection(client)
+		}()
+		return nil
+	}
+
 	ln, err := net.Listen("tcp", a.cfg.normalizedListenAddr())
 	if err != nil {
 		a.mu.Unlock()
@@ -137,6 +175,30 @@ func (a *Adapter) Start(ctx context.Context) error {
 	return nil
 }
 
+func (a *Adapter) serveLongConnection(client longConnectionClient, ctx context.Context, done chan struct{}) {
+	defer close(done)
+	err := client.Start(ctx)
+	if err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("[feishu] long connection stopped: %v", err)
+	}
+
+	a.mu.Lock()
+	if a.longConnection == client {
+		cancel := a.cancel
+		a.running = false
+		a.longConnection = nil
+		a.longConnectionDone = nil
+		a.cancel = nil
+		a.runCtx = nil
+		a.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return
+	}
+	a.mu.Unlock()
+}
+
 func (a *Adapter) serve(server *http.Server, ln net.Listener, done chan struct{}) {
 	defer close(done)
 	err := server.Serve(ln)
@@ -164,11 +226,43 @@ func (a *Adapter) serve(server *http.Server, ln net.Listener, done chan struct{}
 func (a *Adapter) Stop() error {
 	a.mu.RLock()
 	server := a.server
+	longConnection := a.longConnection
 	a.mu.RUnlock()
+	if longConnection != nil {
+		return a.stopLongConnection(longConnection)
+	}
 	if server == nil {
 		return nil
 	}
 	return a.stopServer(server)
+}
+
+func (a *Adapter) stopLongConnection(client longConnectionClient) error {
+	a.mu.Lock()
+	if a.longConnection != client || a.cancel == nil {
+		a.mu.Unlock()
+		return nil
+	}
+	cancel := a.cancel
+	done := a.longConnectionDone
+	a.running = false
+	a.cancel = nil
+	a.mu.Unlock()
+
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	err := client.CloseAndWait(shutdownCtx)
+	shutdownCancel()
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+		}
+	}
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return fmt.Errorf("feishu: shutdown long connection: %w", err)
+	}
+	return nil
 }
 
 func (a *Adapter) stopServer(server *http.Server) error {

@@ -72,6 +72,116 @@ func TestSendUsesCachedTenantTokenAndFeishuMessageAPI(t *testing.T) {
 	}
 }
 
+func TestSendRendersMarkdownAndLongURLsAsFeishuPost(t *testing.T) {
+	const markdownURL = "https://platform.example.com/docs/agents/quickstart?utm_source=luckyagent&utm_medium=feishu&utm_campaign=long-link"
+	const bareURL = "https://downloads.example.com/releases/2026/09/luckyagent-linux-amd64.tar.gz?signature=abcdefghijklmnopqrstuvwxyz0123456789"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/open-apis/auth/v3/tenant_access_token/internal":
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "tenant_access_token": "token", "expire": 3600})
+		case "/open-apis/im/v1/messages":
+			var request sendMessageRequest
+			_ = json.NewDecoder(r.Body).Decode(&request)
+			if request.MsgType != "post" {
+				t.Fatalf("MsgType = %q, want post", request.MsgType)
+			}
+			var content feishuPostContent
+			if err := json.Unmarshal([]byte(request.Content), &content); err != nil {
+				t.Fatalf("decode post content: %v", err)
+			}
+			links := postLinks(content)
+			if len(links) != 2 {
+				t.Fatalf("link count = %d, want 2; content=%#v", len(links), content)
+			}
+			if links[0].Href != markdownURL || links[0].Text != "Agent quickstart" {
+				t.Fatalf("markdown link = %#v", links[0])
+			}
+			if links[1].Href != bareURL {
+				t.Fatalf("bare link target = %q", links[1].Href)
+			}
+			if links[1].Text == bareURL || !strings.HasPrefix(links[1].Text, "downloads.example.com/releases/") {
+				t.Fatalf("bare link label was not compacted: %q", links[1].Text)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "data": map[string]string{"message_id": "om_post"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	message := "文档：[Agent quickstart](" + markdownURL + ")\n下载地址：" + bareURL
+	receipt, err := apiTestAdapter(server).SendWithReceipt(context.Background(), "oc_chat", message)
+	if err != nil {
+		t.Fatalf("SendWithReceipt() error = %v", err)
+	}
+	if receipt.ID != "om_post" {
+		t.Fatalf("receipt = %#v", receipt)
+	}
+}
+
+func TestPostFormattingLeavesURLsInsideCodeUntouched(t *testing.T) {
+	request, err := newMessageRequest("oc_chat", "先看文档 https://example.com/guide\n\n`https://example.com/not-a-link`")
+	if err != nil {
+		t.Fatalf("newMessageRequest() error = %v", err)
+	}
+	if request.MsgType != "post" {
+		t.Fatalf("MsgType = %q, want post", request.MsgType)
+	}
+	var content feishuPostContent
+	if err := json.Unmarshal([]byte(request.Content), &content); err != nil {
+		t.Fatalf("decode post content: %v", err)
+	}
+	if links := postLinks(content); len(links) != 1 || links[0].Href != "https://example.com/guide" {
+		t.Fatalf("links = %#v", links)
+	}
+	if !postHasText(content, "https://example.com/not-a-link") {
+		t.Fatalf("code URL should remain text: %#v", content)
+	}
+}
+
+func TestPostFormattingExcludesChineseTrailingPunctuationFromURL(t *testing.T) {
+	const destination = "https://example.com/releases/luckyagent?build=20260904"
+	request, err := newMessageRequest("oc_chat", "更新地址："+destination+"。")
+	if err != nil {
+		t.Fatalf("newMessageRequest() error = %v", err)
+	}
+	var content feishuPostContent
+	if err := json.Unmarshal([]byte(request.Content), &content); err != nil {
+		t.Fatalf("decode post content: %v", err)
+	}
+	links := postLinks(content)
+	if len(links) != 1 || links[0].Href != destination {
+		t.Fatalf("links = %#v", links)
+	}
+	if !postHasText(content, "。") {
+		t.Fatalf("trailing punctuation was lost: %#v", content)
+	}
+}
+
+func postLinks(content feishuPostContent) []feishuPostElement {
+	var links []feishuPostElement
+	for _, row := range content.ZhCN.Content {
+		for _, element := range row {
+			if element.Tag == "a" {
+				links = append(links, element)
+			}
+		}
+	}
+	return links
+}
+
+func postHasText(content feishuPostContent, want string) bool {
+	for _, row := range content.ZhCN.Content {
+		for _, element := range row {
+			if element.Tag == "text" && strings.Contains(element.Text, want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestSendWithReplyUsesReplyEndpoint(t *testing.T) {
 	var replyRequest sendMessageRequest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -482,6 +482,9 @@ func TestDelegateTaskAutoModeWritesPlannerTrace(t *testing.T) {
 			t.Fatalf("get task record: %v", err)
 		}
 		if ok && record.Status == taskstore.StatusCompleted {
+			if _, resultOK, err := store.Result(taskID); err != nil || !resultOK {
+				t.Fatalf("completed task result was not persisted: ok=%t err=%v", resultOK, err)
+			}
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

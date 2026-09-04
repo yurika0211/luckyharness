@@ -526,21 +526,20 @@ QQ 渠道内置了一组常用命令，可以直接在会话里调用：
 
 ### 飞书机器人
 
-飞书渠道通过 HTTP 事件订阅接收 `im.message.receive_v1`，通过 tenant access token 调用飞书 Open API 回发文本。当前 Phase 1 支持私聊、群聊 mention/all/none 触发、会话绑定、通用命令和文本回复；暂不支持事件加密、附件和富卡片。
+飞书渠道默认通过官方长连接接收 `im.message.receive_v1`，通过 tenant access token 调用飞书 Open API 回发消息。LuckyAgent 只需配置 App ID 和 App Secret，不需要公网回调地址或 Verification Token；如果已填写 `verification_token`，则保留原有 HTTP 回调模式。回复中的 Markdown 链接和裸 `http/https` 长链接会自动转为飞书原生富文本链接，完整地址保留在跳转目标中，聊天内只展示紧凑标签。支持时，Agent 内容会通过 CardKit 原生流式卡片逐段更新；CardKit 权限缺失时自动回退为最终文本回复。当前支持私聊、群聊 mention/all/none 触发、会话绑定和通用命令；暂不支持事件加密、附件和卡片交互。
 
-先配置应用凭证和事件回调：
+先配置应用凭证并启用事件订阅：
 
 ```bash
 lh config set msg_gateway.platform feishu
 lh config set msg_gateway.feishu.app_id cli_xxx
 lh config set msg_gateway.feishu.app_secret your-app-secret
-lh config set msg_gateway.feishu.verification_token your-verification-token
-lh config set msg_gateway.feishu.listen_addr 127.0.0.1:6710
-lh config set msg_gateway.feishu.path /feishu/events
 lh msg-gateway start --platform feishu
 ```
 
-也可以用 `--feishu-app-id`、`--feishu-app-secret`、`--feishu-verification-token`、`--feishu-listen` 和 `--feishu-path` 覆盖配置。
+也可以用 `--feishu-app-id`、`--feishu-app-secret` 覆盖配置。飞书开放平台中仍需启用机器人能力、订阅 `im.message.receive_v1` 并授予读取与发送消息所需权限；事件订阅方式选择“使用长连接接收事件”。要启用流式卡片，还需要在权限管理中授权 CardKit 的“创建卡片实体”和“流式更新卡片组件”接口权限。
+
+如需保留原有 HTTP 回调部署，可额外设置 `msg_gateway.feishu.verification_token`，并使用 `--feishu-listen` 和 `--feishu-path` 指定监听地址与路径。
 
 飞书开放平台的事件订阅 URL 必须是公网 HTTPS 地址，例如：
 
@@ -548,7 +547,7 @@ lh msg-gateway start --platform feishu
 https://agent.example.com/feishu/events
 ```
 
-反向代理需要把它转发到 LuckyAgent 的 `http://127.0.0.1:6710/feishu/events`。应用需要启用机器人能力、订阅 `im.message.receive_v1`，并授予读取与发送消息所需权限。Phase 1 要求使用明文事件回调，`msg_gateway.feishu.encrypt_key` 必须留空。
+反向代理需要把它转发到 LuckyAgent 的 `http://127.0.0.1:6710/feishu/events`。HTTP 回调模式要求使用明文事件回调，`msg_gateway.feishu.encrypt_key` 必须留空。
 
 可选访问策略：
 

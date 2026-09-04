@@ -2177,6 +2177,18 @@ func (h *Handler) startTypingIndicator(ctx context.Context, msg *gateway.Message
 }
 
 func (h *Handler) handleChatEventStream(chatCtx context.Context, msg *gateway.Message, events <-chan agent.ChatEvent) error {
+	if h.finalAnswerOnly {
+		if streamGateway, ok := h.adapter.(gateway.StreamGateway); ok {
+			stream, err := streamGateway.SendStream(chatCtx, msg.Chat.ID, msg.ID)
+			if err == nil && stream != nil {
+				return h.handleChatEventStreamWithSender(chatCtx, msg, events, stream)
+			}
+			if err != nil {
+				fmt.Printf("[%s] streaming unavailable; falling back to text: %v\n", h.logPrefixValue(), err)
+			}
+		}
+	}
+
 	var finalContent strings.Builder
 	currentRound := 1
 	var trace *qqProgressTrace
@@ -2252,6 +2264,105 @@ func (h *Handler) handleChatEventStream(chatCtx context.Context, msg *gateway.Me
 					return nil
 				}
 				return h.reply(context.Background(), msg, fmt.Sprintf("处理消息时出错：%v", evt.Err))
+			}
+		}
+	}
+}
+
+func (h *Handler) handleChatEventStreamWithSender(chatCtx context.Context, msg *gateway.Message, events <-chan agent.ChatEvent, stream gateway.StreamSender) error {
+	var finalContent strings.Builder
+	streamHealthy := true
+	failStream := func(err error) {
+		if !streamHealthy {
+			return
+		}
+		streamHealthy = false
+		fmt.Printf("[%s] streaming update failed; falling back to text: %v\n", h.logPrefixValue(), err)
+	}
+	finish := func() error {
+		out := strings.TrimSpace(finalContent.String())
+		if out == "" {
+			out = "我这边暂时还没有整理出可发送的结果。"
+		}
+		if streamHealthy {
+			if err := stream.SetResult(out); err != nil {
+				failStream(err)
+			} else if err := stream.Finish(); err != nil {
+				failStream(err)
+			}
+		}
+		if !streamHealthy {
+			return h.sendAssistantResponse(context.Background(), msg, out)
+		}
+		return nil
+	}
+
+	for {
+		select {
+		case <-chatCtx.Done():
+			message := "🛑 当前任务已停止"
+			if errors.Is(chatCtx.Err(), context.DeadlineExceeded) {
+				message = "⏱ 请求超时"
+			}
+			if streamHealthy {
+				if err := stream.SetResult(message); err != nil {
+					failStream(err)
+				} else if err := stream.Finish(); err != nil {
+					failStream(err)
+				}
+			}
+			if !streamHealthy {
+				return h.reply(context.Background(), msg, message)
+			}
+			return nil
+		case evt, ok := <-events:
+			if !ok {
+				return finish()
+			}
+			switch evt.Type {
+			case agent.ChatEventThinking:
+				if streamHealthy {
+					if err := stream.SetThinking(evt.Content); err != nil {
+						failStream(err)
+					}
+				}
+			case agent.ChatEventToolCall:
+				if streamHealthy {
+					if err := stream.SetToolCall(evt.Name, evt.Args); err != nil {
+						failStream(err)
+					}
+				}
+			case agent.ChatEventContent:
+				finalContent.WriteString(evt.Content)
+				if streamHealthy {
+					if err := stream.Append(evt.Content); err != nil {
+						failStream(err)
+					}
+				}
+			case agent.ChatEventDone:
+				if evt.Content != "" {
+					finalContent.Reset()
+					finalContent.WriteString(evt.Content)
+				}
+				return finish()
+			case agent.ChatEventError:
+				message := fmt.Sprintf("处理消息时出错：%v", evt.Err)
+				if isTaskTimeoutError(evt.Err) {
+					message = "⏱ 请求超时"
+				} else if isTaskCanceledError(evt.Err) {
+					message = "🛑 当前任务已停止"
+				}
+				if streamHealthy {
+					if err := stream.SetResult(message); err != nil {
+						failStream(err)
+					} else if err := stream.Finish(); err != nil {
+						failStream(err)
+					}
+				}
+				if !streamHealthy {
+					return h.reply(context.Background(), msg, message)
+				}
+				return nil
 			}
 		}
 	}

@@ -1798,9 +1798,6 @@ func (dm *DelegateManager) recordDelegateTaskFinished(store taskstore.Store, eve
 	if task.Error != "" {
 		record.Outcome.UserFeedback = task.Error
 	}
-	if err := store.Update(record); err != nil {
-		return
-	}
 	switch task.Status {
 	case StatusCompleted:
 		_ = store.SaveResult(task.ID, task.Result)
@@ -1814,6 +1811,12 @@ func (dm *DelegateManager) recordDelegateTaskFinished(store taskstore.Store, eve
 			Status:  taskstore.StatusCancelled,
 			Message: task.Error,
 		})
+	}
+	// A terminal record is only visible after its result and terminal event are
+	// durable. This prevents readers from observing "completed" while a worker
+	// still writes task artifacts.
+	if err := store.Update(record); err != nil {
+		return
 	}
 }
 
