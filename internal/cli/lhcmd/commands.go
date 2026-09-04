@@ -718,8 +718,8 @@ func validateMsgGatewayStartOptions(opts msgGatewayStartOptions) error {
 	case "napcat":
 		return nil
 	case "feishu":
-		if strings.TrimSpace(opts.FeishuAppID) == "" || strings.TrimSpace(opts.FeishuAppSecret) == "" || strings.TrimSpace(opts.FeishuVerifyToken) == "" {
-			return fmt.Errorf("feishu 需要 app_id、app_secret 和 verification_token（可通过 --feishu-* 参数或 msg_gateway.feishu.* 配置）")
+		if strings.TrimSpace(opts.FeishuAppID) == "" || strings.TrimSpace(opts.FeishuAppSecret) == "" {
+			return fmt.Errorf("feishu 需要 app_id 和 app_secret（可通过 --feishu-app-id、--feishu-app-secret 或 msg_gateway.feishu.* 配置）")
 		}
 	default:
 		if opts.Platform == "" {
@@ -1224,7 +1224,11 @@ func runMsgGatewayStart(cmd *cobra.Command, args []string) error {
 		if err := gm.Start(ctx, "feishu"); err != nil {
 			return err
 		}
-		fmt.Printf("飞书网关已启动，本地事件回调 http://%s%s（飞书控制台需配置公网 HTTPS 反向代理地址）\n", feishuAdapter.ListenAddr(), feishuAdapter.Path())
+		if feishuAdapter.UsesLongConnection() {
+			fmt.Println("飞书网关已启动，使用官方长连接接收事件，无需公网回调地址或 Verification Token。")
+		} else {
+			fmt.Printf("飞书网关已启动，本地事件回调 http://%s%s（飞书控制台需配置公网 HTTPS 反向代理地址）\n", feishuAdapter.ListenAddr(), feishuAdapter.Path())
+		}
 	case "weixin":
 		wxAdapter := weixin.NewAdapter(weixin.Config{
 			Token:                   cfg.MsgGateway.Weixin.Token,

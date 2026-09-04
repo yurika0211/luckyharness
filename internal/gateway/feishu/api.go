@@ -61,7 +61,7 @@ func (a *Adapter) SendWithReceipt(ctx context.Context, chatID string, message st
 	if chatID == "" {
 		return gateway.SentMessage{}, fmt.Errorf("feishu: chat id is required")
 	}
-	payload, err := newTextMessageRequest(chatID, message)
+	payload, err := newMessageRequest(chatID, message)
 	if err != nil {
 		return gateway.SentMessage{}, err
 	}
@@ -83,7 +83,7 @@ func (a *Adapter) SendWithReplyReceipt(ctx context.Context, chatID string, reply
 	if replyToMsgID == "" {
 		return a.SendWithReceipt(ctx, chatID, message)
 	}
-	payload, err := newTextMessageRequest("", message)
+	payload, err := newMessageRequest("", message)
 	if err != nil {
 		return gateway.SentMessage{}, err
 	}
@@ -124,6 +124,25 @@ func newTextMessageRequest(receiveID, message string) (sendMessageRequest, error
 		MsgType:   "text",
 		Content:   string(content),
 	}, nil
+}
+
+// newMessageRequest uses Feishu post messages when the response contains a
+// safe web link. Post messages let the client show a compact link label while
+// retaining the complete destination in href; plain responses keep the
+// existing text-message behavior.
+func newMessageRequest(receiveID, message string) (sendMessageRequest, error) {
+	if content, ok := newFeishuPostContent(message); ok {
+		encoded, err := json.Marshal(content)
+		if err != nil {
+			return sendMessageRequest{}, fmt.Errorf("feishu: encode post content: %w", err)
+		}
+		return sendMessageRequest{
+			ReceiveID: receiveID,
+			MsgType:   "post",
+			Content:   string(encoded),
+		}, nil
+	}
+	return newTextMessageRequest(receiveID, message)
 }
 
 func (a *Adapter) ensureTenantAccessToken(ctx context.Context) (string, error) {

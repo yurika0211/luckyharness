@@ -196,30 +196,50 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
   }
 
   if (loading) {
-    return <section className="settings-panel" aria-busy="true"><div className="panel-body">Loading configuration…</div></section>;
+    return (
+      <section className="settings-panel" aria-busy="true">
+        <div className="settings-loading">Loading configuration…</div>
+      </section>
+    );
   }
+
+  const configuredCount = MODEL_KINDS.filter(({ id }) => String(models[id] ?? legacyModel(config, id)).trim()).length;
 
   return (
     <form className="settings-panel" onSubmit={saveConfig}>
-      <div className="panel-head">
-        <div>
-          <h2>Configuration Center</h2>
-          <p className="settings-desc">Local settings are applied to future requests. Existing API keys are never returned to this browser.</p>
+      <header className="page-head">
+        <div className="page-head-text">
+          <span className="eyebrow">Runtime</span>
+          <h2>Configuration</h2>
+          <p className="settings-desc">
+            Changes apply to future requests. Existing API keys are never sent back to this browser.
+          </p>
         </div>
         <div className="panel-actions">
           <button className="ghost" type="button" onClick={() => void loadConfig()}>Reload</button>
           <button className="ghost" type="button" onClick={exportConfig}>Export safe copy</button>
-          <label className="ghost import-button">Import<input type="file" accept="application/json" onChange={importConfig} /></label>
+          <label className="ghost import-button">
+            Import
+            <input type="file" accept="application/json" onChange={importConfig} />
+          </label>
           <button className="primary" type="submit" disabled={saving}>{saving ? 'Saving…' : 'Save and apply'}</button>
         </div>
-      </div>
+      </header>
 
       <div ref={errorRef} className="settings-error" role="alert" tabIndex={-1} hidden={!error}>{error}</div>
       <p className="settings-live" role="status">{saving ? 'Saving configuration. Please wait.' : ''}</p>
 
       <section className="settings-section" aria-labelledby="models-heading">
-        <h3 id="models-heading">Model selection</h3>
-        <p className="settings-desc">Each purpose can use a different provider, endpoint, protocol, and credential. Empty secret fields preserve the existing secret.</p>
+        <div className="section-head">
+          <div>
+            <h3 id="models-heading">Models</h3>
+            <p className="settings-desc">
+              Each purpose can use its own provider, endpoint, protocol, and credential.
+            </p>
+          </div>
+          <span className="section-count">{configuredCount} of {MODEL_KINDS.length} configured</span>
+        </div>
+
         <div className="model-grid">
           {MODEL_KINDS.map(({ id, label, detail }) => {
             const endpoint = asObject(endpoints[id]);
@@ -228,42 +248,100 @@ export function Settings({ fetchRuntime, pushActivity }: SettingsProps) {
             const provider = String(endpoint.provider ?? fallback.provider ?? '');
             const base = String(endpoint.api_base ?? fallback.api_base ?? '');
             const protocol = String(endpoint.protocol ?? fallback.protocol ?? '');
+            const isSet = Boolean(modelID.trim());
             return (
-              <fieldset className="model-card" key={id}>
-                <legend>{label}</legend>
-                <p>{detail}</p>
-                <label htmlFor={`model-${id}`}>Model ID</label>
-                <input id={`model-${id}`} name={`model-${id}`} value={modelID} onChange={(event) => updateModel(id, event.target.value)} spellCheck={false} />
-                <details>
+              <section className={`model-card ${isSet ? '' : 'unset'}`} key={id} aria-labelledby={`model-head-${id}`}>
+                <div className="model-card-head">
+                  <div>
+                    <h4 id={`model-head-${id}`}>{label}</h4>
+                    <p>{detail}</p>
+                  </div>
+                  <span className={`model-state ${isSet ? 'on' : 'off'}`}>{isSet ? 'Active' : 'Not set'}</span>
+                </div>
+
+                <label className="field" htmlFor={`model-${id}`}>
+                  <span>Model ID</span>
+                  <input
+                    id={`model-${id}`}
+                    name={`model-${id}`}
+                    value={modelID}
+                    onChange={(event) => updateModel(id, event.target.value)}
+                    placeholder="Not configured"
+                    spellCheck={false}
+                  />
+                </label>
+
+                <details className="disclosure">
                   <summary>Connection settings</summary>
-                  <label htmlFor={`provider-${id}`}>Provider</label>
-                  <input id={`provider-${id}`} name={`provider-${id}`} value={provider} onChange={(event) => updateEndpoint(id, 'provider', event.target.value)} spellCheck={false} />
-                  <label htmlFor={`base-${id}`}>API base</label>
-                  <input id={`base-${id}`} name={`base-${id}`} value={base} onChange={(event) => updateEndpoint(id, 'api_base', event.target.value)} spellCheck={false} />
-                  <label htmlFor={`key-${id}`}>New API key</label>
-                  <input id={`key-${id}`} name={`key-${id}`} type="password" autoComplete="off" placeholder="Leave blank to keep current key" onChange={(event) => updateEndpoint(id, 'api_key', event.target.value)} />
-                  <label htmlFor={`protocol-${id}`}>Protocol</label>
-                  <input id={`protocol-${id}`} name={`protocol-${id}`} value={protocol} onChange={(event) => updateEndpoint(id, 'protocol', event.target.value)} placeholder="chat_completions or responses" spellCheck={false} />
+                  <div className="disclosure-body">
+                    <label className="field" htmlFor={`provider-${id}`}>
+                      <span>Provider</span>
+                      <input id={`provider-${id}`} name={`provider-${id}`} value={provider} onChange={(event) => updateEndpoint(id, 'provider', event.target.value)} placeholder="openai" spellCheck={false} />
+                    </label>
+                    <label className="field" htmlFor={`base-${id}`}>
+                      <span>API base</span>
+                      <input id={`base-${id}`} name={`base-${id}`} value={base} onChange={(event) => updateEndpoint(id, 'api_base', event.target.value)} placeholder="https://api.example.com/v1" spellCheck={false} />
+                    </label>
+                    <label className="field" htmlFor={`key-${id}`}>
+                      <span>New API key</span>
+                      <input id={`key-${id}`} name={`key-${id}`} type="password" autoComplete="off" placeholder="Leave blank to keep the current key" onChange={(event) => updateEndpoint(id, 'api_key', event.target.value)} />
+                    </label>
+                    <label className="field" htmlFor={`protocol-${id}`}>
+                      <span>Protocol</span>
+                      <input id={`protocol-${id}`} name={`protocol-${id}`} value={protocol} onChange={(event) => updateEndpoint(id, 'protocol', event.target.value)} placeholder="chat_completions or responses" spellCheck={false} />
+                    </label>
+                  </div>
                 </details>
-              </fieldset>
+              </section>
             );
           })}
         </div>
       </section>
 
-      <section className="settings-section settings-grid" aria-label="Core agent settings">
-        <div className="setting-item"><label htmlFor="agent-timeout"><span>Agent timeout (seconds)</span><input id="agent-timeout" type="number" min="1" value={Number(asObject(config.agent).timeout_seconds || 60)} onChange={(event) => updateNested('agent', 'timeout_seconds', Number(event.target.value))} /></label></div>
-        <div className="setting-item"><label htmlFor="agent-iterations"><span>Maximum iterations</span><input id="agent-iterations" type="number" min="1" value={Number(asObject(config.agent).max_iterations || 10)} onChange={(event) => updateNested('agent', 'max_iterations', Number(event.target.value))} /></label></div>
-        <div className="setting-item"><label htmlFor="server-address"><span>Local server address</span><input id="server-address" value={String(asObject(config.server).addr || '')} onChange={(event) => updateNested('server', 'addr', event.target.value)} spellCheck={false} /></label></div>
+      <section className="settings-section" aria-labelledby="agent-heading">
+        <div className="section-head">
+          <div>
+            <h3 id="agent-heading">Agent and server</h3>
+            <p className="settings-desc">Limits for a single turn, and the address the local API listens on.</p>
+          </div>
+        </div>
+        <div className="settings-card settings-grid">
+          <label className="field" htmlFor="agent-timeout">
+            <span>Agent timeout</span>
+            <input id="agent-timeout" type="number" min="1" value={Number(asObject(config.agent).timeout_seconds || 60)} onChange={(event) => updateNested('agent', 'timeout_seconds', Number(event.target.value))} />
+            <small>Seconds before a turn is abandoned.</small>
+          </label>
+          <label className="field" htmlFor="agent-iterations">
+            <span>Maximum iterations</span>
+            <input id="agent-iterations" type="number" min="1" value={Number(asObject(config.agent).max_iterations || 10)} onChange={(event) => updateNested('agent', 'max_iterations', Number(event.target.value))} />
+            <small>Tool-calling rounds allowed per turn.</small>
+          </label>
+          <label className="field" htmlFor="server-address">
+            <span>Local server address</span>
+            <input id="server-address" value={String(asObject(config.server).addr || '')} onChange={(event) => updateNested('server', 'addr', event.target.value)} spellCheck={false} />
+            <small>Restart the runtime to apply.</small>
+          </label>
+        </div>
       </section>
 
-      <details className="advanced-config">
-        <summary>Advanced JSON configuration</summary>
-        <p>Use this for gateway, RAG, memory, autonomy, hooks, and other advanced settings. Save applies the parsed configuration.</p>
-        <label htmlFor="advanced-json">Configuration JSON</label>
-        <textarea id="advanced-json" value={advancedText} onChange={(event) => setAdvancedText(event.target.value)} spellCheck={false} rows={18} />
-        <button className="ghost" type="button" onClick={applyAdvanced}>Use JSON in form</button>
-      </details>
+      <section className="settings-section" aria-labelledby="advanced-heading">
+        <div className="section-head">
+          <div>
+            <h3 id="advanced-heading">Advanced</h3>
+            <p className="settings-desc">Gateways, RAG, memory, autonomy, and hooks are edited as raw JSON.</p>
+          </div>
+        </div>
+        <details className="settings-card advanced-config">
+          <summary>Edit configuration JSON</summary>
+          <div className="disclosure-body">
+            <label className="field" htmlFor="advanced-json">
+              <span>Configuration JSON</span>
+              <textarea id="advanced-json" value={advancedText} onChange={(event) => setAdvancedText(event.target.value)} spellCheck={false} rows={18} />
+            </label>
+            <button className="ghost" type="button" onClick={applyAdvanced}>Use JSON in form</button>
+          </div>
+        </details>
+      </section>
     </form>
   );
 }

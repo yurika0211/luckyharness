@@ -6,19 +6,19 @@ LuckyAgent agent runtime，并把最终回答回发到飞书。
 
 ## 当前落地状态
 
-Phase 1 文本通道已经落地：
+文本、长连接与流式卡片通道已经落地：
 
-- `internal/gateway/feishu` 实现 HTTP event callback、URL challenge、verification token 校验和 tenant access token 缓存。
+- `internal/gateway/feishu` 同时支持 HTTP event callback 与官方长连接，空 `verification_token` 时使用长连接；包含 URL challenge、verification token 校验和 tenant access token 缓存。
 - 支持 schema 2.0 的 `im.message.receive_v1` 文本事件。
 - 支持私聊、群聊 `mention|all|none` 触发、chat/user allowlist 和 mention 文本移除。
-- 支持飞书文本消息发送与 reply API，接入 LuckyAgent session、通用命令和 `/lucky` 收集能力。
+- 支持飞书文本、原生富文本链接和 CardKit 流式卡片发送，接入 LuckyAgent session、通用命令和 `/lucky` 收集能力。CardKit 不可用时自动退回最终文本回复。
 - `lh msg-gateway start --platform feishu` 已接入配置解析、凭证校验、adapter 注册和启动。
 
-Phase 1 尚不支持：
+当前尚不支持：
 
 - 加密事件；配置非空 `encrypt_key` 时启动会明确失败。
 - 图片、文件、语音等附件收发。
-- 飞书富文本、卡片和流式消息更新。
+- 卡片交互与按钮回调。
 
 最小启动配置：
 
@@ -26,11 +26,10 @@ Phase 1 尚不支持：
 lh config set msg_gateway.platform feishu
 lh config set msg_gateway.feishu.app_id cli_xxx
 lh config set msg_gateway.feishu.app_secret your-app-secret
-lh config set msg_gateway.feishu.verification_token your-verification-token
 lh msg-gateway start --platform feishu
 ```
 
-默认本地回调为 `http://127.0.0.1:6710/feishu/events`。飞书控制台需要配置公网 HTTPS URL，并通过反向代理转发到该地址。
+默认通过飞书长连接接收事件，不需要本地回调地址或公网 HTTPS URL。飞书控制台需要启用机器人、订阅 `im.message.receive_v1` 并选择长连接接收事件；流式输出还需要授权 CardKit 的创建卡片实体和流式更新组件接口。设置 `verification_token` 后才会启用原有 HTTP 回调模式。
 
 ## 现状基线
 

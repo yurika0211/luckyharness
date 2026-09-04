@@ -36,3 +36,12 @@ func TestDefaultConfig(t *testing.T) {
 		t.Fatalf("unexpected message defaults: %+v", cfg)
 	}
 }
+
+func TestConfigUsesLongConnectionWhenVerificationTokenIsEmpty(t *testing.T) {
+	if !DefaultConfig().usesLongConnection() {
+		t.Fatal("default config should use the long connection")
+	}
+	if (Config{VerificationToken: "verify"}).usesLongConnection() {
+		t.Fatal("verification token should preserve callback mode")
+	}
+}

@@ -5,18 +5,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
 type fakeBackend struct {
-	mu        sync.Mutex
-	captures  int
-	performs  []Action
-	active    int
-	maxActive int
-	data      []byte
+	mu           sync.Mutex
+	captures     int
+	performs     []Action
+	active       int
+	maxActive    int
+	data         []byte
+	activeWindow string
 }
 
 func (b *fakeBackend) Name() string { return "fake" }
@@ -31,7 +33,7 @@ func (b *fakeBackend) Capture(context.Context, Target) (Observation, error) {
 	if len(data) == 0 {
 		data = []byte("fake-png")
 	}
-	return Observation{ImageData: data, MimeType: "image/png", Width: 100, Height: 80}, nil
+	return Observation{ImageData: data, MimeType: "image/png", Width: 100, Height: 80, ActiveWindow: b.activeWindow}, nil
 }
 func (b *fakeBackend) Perform(ctx context.Context, action Action) error {
 	b.mu.Lock()
@@ -142,6 +144,27 @@ func TestManagerSessionIsolationAndClose(t *testing.T) {
 	}
 	if _, err := os.Stat(a.FilePath); !os.IsNotExist(err) {
 		t.Fatalf("closed session frame still exists: %v", err)
+	}
+}
+
+func TestManagerEnforcesAllowedWindowsAgainstLatestFrame(t *testing.T) {
+	backend := &fakeBackend{activeWindow: "Windows Settings"}
+	manager := newTestManager(t, backend, WithAllowedWindows([]string{"settings"}))
+	first, err := manager.Observe(context.Background(), "session", ObserveRequest{})
+	if err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+	if _, err := manager.Step(context.Background(), "session", Action{Kind: ActionClick, FrameID: first.FrameID, X: 1, Y: 1}); err != nil {
+		t.Fatalf("allowed window action error = %v", err)
+	}
+
+	backend.activeWindow = "Terminal"
+	second, err := manager.Observe(context.Background(), "session", ObserveRequest{})
+	if err != nil {
+		t.Fatalf("Observe() error = %v", err)
+	}
+	if _, err := manager.Step(context.Background(), "session", Action{Kind: ActionClick, FrameID: second.FrameID, X: 1, Y: 1}); err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("disallowed window action error = %v", err)
 	}
 }
 

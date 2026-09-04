@@ -8,6 +8,9 @@ on:
 permissions:
   contents: write
 
+env:
+  NODE_VERSION: '22.22.2'
+
 jobs:
   build:
     name: Build ${{ matrix.artifact_name }}
@@ -69,12 +72,28 @@ jobs:
             mingw-w64-x86_64-toolchain
 
       - name: Set up Node.js
-        if: runner.os == 'Windows'
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: UI/package-lock.json
+
+      - name: Build bundled GUI and TUI
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: UI
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+
+      - name: Build bundled GUI and TUI
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: UI
+        run: |
+          npm ci
+          npm run build
 
       - name: Install Inno Setup
         if: runner.os == 'Windows'
@@ -117,12 +136,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist/UI/TUI
-          cp UI/package.json UI/package-lock.json dist/UI/
-          cp UI/TUI/package.json UI/TUI/tsconfig.json dist/UI/TUI/
-          cp -R UI/TUI/src dist/UI/TUI/src
-          cd dist
-          tar -czf "../${{ matrix.archive_name }}" "${{ matrix.binary_name }}" UI
+          node_bin="$(dirname "$(command -v node)")"
+          node_root="$(cd "$node_bin/.." && pwd)"
+          stage="dist/release-root"
+          bash scripts/prepare-release-bundle.sh "$stage" "dist/${{ matrix.binary_name }}" "$node_root"
+          tar -czf "${{ matrix.archive_name }}" -C "$stage" .
+          if [[ "${{ matrix.goos }}" == "linux" ]]; then
+            bash scripts/build-linux-deb.sh "${{ github.ref_name }}" "${{ matrix.goarch }}" "$stage" dist
+          else
+            bash scripts/build-macos-installer.sh "${{ github.ref_name }}" "${{ matrix.goarch }}" "$stage" dist
+          fi
 
       - name: Package release archive
         if: runner.os == 'Windows'
@@ -130,13 +153,9 @@ jobs:
         env:
           VERSION: ${{ github.ref_name }}
         run: |
-          New-Item -ItemType Directory -Force -Path "dist/UI/TUI" | Out-Null
-          Copy-Item -Force "UI/package.json", "UI/package-lock.json" "dist/UI/"
-          Copy-Item -Force "UI/TUI/package.json", "UI/TUI/tsconfig.json" "dist/UI/TUI/"
-          Copy-Item -Recurse -Force "UI/TUI/src" "dist/UI/TUI/src"
-          Copy-Item -Force "packaging/windows/ConfigurationCenter.ps1" "dist/ConfigurationCenter.ps1"
-          Compress-Archive -Path "dist/${{ matrix.binary_name }}", "dist/UI", "dist/ConfigurationCenter.ps1" -DestinationPath "${{ matrix.archive_name }}" -Force
-          ./scripts/build-windows-installer.ps1 -Version $env:VERSION
+          $nodeRoot = Split-Path -Parent (Get-Command node).Source
+          ./scripts/build-windows-installer.ps1 -Version $env:VERSION -NodeRuntimeRoot $nodeRoot
+          Compress-Archive -Path "dist/windows-installer/*" -DestinationPath "${{ matrix.archive_name }}" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -145,6 +164,8 @@ jobs:
           path: |
             ${{ matrix.archive_name }}
             dist/LuckyAgent-Setup-*.exe
+            dist/*.deb
+            dist/*.pkg
           if-no-files-found: error
 
   release:

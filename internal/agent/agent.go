@@ -1192,6 +1192,7 @@ func New(cfg *config.Manager) (*Agent, error) {
 		}
 		managerCfg.MaxObservationBytes = c.Tools.ComputerUse.MaxObservationBytes
 		managerCfg.MaxScreenshotWidth = c.Tools.ComputerUse.MaxScreenshotWidth
+		managerCfg.AllowedWindows = append([]string(nil), c.Tools.ComputerUse.AllowedWindows...)
 		if managerCfg.Settle < 0 {
 			managerCfg.Settle = 0
 		}

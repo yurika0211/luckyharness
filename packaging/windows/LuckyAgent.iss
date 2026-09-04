@@ -25,10 +25,17 @@ UninstallDisplayIcon={app}\lh.exe
 [Files]
 Source: "{#SourceRoot}\lh.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\ConfigurationCenter.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\Install-Portable.ps1"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\LuckyAgent-TUI.cmd"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceRoot}\LuckyAgent-GUI.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceRoot}\UI\GUI\dist\*"; DestDir: "{app}\UI\GUI\dist"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\UI\TUI\dist\*"; DestDir: "{app}\UI\TUI\dist"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceRoot}\runtime\node\*"; DestDir: "{app}\runtime\node"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\LuckyAgent Configuration Center"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"
+Name: "{group}\LuckyAgent GUI"; Filename: "{app}\LuckyAgent-GUI.cmd"; WorkingDir: "{app}"
+Name: "{group}\LuckyAgent TUI"; Filename: "{app}\LuckyAgent-TUI.cmd"; WorkingDir: "{app}"
 Name: "{group}\Stop LuckyAgent"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"" -Action Stop"; WorkingDir: "{app}"
 Name: "{autodesktop}\LuckyAgent Configuration Center"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\ConfigurationCenter.ps1"""; WorkingDir: "{app}"; Tasks: desktopicon
 
@@ -41,3 +48,69 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\C
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
+
+[Code]
+const
+  UserEnvironmentKey = 'Environment';
+
+procedure BroadcastEnvironmentChange;
+var
+  ResultCode: DWORD;
+begin
+  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
+end;
+
+function PathContains(const Value, Entry: String): Boolean;
+begin
+  Result := Pos(';' + Lowercase(Entry) + ';', ';' + Lowercase(Value) + ';') > 0;
+end;
+
+procedure AddUserPath(const Entry: String);
+var
+  Existing, Updated: String;
+begin
+  if not RegQueryStringValue(HKCU, UserEnvironmentKey, 'Path', Existing) then
+    Existing := '';
+  if PathContains(Existing, Entry) then
+    Exit;
+  if Existing = '' then
+    Updated := Entry
+  else
+    Updated := Existing + ';' + Entry;
+  RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Updated);
+end;
+
+procedure RemoveUserPath(const Entry: String);
+var
+  Existing, Updated: String;
+begin
+  if not RegQueryStringValue(HKCU, UserEnvironmentKey, 'Path', Existing) then
+    Exit;
+  Updated := ';' + Existing + ';';
+  StringChangeEx(Updated, ';' + Entry + ';', ';', True);
+  while Pos(';;', Updated) > 0 do
+    StringChangeEx(Updated, ';;', ';', True);
+  if Updated = ';' then
+    Updated := ''
+  else
+    Updated := Copy(Updated, 2, Length(Updated) - 2);
+  RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Updated);
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then begin
+    AddUserPath(ExpandConstant('{app}'));
+    AddUserPath(ExpandConstant('{app}\runtime\node'));
+    BroadcastEnvironmentChange;
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then begin
+    RemoveUserPath(ExpandConstant('{app}'));
+    RemoveUserPath(ExpandConstant('{app}\runtime\node'));
+    BroadcastEnvironmentChange;
+  end;
+end;

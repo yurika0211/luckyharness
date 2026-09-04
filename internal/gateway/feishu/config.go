@@ -11,7 +11,9 @@ const (
 	defaultAPIBaseURL = "https://open.feishu.cn"
 )
 
-// Config holds Feishu bot callback and API settings.
+// Config holds Feishu bot delivery and Open API settings. When
+// VerificationToken is empty, the adapter receives events through Feishu's
+// long connection and needs only AppID and AppSecret.
 type Config struct {
 	AppID             string
 	AppSecret         string
@@ -32,6 +34,10 @@ type Config struct {
 	// HTTPClient is optional and primarily useful for custom transports and
 	// tests. A client with a bounded timeout is used when this is nil.
 	HTTPClient *http.Client
+}
+
+func (c Config) usesLongConnection() bool {
+	return strings.TrimSpace(c.VerificationToken) == ""
 }
 
 // DefaultConfig returns the production defaults for the callback server.

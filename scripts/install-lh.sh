@@ -4,7 +4,7 @@ set -eu
 repo="${LH_REPO:-yurika0211/luckyagent}"
 repo_ref="${LH_REPO_REF:-}"
 version="${1:-latest}"
-prefix="${2:-$HOME/.local/bin}"
+prefix="${2:-${LH_INSTALL_PREFIX:-$HOME/.local}}"
 
 os="$(uname | tr '[:upper:]' '[:lower:]')"
 arch="$(uname -m)"
@@ -67,46 +67,9 @@ fi
 mkdir -p "$tmp_dir"
 curl -fsSL -o "$tmp_dir/$archive_name" "$download_url"
 tar -xzf "$tmp_dir/$archive_name" -C "$tmp_dir"
-mkdir -p "$prefix"
-install -m 0755 "$tmp_dir/la" "$prefix/la"
-
-echo "installed la to $prefix/la"
-
-if [ ! -d "$tmp_dir/UI" ]; then
-  source_ref="${repo_ref:-$release_tag}"
-  if [ -z "$source_ref" ]; then
-    source_ref="main"
-  fi
-  repo_archive="$tmp_dir/repo-${source_ref}.tar.gz"
-  repo_dir="$tmp_dir/repo"
-  if curl -fsSL -o "$repo_archive" "https://github.com/${repo}/archive/refs/tags/${source_ref}.tar.gz" ||
-    curl -fsSL -o "$repo_archive" "https://github.com/${repo}/archive/refs/heads/${source_ref}.tar.gz"; then
-    mkdir -p "$repo_dir"
-    tar -xzf "$repo_archive" -C "$repo_dir"
-    ui_index="$(find "$repo_dir" -path '*/UI/TUI/src/index.tsx' -print | head -n 1 || true)"
-    if [ -n "$ui_index" ]; then
-      ui_source="$(dirname "$(dirname "$(dirname "$ui_index")")")"
-      cp -R "$ui_source" "$tmp_dir/UI"
-    fi
-  fi
+installer="$tmp_dir/install.sh"
+if [ ! -x "$installer" ]; then
+  echo "release asset is missing install.sh" >&2
+  exit 1
 fi
-
-if [ -d "$tmp_dir/UI" ]; then
-  ui_dir="${LH_UI_INSTALL_DIR:-$HOME/.local/share/luckyagent/UI}"
-  mkdir -p "$(dirname "$ui_dir")"
-  rm -rf "$ui_dir"
-  cp -R "$tmp_dir/UI" "$ui_dir"
-
-  if command -v npm >/dev/null 2>&1; then
-    (
-      cd "$ui_dir"
-      npm ci --silent --omit=optional
-    )
-  else
-    echo "warning: npm was not found; install Node.js/npm before running la tui" >&2
-  fi
-
-  mkdir -p "$HOME/.luckyagent/runtime"
-  printf '%s\n' "$ui_dir" > "$HOME/.luckyagent/runtime/tui-ui-dir"
-  echo "installed TUI files to $ui_dir"
-fi
+LH_INSTALL_PREFIX="$prefix" "$installer"

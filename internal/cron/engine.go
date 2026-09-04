@@ -471,25 +471,35 @@ func (e *Engine) run() {
 
 // tick 每分钟检查一次
 func (e *Engine) tick(now time.Time) {
+	type scheduledJob struct {
+		id      string
+		status  JobStatus
+		nextRun time.Time
+	}
+
 	e.mu.RLock()
-	jobs := make([]*Job, 0, len(e.jobs))
+	jobs := make([]scheduledJob, 0, len(e.jobs))
 	for _, job := range e.jobs {
-		jobs = append(jobs, job)
+		jobs = append(jobs, scheduledJob{
+			id:      job.ID,
+			status:  job.Status,
+			nextRun: job.NextRun,
+		})
 	}
 	e.mu.RUnlock()
 
 	for _, job := range jobs {
-		if job.Status == StatusPaused || job.Status == StatusRunning {
+		if job.status == StatusPaused || job.status == StatusRunning {
 			continue
 		}
 
-		if job.NextRun.IsZero() {
+		if job.nextRun.IsZero() {
 			continue
 		}
 
 		// 检查是否到执行时间（允许1分钟误差）
-		if !now.Before(job.NextRun) {
-			e.executeJob(job.ID, now)
+		if !now.Before(job.nextRun) {
+			e.executeJob(job.id, now)
 		}
 	}
 }

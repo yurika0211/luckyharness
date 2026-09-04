@@ -9,12 +9,17 @@ $Binary = Join-Path $InstallDir "lh.exe"
 $RuntimeDir = Join-Path $env:LOCALAPPDATA "LuckyAgent\runtime"
 $LogDir = Join-Path $env:LOCALAPPDATA "LuckyAgent\logs"
 $StaticDir = Join-Path $InstallDir "UI\GUI\dist"
+$TuiDir = Join-Path $InstallDir "UI"
+$NodeDir = Join-Path $InstallDir "runtime\node"
 
 if (-not (Test-Path $Binary)) {
   throw "LuckyAgent executable was not found at $Binary"
 }
 
 New-Item -ItemType Directory -Force -Path $RuntimeDir, $LogDir | Out-Null
+$env:LH_TUI_DIR = $TuiDir
+$env:LH_DASHBOARD_STATIC = $StaticDir
+$env:PATH = "$NodeDir;$env:PATH"
 
 function Get-ComponentProcess([string]$Name) {
   $PidFile = Join-Path $RuntimeDir "$Name.pid"
