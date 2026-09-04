@@ -39,6 +39,9 @@ jobs:
       - name: Typecheck UI
         working-directory: UI
         run: npm run typecheck
+      - name: Build packaged UI assets
+        working-directory: UI
+        run: npm run build
       - name: Run tests
         run: go test ./... -race -count=1 -timeout 10m
       - name: Build
@@ -50,16 +53,17 @@ jobs:
         run: |
           set -euo pipefail
           rm -rf .ci-release
-          mkdir -p .ci-release/dist/UI/TUI .ci-release/extract
-          cp lh .ci-release/dist/lh
-          cp UI/package.json UI/package-lock.json .ci-release/dist/UI/
-          cp UI/TUI/package.json UI/TUI/tsconfig.json .ci-release/dist/UI/TUI/
-          cp -R UI/TUI/src .ci-release/dist/UI/TUI/src
-          tar -czf .ci-release/lh-linux-amd64.tar.gz -C .ci-release/dist lh UI
+          mkdir -p .ci-release/extract
+          node_bin="$(dirname "$(command -v node)")"
+          node_root="$(cd "$node_bin/.." && pwd)"
+          bash scripts/prepare-release-bundle.sh .ci-release/dist ./lh "$node_root"
+          tar -czf .ci-release/lh-linux-amd64.tar.gz -C .ci-release/dist .
           tar -xzf .ci-release/lh-linux-amd64.tar.gz -C .ci-release/extract
           test -x .ci-release/extract/lh
-          test -f .ci-release/extract/UI/package.json
-          test -f .ci-release/extract/UI/TUI/src/index.tsx
+          test -f .ci-release/extract/UI/GUI/dist/index.html
+          test -f .ci-release/extract/UI/TUI/dist/tui.mjs
+          test -x .ci-release/extract/runtime/node/bin/node
+          test -x .ci-release/extract/install.sh
 
   docker:
     name: Build Docker Image

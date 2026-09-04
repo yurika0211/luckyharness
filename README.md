@@ -115,45 +115,45 @@ git tag -a v0.1.0 -m "Release v0.1.0"
 git push origin refs/tags/v0.1.0
 ```
 
-仓库会在推送匹配 `v*` 的 Git tag 后自动构建 `Windows / macOS / Linux` release assets，并发布到 GitHub Releases 页面。下载对应平台的 release archive 后直接解压即可使用。
-Release archive 会同时包含 `la` 二进制和 TUI 工作区；安装脚本会写入 TUI 安装路径，之后可以直接运行：
+仓库会在推送匹配 `v*` 的 Git tag 后自动构建 `Windows / macOS / Linux` release assets，并发布到 GitHub Releases 页面。每个发布包都包含 `lh`、GUI 静态资源、已打包 TUI 和 Node runtime，运行时不需要再下载 npm 依赖。
+
+安装完成后，`lh`、`luckyagent-gui` 和 `luckyagent-tui` 都可直接从 PATH 使用：
 
 ```bash
-la tui
+lh tui
 ```
 
 ### Linux
 
-安装最新 release 到 `PATH`：
+Linux release 提供对应架构的 `.deb` 安装包。安装后主程序位于 `/usr/bin/lh`，GUI/TUI 启动器也在同一全局 PATH：
 
 ```bash
-curl -fsSL https://yurika0211.github.io/luckyagent/install-la.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-la init
-la tui
+sudo apt install ./luckyagent_<version>_amd64.deb
+lh init
+luckyagent-gui
+luckyagent-tui
 ```
 
-如需固定 release tag 或安装前缀：
+归档中的 `install.sh` 支持不使用系统包管理器的用户级安装：
 
 ```bash
-sh scripts/install-la.sh v0.1.0 "$HOME/bin"
+./install.sh
 ```
 
 ### macOS
 
-macOS 使用同一个 shell 安装脚本安装最新 release：
+macOS release 提供 `.pkg` 安装包，安装到 `/usr/local/lib/luckyagent` 并在 `/usr/local/bin` 注册全局命令：
 
 ```bash
-curl -fsSL https://yurika0211.github.io/luckyagent/install-la.sh | sh
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-exec zsh -l
-la init
-la tui
+sudo installer -pkg LuckyAgent-<version>-macos-arm64.pkg -target /
+lh init
+luckyagent-gui
+luckyagent-tui
 ```
 
 ### Windows
 
-GitHub Releases 还提供 `LuckyAgent-Setup-<version>-x64.exe` 安装器。双击后会安装 `lh.exe`、本地 Dashboard 配置中心和开始菜单快捷方式；首次启动会初始化 `%USERPROFILE%\.luckyagent`，不会在升级或卸载时删除配置、记忆、RAG 或会话数据。配置中心可保存 Provider、模型、API Base、API Key 和 Agent 设置，并提供安全的脱敏导出。
+GitHub Releases 还提供 `LuckyAgent-Setup-<version>-x64.exe` 安装器。双击后会安装 `lh.exe`、Node runtime、GUI/TUI、配置中心和开始菜单快捷方式，并把安装目录和内置 Node runtime 注册到用户 PATH；首次启动会初始化 `%USERPROFILE%\.luckyagent`，不会在升级或卸载时删除配置、记忆、RAG 或会话数据。配置中心可保存 Provider、模型、API Base、API Key 和 Agent 设置，并提供安全的脱敏导出。
 
 开始菜单中的 **LuckyAgent Configuration Center** 会启动本地 API 与 Dashboard。需要停止或重启本地进程时，可以运行：
 
@@ -165,17 +165,16 @@ GitHub Releases 还提供 `LuckyAgent-Setup-<version>-x64.exe` 安装器。双�
 Windows 用户可以用 PowerShell：
 
 ```powershell
-iwr https://yurika0211.github.io/luckyagent/install-la.ps1 -OutFile "$env:TEMP\install-la.ps1"
-powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-la.ps1" -Prefix "$HOME\.local\bin"
-$env:Path = "$HOME\.local\bin;$env:Path"
-la.exe init
-la.exe tui
+iwr https://yurika0211.github.io/luckyagent/install-lh.ps1 -OutFile "$env:TEMP\install-lh.ps1"
+powershell -ExecutionPolicy Bypass -File "$env:TEMP\install-lh.ps1"
+lh init
+luckyagent-tui
 ```
 
-如需固定 release tag 或安装前缀：
+如需固定 release tag 或指定安装目录：
 
 ```powershell
-.\scripts\install-la.ps1 -Version v0.1.0 -Prefix "$HOME\bin"
+.\scripts\install-lh.ps1 -Version v0.1.0 -Prefix "$env:LOCALAPPDATA\LuckyAgent"
 ```
 
 ## 部署说明

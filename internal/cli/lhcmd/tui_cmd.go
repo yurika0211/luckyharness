@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -44,11 +45,19 @@ func runTUI(uiDir, apiBase, session, model string) error {
 		return fmt.Errorf("TUI requires an interactive terminal")
 	}
 
-	args := []string{"--import", "tsx", "TUI/src/index.tsx", "--api-base", apiBase, "--session", session}
+	node, err := resolveTUIRuntime(resolved)
+	if err != nil {
+		return err
+	}
+	args, err := tuiEntrypointArgs(resolved)
+	if err != nil {
+		return err
+	}
+	args = append(args, "--api-base", apiBase, "--session", session)
 	if strings.TrimSpace(model) != "" {
 		args = append(args, "--model", model)
 	}
-	cmd := exec.Command("node", args...)
+	cmd := exec.Command(node, args...)
 	cmd.Dir = resolved
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -147,17 +156,57 @@ func isUIWorkspace(dir string) bool {
 	if dir == "" {
 		return false
 	}
-	required := []string{
+	if _, err := os.Stat(filepath.Join(dir, "TUI", "dist", "tui.mjs")); err == nil {
+		return true
+	}
+	for _, path := range []string{
 		filepath.Join(dir, "package.json"),
 		filepath.Join(dir, "TUI", "package.json"),
 		filepath.Join(dir, "TUI", "src", "index.tsx"),
-	}
-	for _, path := range required {
+	} {
 		if _, err := os.Stat(path); err != nil {
 			return false
 		}
 	}
 	return true
+}
+
+func tuiEntrypointArgs(uiDir string) ([]string, error) {
+	bundle := filepath.Join(uiDir, "TUI", "dist", "tui.mjs")
+	if _, err := os.Stat(bundle); err == nil {
+		return []string{bundle}, nil
+	}
+	source := filepath.Join(uiDir, "TUI", "src", "index.tsx")
+	if _, err := os.Stat(source); err == nil {
+		return []string{"--import", "tsx", "TUI/src/index.tsx"}, nil
+	}
+	return nil, fmt.Errorf("could not locate LuckyAgent TUI entrypoint in %s", uiDir)
+}
+
+func resolveTUIRuntime(uiDir string) (string, error) {
+	if value := strings.TrimSpace(os.Getenv("LH_NODE_BINARY")); value != "" {
+		if _, err := os.Stat(value); err == nil {
+			return value, nil
+		}
+		return "", fmt.Errorf("LH_NODE_BINARY does not exist: %s", value)
+	}
+
+	nodeName := "node"
+	if runtime.GOOS == "windows" {
+		nodeName = "node.exe"
+	}
+	for _, candidate := range []string{
+		filepath.Join(uiDir, "..", "runtime", "node", "bin", nodeName),
+		filepath.Join(uiDir, "..", "runtime", "node", nodeName),
+	} {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+	}
+	if node, err := exec.LookPath(nodeName); err == nil {
+		return node, nil
+	}
+	return "", fmt.Errorf("could not locate Node.js runtime; install a LuckyAgent application package or set LH_NODE_BINARY")
 }
 
 func isInteractiveTerminal() bool {
