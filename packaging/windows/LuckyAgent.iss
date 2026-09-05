@@ -54,10 +54,8 @@ const
   UserEnvironmentKey = 'Environment';
 
 procedure BroadcastEnvironmentChange;
-var
-  ResultCode: DWORD;
 begin
-  SendMessageTimeout(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, ResultCode);
+  PostMessage(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 0);
 end;
 
 function PathContains(const Value, Entry: String): Boolean;
